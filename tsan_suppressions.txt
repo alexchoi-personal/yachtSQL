@@ -1,0 +1,9 @@
+# ThreadSanitizer suppression file for YachtSQL
+# Add known false positives here in the format:
+# race:function_name
+# deadlock:function_name
+# thread:function_name
+
+# Example suppressions (add as needed):
+# race:std::*
+# deadlock:parking_lot::*

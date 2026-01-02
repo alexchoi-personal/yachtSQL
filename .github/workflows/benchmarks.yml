@@ -1,0 +1,68 @@
+name: Benchmarks
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark:
+    name: Performance Regression Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "bench"
+
+      - name: Install critcmp
+        run: cargo install critcmp
+
+      - name: Run benchmarks on PR branch
+        run: cargo bench -- --save-baseline pr
+
+      - name: Checkout base branch
+        run: git checkout ${{ github.base_ref }}
+
+      - name: Run benchmarks on base branch
+        run: cargo bench -- --save-baseline base
+
+      - name: Compare benchmarks
+        id: compare
+        run: |
+          critcmp base pr --threshold 10 > bench_comparison.txt 2>&1 || true
+          cat bench_comparison.txt
+
+          if grep -q "Regression" bench_comparison.txt; then
+            echo "regression_detected=true" >> $GITHUB_OUTPUT
+          else
+            echo "regression_detected=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload benchmark comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-comparison
+          path: bench_comparison.txt
+
+      - name: Fail on regression > 10%
+        if: steps.compare.outputs.regression_detected == 'true'
+        run: |
+          echo "Performance regression detected (>10%)"
+          cat bench_comparison.txt
+          exit 1
