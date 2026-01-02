@@ -50,13 +50,6 @@ session1.execute_sql("INSERT INTO foo VALUES (1)").await?;
 assert!(session2.execute_sql("SELECT * FROM foo").await.is_err());
 ```
 
-## Installation
-
-```toml
-[dependencies]
-yachtsql = "0.1"
-```
-
 Requires Rust nightly (edition 2024).
 
 ## What's Supported
