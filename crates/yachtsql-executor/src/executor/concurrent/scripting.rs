@@ -543,7 +543,11 @@ impl ConcurrentPlanExecutor {
         let mut result = Table::empty(Schema::new());
 
         let n = query_result.row_count();
-        let columns: Vec<&Column> = query_result.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = query_result
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         'outer: for row_idx in 0..n {
             let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
@@ -714,7 +718,8 @@ impl ConcurrentPlanExecutor {
         if !into_variables.is_empty() && !result.is_empty() {
             let n = result.row_count();
             if n > 0 {
-                let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c).collect();
+                let columns: Vec<&Column> =
+                    result.columns().iter().map(|(_, c)| c.as_ref()).collect();
                 for (i, var_name) in into_variables.iter().enumerate() {
                     if let Some(col) = columns.get(i) {
                         let val = col.get_value(0);

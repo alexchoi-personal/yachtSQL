@@ -232,7 +232,7 @@ impl<'a> PlanExecutor<'a> {
             .with_user_functions(&self.user_function_defs);
 
         let right_n = right.row_count();
-        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c).collect();
+        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let right_key_cols: Vec<Column> = right_keys
             .iter()
             .map(|expr| right_evaluator.evaluate(expr, right))
@@ -250,7 +250,7 @@ impl<'a> PlanExecutor<'a> {
         }
 
         let left_n = left.row_count();
-        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let left_key_cols: Vec<Column> = left_keys
             .iter()
             .map(|expr| left_evaluator.evaluate(expr, left))
@@ -295,8 +295,8 @@ impl<'a> PlanExecutor<'a> {
         let evaluator = ValueEvaluator::new(combined_schema);
         let left_n = left.row_count();
         let right_n = right.row_count();
-        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c).collect();
-        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
 
         for left_idx in 0..left_n {
             let left_values: Vec<Value> =
@@ -339,8 +339,8 @@ impl<'a> PlanExecutor<'a> {
         let evaluator = ValueEvaluator::new(combined_schema);
         let left_n = left.row_count();
         let right_n = right.row_count();
-        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c).collect();
-        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let right_null_row: Vec<Value> = (0..right.schema().field_count())
             .map(|_| Value::Null)
             .collect();
@@ -394,8 +394,8 @@ impl<'a> PlanExecutor<'a> {
         let evaluator = ValueEvaluator::new(combined_schema);
         let left_n = left.row_count();
         let right_n = right.row_count();
-        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c).collect();
-        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let left_null_row: Vec<Value> = (0..left.schema().field_count())
             .map(|_| Value::Null)
             .collect();
@@ -449,8 +449,8 @@ impl<'a> PlanExecutor<'a> {
         let evaluator = ValueEvaluator::new(combined_schema);
         let left_n = left.row_count();
         let right_n = right.row_count();
-        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c).collect();
-        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let left_null_row: Vec<Value> = (0..left.schema().field_count())
             .map(|_| Value::Null)
             .collect();
@@ -514,8 +514,8 @@ impl<'a> PlanExecutor<'a> {
     fn cross_join_inner(&self, left: &Table, right: &Table, result: &mut Table) -> Result<()> {
         let left_n = left.row_count();
         let right_n = right.row_count();
-        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c).collect();
-        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
 
         for left_idx in 0..left_n {
             let left_values: Vec<Value> =

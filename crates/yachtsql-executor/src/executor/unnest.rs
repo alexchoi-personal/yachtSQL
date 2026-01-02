@@ -32,7 +32,11 @@ impl<'a> PlanExecutor<'a> {
             .with_system_variables(self.session.system_variables())
             .with_user_functions(&self.user_function_defs);
 
-        let input_columns: Vec<_> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let input_columns: Vec<_> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         for i in 0..n {
             let base_values: Vec<Value> = input_columns.iter().map(|c| c.get_value(i)).collect();

@@ -95,8 +95,13 @@ impl<'a> PlanExecutor<'a> {
 
         let target_n = table.row_count();
         let from_n = from_data.row_count();
-        let target_columns: Vec<&Column> = table.columns().iter().map(|(_, c)| c).collect();
-        let from_columns: Vec<&Column> = from_data.columns().iter().map(|(_, c)| c).collect();
+        let target_columns: Vec<&Column> =
+            table.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let from_columns: Vec<&Column> = from_data
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let mut updated_rows: std::collections::HashMap<usize, Vec<Value>> =
             std::collections::HashMap::new();
@@ -211,7 +216,7 @@ impl<'a> PlanExecutor<'a> {
         };
 
         let n = table.row_count();
-        let columns: Vec<&Column> = table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = table.columns().iter().map(|(_, c)| c.as_ref()).collect();
 
         let update_mask: Vec<bool> = if let Some(filter_expr) = filter {
             if has_subquery {

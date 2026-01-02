@@ -676,7 +676,11 @@ impl<'a> PlanExecutor<'a> {
         let mut partitions: BTreeMap<Vec<Value>, Vec<(i64, Vec<Value>)>> = BTreeMap::new();
 
         let n = input_table.row_count();
-        let columns: Vec<_> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<_> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         for row_idx in 0..n {
             let ts_val = columns[ts_idx].get_value(row_idx);

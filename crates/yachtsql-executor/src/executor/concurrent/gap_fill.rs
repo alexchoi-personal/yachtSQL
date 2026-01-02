@@ -88,7 +88,11 @@ impl ConcurrentPlanExecutor {
         let mut partitions: BTreeMap<Vec<Value>, Vec<(i64, Vec<Value>)>> = BTreeMap::new();
 
         let n = input_table.row_count();
-        let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         for row_idx in 0..n {
             let row_values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();

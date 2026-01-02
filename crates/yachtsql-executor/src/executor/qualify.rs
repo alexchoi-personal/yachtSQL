@@ -41,7 +41,7 @@ impl<'a> PlanExecutor<'a> {
     fn execute_qualify_with_window(&mut self, input: &Table, predicate: &Expr) -> Result<Table> {
         let schema = input.schema().clone();
         let n = input.row_count();
-        let columns: Vec<&Column> = input.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = input.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let evaluator = ValueEvaluator::new(&schema);
 
         let window_exprs = Self::collect_window_exprs(predicate);

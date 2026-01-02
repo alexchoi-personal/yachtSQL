@@ -1,5 +1,7 @@
 #![coverage(off)]
 
+use std::sync::Arc;
+
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use yachtsql_common::error::Result;
@@ -10,7 +12,7 @@ use crate::{Column, Record, Schema};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Table {
     schema: Schema,
-    columns: IndexMap<String, Column>,
+    columns: IndexMap<String, Arc<Column>>,
     row_count: usize,
 }
 
@@ -19,7 +21,7 @@ impl Table {
         let columns = schema
             .fields()
             .iter()
-            .map(|f| (f.name.clone(), Column::new(&f.data_type)))
+            .map(|f| (f.name.clone(), Arc::new(Column::new(&f.data_type))))
             .collect();
         Self {
             schema,
@@ -29,6 +31,16 @@ impl Table {
     }
 
     pub fn from_columns(schema: Schema, columns: IndexMap<String, Column>) -> Self {
+        let row_count = columns.values().next().map(|c| c.len()).unwrap_or(0);
+        let arc_columns = columns.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
+        Self {
+            schema,
+            columns: arc_columns,
+            row_count,
+        }
+    }
+
+    pub fn from_arc_columns(schema: Schema, columns: IndexMap<String, Arc<Column>>) -> Self {
         let row_count = columns.values().next().map(|c| c.len()).unwrap_or(0);
         Self {
             schema,
@@ -58,14 +70,22 @@ impl Table {
     }
 
     pub fn column(&self, idx: usize) -> Option<&Column> {
-        self.columns.values().nth(idx)
+        self.columns.values().nth(idx).map(|arc| arc.as_ref())
     }
 
     pub fn column_by_name(&self, name: &str) -> Option<&Column> {
-        self.columns.get(name)
+        self.columns.get(name).map(|arc| arc.as_ref())
     }
 
-    pub fn columns(&self) -> &IndexMap<String, Column> {
+    pub fn get_column(&self, name: &str) -> Option<Arc<Column>> {
+        self.columns.get(name).map(Arc::clone)
+    }
+
+    pub fn get_column_arc(&self, idx: usize) -> Option<Arc<Column>> {
+        self.columns.values().nth(idx).map(Arc::clone)
+    }
+
+    pub fn columns(&self) -> &IndexMap<String, Arc<Column>> {
         &self.columns
     }
 
@@ -73,13 +93,17 @@ impl Table {
         self.columns.len()
     }
 
-    pub fn columns_mut(&mut self) -> &mut IndexMap<String, Column> {
+    pub fn columns_mut(&mut self) -> &mut IndexMap<String, Arc<Column>> {
         &mut self.columns
+    }
+
+    pub fn get_column_mut(&mut self, name: &str) -> Option<&mut Column> {
+        self.columns.get_mut(name).map(Arc::make_mut)
     }
 
     pub fn push_row(&mut self, values: Vec<Value>) -> Result<()> {
         for (col, value) in self.columns.values_mut().zip(values.into_iter()) {
-            col.push(value)?;
+            Arc::make_mut(col).push(value)?;
         }
         self.row_count += 1;
         Ok(())
@@ -92,8 +116,7 @@ impl Table {
                 index, self.row_count
             )));
         }
-        let columns: Vec<&Column> = self.columns.values().collect();
-        let values: Vec<Value> = columns.iter().map(|c| c.get_value(index)).collect();
+        let values: Vec<Value> = self.columns.values().map(|c| c.get_value(index)).collect();
         Ok(Record::from_values(values))
     }
 
@@ -127,7 +150,7 @@ impl Table {
 
     pub fn clear(&mut self) {
         for col in self.columns.values_mut() {
-            col.clear();
+            Arc::make_mut(col).clear();
         }
         self.row_count = 0;
     }
@@ -137,14 +160,14 @@ impl Table {
             return;
         }
         for col in self.columns.values_mut() {
-            col.remove(index);
+            Arc::make_mut(col).remove(index);
         }
         self.row_count -= 1;
     }
 
     pub fn update_row(&mut self, index: usize, values: Vec<Value>) -> Result<()> {
         for (col, value) in self.columns.values_mut().zip(values.into_iter()) {
-            col.set(index, value)?;
+            Arc::make_mut(col).set(index, value)?;
         }
         Ok(())
     }
@@ -179,8 +202,9 @@ impl Table {
         let found_idx = self.columns.keys().position(|k| k.to_uppercase() == upper);
         if let Some(idx) = found_idx {
             let key = self.columns.keys().nth(idx).cloned().unwrap();
-            if let Some(col) = self.columns.shift_remove(&key) {
-                self.columns.shift_insert(idx, new_name.to_string(), col);
+            if let Some(arc_col) = self.columns.shift_remove(&key) {
+                self.columns
+                    .shift_insert(idx, new_name.to_string(), arc_col);
             }
             let fields: Vec<_> = self
                 .schema
@@ -361,8 +385,8 @@ impl Table {
             if let Some(key) = col_name_key
                 && let Some(old_col) = self.columns.get(&key)
             {
-                let new_col = Self::convert_column(old_col, old_type, &new_data_type)?;
-                self.columns.insert(key, new_col);
+                let new_col = Self::convert_column(old_col.as_ref(), old_type, &new_data_type)?;
+                self.columns.insert(key, Arc::new(new_col));
             }
         }
 
@@ -486,7 +510,7 @@ impl Table {
     pub fn with_schema(&self, new_schema: Schema) -> Table {
         let mut new_columns = IndexMap::new();
         for (old_col, new_field) in self.columns.values().zip(new_schema.fields().iter()) {
-            new_columns.insert(new_field.name.clone(), old_col.clone());
+            new_columns.insert(new_field.name.clone(), Arc::clone(old_col));
         }
         Table {
             schema: new_schema,
@@ -500,7 +524,7 @@ impl Table {
         let mut new_columns = IndexMap::new();
         for (new_field, &idx) in new_schema.fields().iter().zip(column_indices.iter()) {
             if idx < source_columns.len() {
-                new_columns.insert(new_field.name.clone(), source_columns[idx].clone());
+                new_columns.insert(new_field.name.clone(), Arc::clone(source_columns[idx]));
             }
         }
         Table {
@@ -548,10 +572,10 @@ impl Table {
     }
 
     pub fn gather_rows(&self, indices: &[usize]) -> Self {
-        let new_columns: IndexMap<String, Column> = self
+        let new_columns: IndexMap<String, Arc<Column>> = self
             .columns
             .iter()
-            .map(|(name, col)| (name.clone(), col.gather(indices)))
+            .map(|(name, col)| (name.clone(), Arc::new(col.gather(indices))))
             .collect();
         Self {
             schema: self.schema.clone(),
@@ -565,13 +589,13 @@ impl Table {
     }
 
     pub fn concat(&self, other: &Table) -> Self {
-        let mut new_columns: IndexMap<String, Column> = IndexMap::new();
+        let mut new_columns: IndexMap<String, Arc<Column>> = IndexMap::new();
         for (name, col) in &self.columns {
-            let mut new_col = col.clone();
+            let mut new_col = col.as_ref().clone();
             if let Some(other_col) = other.columns.get(name) {
-                new_col.extend(other_col);
+                new_col.extend(other_col.as_ref());
             }
-            new_columns.insert(name.clone(), new_col);
+            new_columns.insert(name.clone(), Arc::new(new_col));
         }
         Self {
             schema: self.schema.clone(),
@@ -604,7 +628,7 @@ impl TableSchemaOps for Table {
         for _ in 0..self.row_count {
             col.push(default_val.clone())?;
         }
-        self.columns.insert(field.name.clone(), col);
+        self.columns.insert(field.name.clone(), Arc::new(col));
         let mut fields: Vec<_> = self.schema.fields().to_vec();
         fields.push(field);
         self.schema = Schema::from_fields(fields);

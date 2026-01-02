@@ -132,7 +132,11 @@ impl<'a> PlanExecutor<'a> {
 
         let source_table = self.execute_plan(source)?;
         let source_n = source_table.row_count();
-        let source_columns: Vec<&Column> = source_table.columns().iter().map(|(_, c)| c).collect();
+        let source_columns: Vec<&Column> = source_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let target = self
             .catalog

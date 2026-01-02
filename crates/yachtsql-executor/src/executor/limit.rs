@@ -228,7 +228,11 @@ impl<'a> PlanExecutor<'a> {
             return Ok(Table::empty(schema));
         }
 
-        let columns: Vec<_> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<_> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         let evaluator = ValueEvaluator::new(&schema);
 
         let mut sort_key_columns: Vec<Vec<Value>> = (0..sort_exprs.len())

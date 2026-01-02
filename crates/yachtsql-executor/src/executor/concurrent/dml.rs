@@ -147,7 +147,11 @@ impl ConcurrentPlanExecutor {
         let source_table = self.execute_plan(source).await?;
 
         let source_n = source_table.row_count();
-        let source_cols: Vec<&Column> = source_table.columns().iter().map(|(_, c)| c).collect();
+        let source_cols: Vec<&Column> = source_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let mut rows_to_insert = Vec::new();
         for row_idx in 0..source_n {
@@ -262,13 +266,18 @@ impl ConcurrentPlanExecutor {
                 }
 
                 let target_n = table.row_count();
-                let target_cols: Vec<&Column> = table.columns().iter().map(|(_, c)| c).collect();
+                let target_cols: Vec<&Column> =
+                    table.columns().iter().map(|(_, c)| c.as_ref()).collect();
                 let target_rows: Vec<Vec<Value>> = (0..target_n)
                     .map(|i| target_cols.iter().map(|c| c.get_value(i)).collect())
                     .collect();
 
                 let from_n = from_data.row_count();
-                let from_cols: Vec<&Column> = from_data.columns().iter().map(|(_, c)| c).collect();
+                let from_cols: Vec<&Column> = from_data
+                    .columns()
+                    .iter()
+                    .map(|(_, c)| c.as_ref())
+                    .collect();
                 let from_rows: Vec<Vec<Value>> = (0..from_n)
                     .map(|i| from_cols.iter().map(|c| c.get_value(i)).collect())
                     .collect();
@@ -368,7 +377,8 @@ impl ConcurrentPlanExecutor {
             }
             None => {
                 let table_n = table.row_count();
-                let table_cols: Vec<&Column> = table.columns().iter().map(|(_, c)| c).collect();
+                let table_cols: Vec<&Column> =
+                    table.columns().iter().map(|(_, c)| c.as_ref()).collect();
 
                 if filter_has_subquery || assignments_have_subquery {
                     for row_idx in 0..table_n {
@@ -546,7 +556,7 @@ impl ConcurrentPlanExecutor {
 
         let mut new_table = Table::empty(base_schema.clone());
         let table_n = table.row_count();
-        let table_cols: Vec<&Column> = table.columns().iter().map(|(_, c)| c).collect();
+        let table_cols: Vec<&Column> = table.columns().iter().map(|(_, c)| c.as_ref()).collect();
 
         if has_subquery {
             for row_idx in 0..table_n {
@@ -622,7 +632,11 @@ impl ConcurrentPlanExecutor {
         let source_table = self.execute_plan(source).await?;
         let source_schema = source_table.schema().clone();
         let source_n = source_table.row_count();
-        let source_cols: Vec<&Column> = source_table.columns().iter().map(|(_, c)| c).collect();
+        let source_cols: Vec<&Column> = source_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         let source_rows: Vec<Record> = (0..source_n)
             .map(|i| Record::from_values(source_cols.iter().map(|c| c.get_value(i)).collect()))
             .collect();
@@ -633,7 +647,7 @@ impl ConcurrentPlanExecutor {
             .ok_or_else(|| Error::TableNotFound(target_table.to_string()))?;
         let target_schema = target.schema().clone();
         let target_n = target.row_count();
-        let target_cols: Vec<&Column> = target.columns().iter().map(|(_, c)| c).collect();
+        let target_cols: Vec<&Column> = target.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let target_rows: Vec<Record> = (0..target_n)
             .map(|i| Record::from_values(target_cols.iter().map(|c| c.get_value(i)).collect()))
             .collect();

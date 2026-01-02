@@ -40,7 +40,11 @@ pub(crate) fn compute_aggregate(
     let mut result = Table::empty(result_schema);
 
     let n = input_table.row_count();
-    let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+    let columns: Vec<&Column> = input_table
+        .columns()
+        .iter()
+        .map(|(_, c)| c.as_ref())
+        .collect();
 
     if group_by.is_empty() {
         let mut accumulators: Vec<Accumulator> =
@@ -513,7 +517,11 @@ impl<'a> PlanExecutor<'a> {
         let input_schema = input_table.schema().clone();
         let evaluator = ValueEvaluator::new(&input_schema);
         let n = input_table.row_count();
-        let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let result_schema = plan_schema_to_schema(schema);
         let mut result = Table::empty(result_schema);

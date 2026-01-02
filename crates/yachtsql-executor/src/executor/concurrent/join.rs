@@ -63,8 +63,16 @@ impl ConcurrentPlanExecutor {
         let mut result = Table::empty(result_schema.clone());
         let left_n = left_table.row_count();
         let right_n = right_table.row_count();
-        let left_columns: Vec<&Column> = left_table.columns().iter().map(|(_, c)| c).collect();
-        let right_columns: Vec<&Column> = right_table.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<&Column> = left_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
+        let right_columns: Vec<&Column> = right_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         let left_width = left_schema.field_count();
         let right_width = right_schema.field_count();
 
@@ -250,7 +258,11 @@ impl ConcurrentPlanExecutor {
         match join_type {
             JoinType::Inner => {
                 let left_n = left_table.row_count();
-                let left_cols: Vec<&Column> = left_table.columns().iter().map(|(_, c)| c).collect();
+                let left_cols: Vec<&Column> = left_table
+                    .columns()
+                    .iter()
+                    .map(|(_, c)| c.as_ref())
+                    .collect();
                 let left_rows: Vec<Record> = (0..left_n)
                     .map(|i| {
                         Record::from_values(left_cols.iter().map(|c| c.get_value(i)).collect())
@@ -258,8 +270,11 @@ impl ConcurrentPlanExecutor {
                     .collect();
 
                 let right_n = right_table.row_count();
-                let right_cols: Vec<&Column> =
-                    right_table.columns().iter().map(|(_, c)| c).collect();
+                let right_cols: Vec<&Column> = right_table
+                    .columns()
+                    .iter()
+                    .map(|(_, c)| c.as_ref())
+                    .collect();
                 let right_rows: Vec<Record> = (0..right_n)
                     .map(|i| {
                         Record::from_values(right_cols.iter().map(|c| c.get_value(i)).collect())

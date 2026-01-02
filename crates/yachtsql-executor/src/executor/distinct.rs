@@ -18,7 +18,11 @@ impl<'a> PlanExecutor<'a> {
             return Ok(input_table);
         }
 
-        let columns: Vec<_> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<_> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         let mut seen: HashSet<Vec<ValueKey>> = HashSet::new();
         let mut unique_indices = Vec::new();
 

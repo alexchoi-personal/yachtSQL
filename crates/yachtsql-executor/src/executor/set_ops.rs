@@ -44,7 +44,7 @@ impl<'a> PlanExecutor<'a> {
             return Ok(table.clone());
         }
 
-        let columns: Vec<_> = table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<_> = table.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let mut seen: HashSet<Vec<RowKey>> = HashSet::new();
         let mut unique_indices = Vec::new();
 
@@ -75,8 +75,16 @@ impl<'a> PlanExecutor<'a> {
 
         let _result_schema = plan_schema_to_schema(schema);
 
-        let left_columns: Vec<_> = left_table.columns().iter().map(|(_, c)| c).collect();
-        let right_columns: Vec<_> = right_table.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<_> = left_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
+        let right_columns: Vec<_> = right_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         if all {
             let mut right_counts: HashMap<Vec<RowKey>, usize> = HashMap::new();
@@ -143,8 +151,16 @@ impl<'a> PlanExecutor<'a> {
 
         let _result_schema = plan_schema_to_schema(schema);
 
-        let left_columns: Vec<_> = left_table.columns().iter().map(|(_, c)| c).collect();
-        let right_columns: Vec<_> = right_table.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<_> = left_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
+        let right_columns: Vec<_> = right_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         if all {
             let mut right_counts: HashMap<Vec<RowKey>, usize> = HashMap::new();

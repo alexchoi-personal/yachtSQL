@@ -54,7 +54,7 @@ impl<'a> PlanExecutor<'a> {
                 result.schema().clone()
             };
             let n = result.row_count();
-            let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c.as_ref()).collect();
             let values: Vec<Vec<Value>> = (0..n)
                 .map(|row_idx| columns.iter().map(|c| c.get_value(row_idx)).collect())
                 .collect();

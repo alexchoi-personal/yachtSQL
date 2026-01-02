@@ -471,7 +471,7 @@ impl<'a> ColumnarEvaluator<'a> {
         let upper_name = name.to_uppercase();
         for (col_name, col) in input.columns().iter() {
             if col_name.to_uppercase() == upper_name {
-                return Ok(col.clone());
+                return Ok(col.as_ref().clone());
             }
         }
 

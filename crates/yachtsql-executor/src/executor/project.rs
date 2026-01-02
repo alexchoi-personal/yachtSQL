@@ -62,7 +62,11 @@ impl<'a> PlanExecutor<'a> {
         let mut result = Table::empty(result_schema);
 
         let n = input_table.row_count();
-        let columns: Vec<_> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<_> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         for row_idx in 0..n {
             let record = get_record_from_columns(&columns, row_idx);
@@ -238,7 +242,11 @@ impl<'a> PlanExecutor<'a> {
         let result_schema = result_table.schema();
         let num_fields = result_schema.field_count();
         let n = result_table.row_count();
-        let columns: Vec<_> = result_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<_> = result_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let mut array_values = Vec::new();
         for row_idx in 0..n {

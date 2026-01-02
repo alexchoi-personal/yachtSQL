@@ -157,7 +157,7 @@ impl ConcurrentPlanExecutor {
             }
         }
         let n = table.row_count();
-        let table_columns: Vec<&Column> = table.columns().iter().map(|(_, c)| c).collect();
+        let table_columns: Vec<&Column> = table.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let mut result = Table::empty(new_schema);
         for row_idx in 0..n {
             let row: Vec<Value> = table_columns.iter().map(|c| c.get_value(row_idx)).collect();
@@ -177,7 +177,7 @@ impl ConcurrentPlanExecutor {
             let anchor_plan = PhysicalPlan::from_physical(&physical);
             let result = self.execute_plan(&anchor_plan).await?;
             let n = result.row_count();
-            let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c.as_ref()).collect();
             for row_idx in 0..n {
                 let row: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
                 all_results.push(row);
@@ -213,7 +213,8 @@ impl ConcurrentPlanExecutor {
                 let rec_plan = PhysicalPlan::from_physical(&physical);
                 let result = self.execute_plan(&rec_plan).await?;
                 let n = result.row_count();
-                let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c).collect();
+                let columns: Vec<&Column> =
+                    result.columns().iter().map(|(_, c)| c.as_ref()).collect();
                 for row_idx in 0..n {
                     let row: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
                     new_rows.push(row);

@@ -38,7 +38,7 @@ impl<'a> PlanExecutor<'a> {
                 schema_with_source.add_field(new_field);
             }
 
-            let columns: Vec<_> = table.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<_> = table.columns().iter().map(|(_, c)| c.as_ref()).collect();
             let mut keep_indices = Vec::new();
 
             for i in 0..n {

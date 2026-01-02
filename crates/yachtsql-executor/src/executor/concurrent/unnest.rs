@@ -37,7 +37,11 @@ impl ConcurrentPlanExecutor {
         let mut result = Table::empty(result_schema);
 
         let n = input_table.row_count();
-        let input_columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let input_columns: Vec<&Column> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         if n == 0 && !columns.is_empty() {
             let empty_record = Record::new();
@@ -120,7 +124,11 @@ impl ConcurrentPlanExecutor {
             let mut result = Table::empty(schema.clone());
 
             let n = input_table.row_count();
-            let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<&Column> = input_table
+                .columns()
+                .iter()
+                .map(|(_, c)| c.as_ref())
+                .collect();
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
                 let record = Record::from_values(values.clone());
@@ -137,7 +145,7 @@ impl ConcurrentPlanExecutor {
     async fn execute_qualify_with_window(&self, input: &Table, predicate: &Expr) -> Result<Table> {
         let schema = input.schema().clone();
         let n = input.row_count();
-        let columns: Vec<&Column> = input.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = input.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let vars = self.get_variables();
         let sys_vars = self.get_system_variables();
         let udf = self.get_user_functions();

@@ -180,7 +180,11 @@ impl ConcurrentPlanExecutor {
 
         let schema = result_table.schema();
         let fields = schema.fields();
-        let columns: Vec<&Column> = result_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = result_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let result: Vec<(String, Value)> = fields
             .iter()
@@ -218,7 +222,11 @@ impl ConcurrentPlanExecutor {
         let result_schema = result_table.schema();
         let num_fields = result_schema.field_count();
         let n = result_table.row_count();
-        let columns: Vec<&Column> = result_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = result_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let mut array_values = Vec::with_capacity(n);
         for row_idx in 0..n {
