@@ -1,9 +1,8 @@
 target/
+Cargo.lock
 CLAUDE.md
 **/*.rs.bk
-vendor/*
-!vendor/yachtsql-sqlparser/
-!vendor/yachtsql-sqlparser-derive/
+vendor/
 .claude/
 logs/.clade.out.txt
 .commit_description.txt
