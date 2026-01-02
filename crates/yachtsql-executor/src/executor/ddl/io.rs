@@ -44,7 +44,11 @@ impl<'a> PlanExecutor<'a> {
         }
 
         let path = if options.uri.starts_with("file://") {
-            options.uri.strip_prefix("file://").unwrap().to_string()
+            options
+                .uri
+                .strip_prefix("file://")
+                .unwrap_or(&options.uri)
+                .to_string()
         } else {
             options.uri.replace('*', "data")
         };
@@ -96,7 +100,7 @@ impl<'a> PlanExecutor<'a> {
         let schema = data.schema();
         let n = data.row_count();
         let columns: Vec<_> = (0..data.num_columns())
-            .map(|i| data.column(i).unwrap())
+            .filter_map(|i| data.column(i))
             .collect();
 
         let mut file = File::create(path)
@@ -121,7 +125,7 @@ impl<'a> PlanExecutor<'a> {
         let schema = data.schema();
         let n = data.row_count();
         let columns: Vec<_> = (0..data.num_columns())
-            .map(|i| data.column(i).unwrap())
+            .filter_map(|i| data.column(i))
             .collect();
         let delimiter = options
             .field_delimiter
@@ -516,15 +520,22 @@ impl<'a> PlanExecutor<'a> {
 
         for uri in &options.uris {
             let (path, is_cloud_uri) = if uri.starts_with("file://") {
-                (uri.strip_prefix("file://").unwrap().to_string(), false)
+                (
+                    uri.strip_prefix("file://").unwrap_or(uri).to_string(),
+                    false,
+                )
             } else if uri.starts_with("gs://") {
                 (
-                    uri.strip_prefix("gs://").unwrap().replace('*', "data"),
+                    uri.strip_prefix("gs://")
+                        .unwrap_or(uri)
+                        .replace('*', "data"),
                     true,
                 )
             } else if uri.starts_with("s3://") {
                 (
-                    uri.strip_prefix("s3://").unwrap().replace('*', "data"),
+                    uri.strip_prefix("s3://")
+                        .unwrap_or(uri)
+                        .replace('*', "data"),
                     true,
                 )
             } else {

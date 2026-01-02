@@ -125,7 +125,7 @@ impl ConcurrentPlanExecutor {
         let schema = data.schema();
         let n = data.row_count();
         let columns: Vec<_> = (0..data.num_columns())
-            .map(|i| data.column(i).unwrap())
+            .filter_map(|i| data.column(i))
             .collect();
         let delimiter = options
             .field_delimiter
@@ -334,7 +334,8 @@ impl ConcurrentPlanExecutor {
                     let mut builder = Date32Builder::with_capacity(num_rows);
                     match column {
                         Some(Column::Date { data, nulls }) => {
-                            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+                            let epoch =
+                                NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or(NaiveDate::MIN);
                             for (i, d) in data.iter().enumerate() {
                                 if nulls.is_null(i) {
                                     builder.append_null();
@@ -524,15 +525,22 @@ impl ConcurrentPlanExecutor {
 
         for uri in &options.uris {
             let (path, is_cloud_uri) = if uri.starts_with("file://") {
-                (uri.strip_prefix("file://").unwrap().to_string(), false)
+                (
+                    uri.strip_prefix("file://").unwrap_or(uri).to_string(),
+                    false,
+                )
             } else if uri.starts_with("gs://") {
                 (
-                    uri.strip_prefix("gs://").unwrap().replace('*', "data"),
+                    uri.strip_prefix("gs://")
+                        .unwrap_or(uri)
+                        .replace('*', "data"),
                     true,
                 )
             } else if uri.starts_with("s3://") {
                 (
-                    uri.strip_prefix("s3://").unwrap().replace('*', "data"),
+                    uri.strip_prefix("s3://")
+                        .unwrap_or(uri)
+                        .replace('*', "data"),
                     true,
                 )
             } else {
