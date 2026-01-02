@@ -1,0 +1,136 @@
+[package]
+name = "yachtsql"
+version = "0.1.4"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "YachtSQL - Lightweight in-memory SQL test database with columnar storage for rust programs"
+repository = "https://github.com/alexchoi0/yachtsql"
+homepage = "https://github.com/alexchoi0/yachtsql"
+documentation = "https://docs.rs/yachtsql"
+keywords = ["sql", "database", "bigquery", "test", "columnar"]
+categories = ["database"]
+
+[dependencies]
+# Internal crates
+yachtsql-common = { version = "0.1.4", path = "crates/yachtsql-common" }
+yachtsql-storage = { version = "0.1.4", path = "crates/yachtsql-storage" }
+yachtsql-ir = { version = "0.1.4", path = "crates/yachtsql-ir" }
+yachtsql-optimizer = { version = "0.1.4", path = "crates/yachtsql-optimizer" }
+yachtsql-parser = { version = "0.1.4", path = "crates/yachtsql-parser" }
+yachtsql-functions = { version = "0.1.4", path = "crates/yachtsql-functions" }
+yachtsql-executor = { version = "0.1.4", path = "crates/yachtsql-executor" }
+
+sentry = "0.45.0"
+
+# SQL parsing (BigQuery scripting support)
+yachtsql-sqlparser = { path = "crates/yachtsql-sqlparser", features = ["visitor"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_json_path = "0.7"
+toml = "0.8"
+
+# Utilities
+itertools = "0.13"
+indexmap = { version = "2.12", features = ["serde"] }
+hashbrown = "0.15"
+ordered-float = "4.5"
+natord = "1.0"
+log = "0.4"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Regular expressions
+regex = "1.11"
+
+# Random number generation
+rand = "0.8"
+
+# Decimal arithmetic for NUMERIC/DECIMAL types
+rust_decimal = { version = "1.36", features = ["serde"] }
+
+# UUID support
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Unicode normalization for collations
+unicode-normalization = "0.1"
+
+# SIMD alignment
+aligned-vec = "0.6"
+
+# Bloom filter
+bloomfilter = "3.0"
+
+# Fast non-cryptographic hash for probabilistic data structures
+ahash = "0.8"
+
+# Cryptographic hash functions
+md5 = "0.7"
+sha1 = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+
+# Non-cryptographic hash functions
+farmhash = "1.1"
+
+# Network operations
+ipnetwork = "0.20"
+url = "2.5"
+publicsuffix = "2.2"
+lazy_static = "1.5"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Geography/GIS support
+geo = "0.28"
+wkt = { version = "0.11", features = ["geo-types"] }
+geojson = { version = "0.24", features = ["geo-types"] }
+geohash = "0.13"
+
+
+[dev-dependencies]
+proptest = "1.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "time"] }
+pprof = { version = "0.14", features = ["flamegraph", "criterion"] }
+yachtsql-sqlparser = { path = "crates/yachtsql-sqlparser", features = ["visitor"] }
+arrow = { version = "54", default-features = false }
+parquet = { version = "54", default-features = false, features = ["arrow"] }
+tempfile = "3.14"
+yachtsql-test-utils = { version = "0.1.4", path = "crates/yachtsql-test-utils" }
+
+# Linting configuration
+# Run with: cargo clippy -- -D warnings
+[lints.clippy]
+# Enum-specific lints to enforce best practices
+large-enum-variant = "warn"          # Alert when variant is >200 bytes larger than median
+enum-variant-names = "warn"          # Enforce consistent enum variant naming
+wildcard-enum-match-arm = "warn"     # Discourage wildcards in match (prefer exhaustive)
+
+# Note: missing-docs is a rustc lint, not clippy, so configure separately if needed
+
+[workspace]
+members = [
+    ".",
+    "crates/yachtsql-cli",
+    "crates/yachtsql-common",
+    "crates/yachtsql-executor",
+    "crates/yachtsql-functions",
+    "crates/yachtsql-ir",
+    "crates/yachtsql-optimizer",
+    "crates/yachtsql-parser",
+    "crates/yachtsql-sqlparser",
+    "crates/yachtsql-sqlparser-derive",
+    "crates/yachtsql-storage",
+    "crates/yachtsql-test-utils",
+]
+resolver = "2"
+
+[[bench]]
+name = "optimizer_bench"
+harness = false
+

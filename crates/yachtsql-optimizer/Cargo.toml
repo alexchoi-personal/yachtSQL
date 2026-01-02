@@ -1,0 +1,19 @@
+[package]
+name = "yachtsql-optimizer"
+version = "0.1.4"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "YachtSQL query optimizer - transforms LogicalPlan to PhysicalPlan"
+repository = "https://github.com/alexchoi0/yachtsql"
+homepage = "https://github.com/alexchoi0/yachtsql"
+documentation = "https://docs.rs/yachtsql-optimizer"
+keywords = ["sql", "database", "bigquery", "optimizer"]
+categories = ["database"]
+
+[dependencies]
+yachtsql-common = { version = "0.1.4", path = "../yachtsql-common" }
+yachtsql-ir = { version = "0.1.4", path = "../yachtsql-ir" }
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }

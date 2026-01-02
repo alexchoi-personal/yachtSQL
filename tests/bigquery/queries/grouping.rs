@@ -1,0 +1,511 @@
+use crate::assert_table_eq;
+use crate::common::create_session;
+
+async fn setup_sales_table(session: &yachtsql::YachtSQLSession) {
+    session
+        .execute_sql("CREATE TABLE sales (product STRING, region STRING, year INT64, amount INT64)")
+        .await
+        .unwrap();
+    session
+        .execute_sql("INSERT INTO sales VALUES ('Widget', 'East', 2023, 100), ('Widget', 'East', 2024, 150), ('Widget', 'West', 2023, 120), ('Widget', 'West', 2024, 180), ('Gadget', 'East', 2023, 80), ('Gadget', 'East', 2024, 90), ('Gadget', 'West', 2023, 70), ('Gadget', 'West', 2024, 110)").await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_rollup_single_column() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, SUM(amount) AS total FROM sales GROUP BY ROLLUP(product) ORDER BY product NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(result, [["Gadget", 350], ["Widget", 550], [null, 900],]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_rollup_multiple_columns() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total FROM sales GROUP BY ROLLUP(product, region) ORDER BY product NULLS LAST, region NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 170],
+            ["Gadget", "West", 180],
+            ["Gadget", null, 350],
+            ["Widget", "East", 250],
+            ["Widget", "West", 300],
+            ["Widget", null, 550],
+            [null, null, 900],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_rollup_three_columns() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, year, SUM(amount) AS total FROM sales GROUP BY ROLLUP(product, region, year) ORDER BY product NULLS LAST, region NULLS LAST, year NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 2023, 80],
+            ["Gadget", "East", 2024, 90],
+            ["Gadget", "East", null, 170],
+            ["Gadget", "West", 2023, 70],
+            ["Gadget", "West", 2024, 110],
+            ["Gadget", "West", null, 180],
+            ["Gadget", null, null, 350],
+            ["Widget", "East", 2023, 100],
+            ["Widget", "East", 2024, 150],
+            ["Widget", "East", null, 250],
+            ["Widget", "West", 2023, 120],
+            ["Widget", "West", 2024, 180],
+            ["Widget", "West", null, 300],
+            ["Widget", null, null, 550],
+            [null, null, null, 900],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_cube_single_column() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, SUM(amount) AS total FROM sales GROUP BY CUBE(product) ORDER BY product NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(result, [["Gadget", 350], ["Widget", 550], [null, 900],]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_cube_two_columns() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total FROM sales GROUP BY CUBE(product, region) ORDER BY product NULLS LAST, region NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 170],
+            ["Gadget", "West", 180],
+            ["Gadget", null, 350],
+            ["Widget", "East", 250],
+            ["Widget", "West", 300],
+            ["Widget", null, 550],
+            [null, "East", 420],
+            [null, "West", 480],
+            [null, null, 900],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_cube_three_columns() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT COUNT(*) FROM (SELECT product, region, year, SUM(amount) AS total FROM sales GROUP BY CUBE(product, region, year)) AS sub").await
+        .unwrap();
+    assert_table_eq!(result, [[27]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_grouping_sets_basic() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total FROM sales GROUP BY GROUPING SETS ((product), (region)) ORDER BY product NULLS LAST, region NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", null, 350],
+            ["Widget", null, 550],
+            [null, "East", 420],
+            [null, "West", 480],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_grouping_sets_with_empty() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total FROM sales GROUP BY GROUPING SETS ((product), (region), ()) ORDER BY product NULLS LAST, region NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", null, 350],
+            ["Widget", null, 550],
+            [null, "East", 420],
+            [null, "West", 480],
+            [null, null, 900],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_grouping_sets_multiple_columns() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total FROM sales GROUP BY GROUPING SETS ((product, region), (product)) ORDER BY product NULLS LAST, region NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 170],
+            ["Gadget", "West", 180],
+            ["Gadget", null, 350],
+            ["Widget", "East", 250],
+            ["Widget", "West", 300],
+            ["Widget", null, 550],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_grouping_function() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total, GROUPING(product) AS gp, GROUPING(region) AS gr FROM sales GROUP BY ROLLUP(product, region) ORDER BY product NULLS LAST, region NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 170, 0, 0],
+            ["Gadget", "West", 180, 0, 0],
+            ["Gadget", null, 350, 0, 1],
+            ["Widget", "East", 250, 0, 0],
+            ["Widget", "West", 300, 0, 0],
+            ["Widget", null, 550, 0, 1],
+            [null, null, 900, 1, 1],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_grouping_id() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total, GROUPING_ID(product, region) AS gid FROM sales GROUP BY CUBE(product, region) ORDER BY gid, product, region").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 170, 0],
+            ["Gadget", "West", 180, 0],
+            ["Widget", "East", 250, 0],
+            ["Widget", "West", 300, 0],
+            ["Gadget", null, 350, 1],
+            ["Widget", null, 550, 1],
+            [null, "East", 420, 2],
+            [null, "West", 480, 2],
+            [null, null, 900, 3],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_rollup_with_having() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, SUM(amount) AS total FROM sales GROUP BY ROLLUP(product) HAVING SUM(amount) > 500 ORDER BY product NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(result, [["Widget", 550], [null, 900],]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_cube_with_where() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total FROM sales WHERE year = 2024 GROUP BY CUBE(product, region) ORDER BY product NULLS LAST, region NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 90],
+            ["Gadget", "West", 110],
+            ["Gadget", null, 200],
+            ["Widget", "East", 150],
+            ["Widget", "West", 180],
+            ["Widget", null, 330],
+            [null, "East", 240],
+            [null, "West", 290],
+            [null, null, 530],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_rollup_multiple_aggregates() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total, COUNT(*) AS cnt, AVG(amount) AS avg_amt FROM sales GROUP BY ROLLUP(product, region) ORDER BY product NULLS LAST, region NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 170, 2, 85.0],
+            ["Gadget", "West", 180, 2, 90.0],
+            ["Gadget", null, 350, 4, 87.5],
+            ["Widget", "East", 250, 2, 125.0],
+            ["Widget", "West", 300, 2, 150.0],
+            ["Widget", null, 550, 4, 137.5],
+            [null, null, 900, 8, 112.5],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_partial_rollup() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, year, SUM(amount) AS total FROM sales GROUP BY product, ROLLUP(region, year) ORDER BY product, region NULLS LAST, year NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 2023, 80],
+            ["Gadget", "East", 2024, 90],
+            ["Gadget", "East", null, 170],
+            ["Gadget", "West", 2023, 70],
+            ["Gadget", "West", 2024, 110],
+            ["Gadget", "West", null, 180],
+            ["Gadget", null, null, 350],
+            ["Widget", "East", 2023, 100],
+            ["Widget", "East", 2024, 150],
+            ["Widget", "East", null, 250],
+            ["Widget", "West", 2023, 120],
+            ["Widget", "West", 2024, 180],
+            ["Widget", "West", null, 300],
+            ["Widget", null, null, 550],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_partial_cube() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, year, SUM(amount) AS total FROM sales GROUP BY product, CUBE(region, year) ORDER BY product, region NULLS LAST, year NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 2023, 80],
+            ["Gadget", "East", 2024, 90],
+            ["Gadget", "East", null, 170],
+            ["Gadget", "West", 2023, 70],
+            ["Gadget", "West", 2024, 110],
+            ["Gadget", "West", null, 180],
+            ["Gadget", null, 2023, 150],
+            ["Gadget", null, 2024, 200],
+            ["Gadget", null, null, 350],
+            ["Widget", "East", 2023, 100],
+            ["Widget", "East", 2024, 150],
+            ["Widget", "East", null, 250],
+            ["Widget", "West", 2023, 120],
+            ["Widget", "West", 2024, 180],
+            ["Widget", "West", null, 300],
+            ["Widget", null, 2023, 220],
+            ["Widget", null, 2024, 330],
+            ["Widget", null, null, 550],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_mixed_grouping() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, year, SUM(amount) AS total FROM sales GROUP BY GROUPING SETS (ROLLUP(product, region), (year)) ORDER BY product NULLS LAST, region NULLS LAST, year NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", null, 170],
+            ["Gadget", "West", null, 180],
+            ["Gadget", null, null, 350],
+            ["Widget", "East", null, 250],
+            ["Widget", "West", null, 300],
+            ["Widget", null, null, 550],
+            [null, null, 2023, 370],
+            [null, null, 2024, 530],
+            [null, null, null, 900],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_grouping_with_order_by_aggregate() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total FROM sales GROUP BY CUBE(product, region) ORDER BY total DESC").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            [null, null, 900],
+            ["Widget", null, 550],
+            [null, "West", 480],
+            [null, "East", 420],
+            ["Gadget", null, 350],
+            ["Widget", "West", 300],
+            ["Widget", "East", 250],
+            ["Gadget", "West", 180],
+            ["Gadget", "East", 170],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_grouping_case_expression() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT CASE WHEN GROUPING(product) = 1 THEN 'All Products' ELSE product END AS product_label, SUM(amount) AS total FROM sales GROUP BY ROLLUP(product) ORDER BY product_label").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["All Products", 900.0],
+            ["Gadget", 350.0],
+            ["Widget", 550.0],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_having_with_unary_not() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, COUNT(*) AS cnt FROM sales GROUP BY product HAVING NOT COUNT(*) < 3 ORDER BY product").await
+        .unwrap();
+    assert_table_eq!(result, [["Gadget", 4], ["Widget", 4],]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_having_with_nested_expr() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, SUM(amount) AS total FROM sales GROUP BY product HAVING (SUM(amount) > 400) ORDER BY product").await
+        .unwrap();
+    assert_table_eq!(result, [["Widget", 550],]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_grouping_sets_with_cube() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, region, SUM(amount) AS total FROM sales GROUP BY GROUPING SETS (CUBE(product, region)) ORDER BY product NULLS LAST, region NULLS LAST").await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [
+            ["Gadget", "East", 170],
+            ["Gadget", "West", 180],
+            ["Gadget", null, 350],
+            ["Widget", "East", 250],
+            ["Widget", "West", 300],
+            ["Widget", null, 550],
+            [null, "East", 420],
+            [null, "West", 480],
+            [null, null, 900],
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_order_by_binary_aggregate_expr() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql("SELECT product, SUM(amount) AS total, AVG(amount) AS avg_amt FROM sales GROUP BY product ORDER BY total + avg_amt").await
+        .unwrap();
+    assert_table_eq!(result, [["Gadget", 350, 87.5], ["Widget", 550, 137.5],]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_order_by_cast_aggregate() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql(
+            "SELECT product, SUM(amount) AS total FROM sales GROUP BY product ORDER BY total",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["Gadget", 350], ["Widget", 550],]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_order_by_negated_aggregate() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql(
+            "SELECT product, SUM(amount) AS total FROM sales GROUP BY product ORDER BY -total",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["Widget", 550], ["Gadget", 350],]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_order_by_nested_aggregate() {
+    let session = create_session();
+    setup_sales_table(&session).await;
+
+    let result = session
+        .execute_sql(
+            "SELECT product, SUM(amount) AS total FROM sales GROUP BY product ORDER BY (total)",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["Gadget", 350], ["Widget", 550],]);
+}

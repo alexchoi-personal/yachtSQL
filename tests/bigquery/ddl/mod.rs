@@ -1,0 +1,13 @@
+mod alter_table;
+mod create_table;
+mod dcl;
+mod ddl_edge_cases;
+mod drop_table;
+mod functions;
+mod io_operations;
+mod partitioning;
+mod schema;
+mod snapshots;
+mod table_schema;
+mod udf_substitution;
+mod views;

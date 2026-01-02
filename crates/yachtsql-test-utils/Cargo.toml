@@ -1,0 +1,18 @@
+[package]
+name = "yachtsql-test-utils"
+version = "0.1.4"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Test utilities for YachtSQL workspace crates"
+repository = "https://github.com/alexchoi0/yachtsql"
+homepage = "https://github.com/alexchoi0/yachtsql"
+documentation = "https://docs.rs/yachtsql-test-utils"
+keywords = ["sql", "database", "bigquery", "test"]
+categories = ["database", "development-tools::testing"]
+
+[dependencies]
+yachtsql = { version = "0.1.4", path = "../.." }
+yachtsql-common = { version = "0.1.4", path = "../yachtsql-common" }
+yachtsql-parser = { version = "0.1.4", path = "../yachtsql-parser" }
+yachtsql-storage = { version = "0.1.4", path = "../yachtsql-storage" }
+rust_decimal = "1.37"

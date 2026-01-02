@@ -1,0 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(clippy::unnecessary_unwrap)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::wildcard_enum_match_arm)]

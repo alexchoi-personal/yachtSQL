@@ -1,0 +1,413 @@
+#![coverage(off)]
+
+use indexmap::IndexMap;
+use yachtsql_common::error::Result;
+use yachtsql_common::types::Value;
+use yachtsql_ir::{BinaryOp, Expr, LogicalPlan, PlanSchema};
+use yachtsql_optimizer::optimize;
+use yachtsql_storage::{Column, Record, Schema, Table};
+
+use super::{PlanExecutor, plan_schema_to_schema};
+use crate::columnar_evaluator::ColumnarEvaluator;
+use crate::plan::PhysicalPlan;
+use crate::value_evaluator::{ValueEvaluator, cast_value};
+
+impl<'a> PlanExecutor<'a> {
+    pub(crate) fn execute_project(
+        &mut self,
+        input: &PhysicalPlan,
+        expressions: &[Expr],
+        schema: &PlanSchema,
+    ) -> Result<Table> {
+        let input_table = self.execute_plan(input)?;
+        let input_schema = input_table.schema().clone();
+
+        if expressions
+            .iter()
+            .any(Self::expr_contains_subquery_or_scalar_subquery)
+        {
+            self.execute_project_with_subqueries(&input_table, expressions, schema)
+        } else {
+            let evaluator = ColumnarEvaluator::new(&input_schema)
+                .with_variables(&self.variables)
+                .with_system_variables(self.session.system_variables())
+                .with_user_functions(&self.user_function_defs);
+            let result_schema = plan_schema_to_schema(schema);
+
+            let result_fields = result_schema.fields();
+            let mut columns: IndexMap<String, Column> = IndexMap::new();
+            for (i, expr) in expressions.iter().enumerate() {
+                let col = evaluator.evaluate(expr, &input_table)?;
+                let col_name = result_fields
+                    .get(i)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| format!("_col{}", i));
+                columns.insert(col_name, col);
+            }
+
+            Ok(Table::from_columns(result_schema, columns))
+        }
+    }
+
+    fn execute_project_with_subqueries(
+        &mut self,
+        input_table: &Table,
+        expressions: &[Expr],
+        schema: &PlanSchema,
+    ) -> Result<Table> {
+        use crate::executor::window::get_record_from_columns;
+
+        let input_schema = input_table.schema().clone();
+        let result_schema = plan_schema_to_schema(schema);
+        let mut result = Table::empty(result_schema);
+
+        let n = input_table.row_count();
+        let columns: Vec<_> = input_table.columns().iter().map(|(_, c)| c).collect();
+
+        for row_idx in 0..n {
+            let record = get_record_from_columns(&columns, row_idx);
+            let mut row = Vec::with_capacity(expressions.len());
+            for expr in expressions {
+                let val = self.eval_expr_with_subqueries(expr, &input_schema, &record)?;
+                row.push(val);
+            }
+            result.push_row(row)?;
+        }
+
+        Ok(result)
+    }
+
+    fn eval_expr_with_subqueries(
+        &mut self,
+        expr: &Expr,
+        schema: &Schema,
+        record: &Record,
+    ) -> Result<Value> {
+        match expr {
+            Expr::Subquery(plan) | Expr::ScalarSubquery(plan) => {
+                self.eval_scalar_subquery(plan, schema, record)
+            }
+            Expr::Exists { subquery, negated } => {
+                let has_rows = self.eval_exists_subquery(subquery, schema, record)?;
+                Ok(Value::Bool(if *negated { !has_rows } else { has_rows }))
+            }
+            Expr::ArraySubquery(plan) => self.eval_array_subquery(plan, schema, record),
+            Expr::InSubquery {
+                expr,
+                subquery,
+                negated,
+            } => {
+                let val = self.eval_expr_with_subqueries(expr, schema, record)?;
+                let in_result = self.eval_value_in_subquery(&val, subquery, schema, record)?;
+                Ok(Value::Bool(if *negated { !in_result } else { in_result }))
+            }
+            Expr::InUnnest {
+                expr,
+                array_expr,
+                negated,
+            } => {
+                let val = self.eval_expr_with_subqueries(expr, schema, record)?;
+                let array_val = self.eval_expr_with_subqueries(array_expr, schema, record)?;
+                let in_result = if let Value::Array(arr) = array_val {
+                    arr.contains(&val)
+                } else {
+                    false
+                };
+                Ok(Value::Bool(if *negated { !in_result } else { in_result }))
+            }
+            Expr::BinaryOp { left, op, right } => {
+                let left_val = self.eval_expr_with_subqueries(left, schema, record)?;
+                let right_val = self.eval_expr_with_subqueries(right, schema, record)?;
+                self.eval_binary_op_values(left_val, *op, right_val)
+            }
+            Expr::UnaryOp { op, expr: inner } => {
+                let val = self.eval_expr_with_subqueries(inner, schema, record)?;
+                self.eval_unary_op_value(*op, val)
+            }
+            Expr::ScalarFunction { name, args } => {
+                let arg_vals: Vec<Value> = args
+                    .iter()
+                    .map(|a| self.eval_expr_with_subqueries(a, schema, record))
+                    .collect::<Result<_>>()?;
+                let evaluator = ValueEvaluator::new(schema)
+                    .with_variables(&self.variables)
+                    .with_system_variables(self.session.system_variables())
+                    .with_user_functions(&self.user_function_defs);
+                evaluator.eval_scalar_function_with_values(name, &arg_vals)
+            }
+            Expr::Cast {
+                expr: inner,
+                data_type,
+                safe,
+            } => {
+                let val = self.eval_expr_with_subqueries(inner, schema, record)?;
+                cast_value(val, data_type, *safe)
+            }
+            Expr::Case {
+                operand,
+                when_clauses,
+                else_result,
+            } => {
+                let operand_val = operand
+                    .as_ref()
+                    .map(|e| self.eval_expr_with_subqueries(e, schema, record))
+                    .transpose()?;
+
+                for clause in when_clauses {
+                    let condition_val = if let Some(op_val) = &operand_val {
+                        let cond_val =
+                            self.eval_expr_with_subqueries(&clause.condition, schema, record)?;
+                        Value::Bool(op_val == &cond_val)
+                    } else {
+                        self.eval_expr_with_subqueries(&clause.condition, schema, record)?
+                    };
+
+                    if matches!(condition_val, Value::Bool(true)) {
+                        return self.eval_expr_with_subqueries(&clause.result, schema, record);
+                    }
+                }
+
+                if let Some(else_expr) = else_result {
+                    self.eval_expr_with_subqueries(else_expr, schema, record)
+                } else {
+                    Ok(Value::Null)
+                }
+            }
+            Expr::Alias { expr: inner, .. } => {
+                self.eval_expr_with_subqueries(inner, schema, record)
+            }
+            _ => {
+                let evaluator = ValueEvaluator::new(schema)
+                    .with_variables(&self.variables)
+                    .with_system_variables(self.session.system_variables())
+                    .with_user_functions(&self.user_function_defs);
+                evaluator.evaluate(expr, record)
+            }
+        }
+    }
+
+    fn eval_scalar_subquery(
+        &mut self,
+        plan: &LogicalPlan,
+        outer_schema: &Schema,
+        outer_record: &Record,
+    ) -> Result<Value> {
+        let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
+        let physical = optimize(&substituted)?;
+        let executor_plan = PhysicalPlan::from_physical(&physical);
+        let result_table = self.execute_plan(&executor_plan)?;
+
+        if result_table.is_empty() {
+            return Ok(Value::Null);
+        }
+
+        if result_table.row_count() == 0 || result_table.num_columns() == 0 {
+            return Ok(Value::Null);
+        }
+
+        let first_col = result_table.column(0).unwrap();
+        Ok(first_col.get_value(0))
+    }
+
+    fn eval_exists_subquery(
+        &mut self,
+        plan: &LogicalPlan,
+        outer_schema: &Schema,
+        outer_record: &Record,
+    ) -> Result<bool> {
+        let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
+        let physical = optimize(&substituted)?;
+        let executor_plan = PhysicalPlan::from_physical(&physical);
+        let result_table = self.execute_plan(&executor_plan)?;
+        Ok(!result_table.is_empty())
+    }
+
+    fn eval_array_subquery(
+        &mut self,
+        plan: &LogicalPlan,
+        outer_schema: &Schema,
+        outer_record: &Record,
+    ) -> Result<Value> {
+        let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
+        let physical = optimize(&substituted)?;
+        let executor_plan = PhysicalPlan::from_physical(&physical);
+        let result_table = self.execute_plan(&executor_plan)?;
+
+        let result_schema = result_table.schema();
+        let num_fields = result_schema.field_count();
+        let n = result_table.row_count();
+        let columns: Vec<_> = result_table.columns().iter().map(|(_, c)| c).collect();
+
+        let mut array_values = Vec::new();
+        for row_idx in 0..n {
+            if num_fields == 1 {
+                array_values.push(columns[0].get_value(row_idx));
+            } else {
+                let fields: Vec<(String, Value)> = result_schema
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| (f.name.clone(), columns[i].get_value(row_idx)))
+                    .collect();
+                array_values.push(Value::Struct(fields));
+            }
+        }
+
+        Ok(Value::Array(array_values))
+    }
+
+    fn eval_value_in_subquery(
+        &mut self,
+        value: &Value,
+        plan: &LogicalPlan,
+        outer_schema: &Schema,
+        outer_record: &Record,
+    ) -> Result<bool> {
+        if matches!(value, Value::Null) {
+            return Ok(false);
+        }
+
+        let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
+        let physical = optimize(&substituted)?;
+        let executor_plan = PhysicalPlan::from_physical(&physical);
+        let result_table = self.execute_plan(&executor_plan)?;
+
+        if result_table.num_columns() == 0 {
+            return Ok(false);
+        }
+        let first_col = result_table.column(0).unwrap();
+        for row_idx in 0..result_table.row_count() {
+            let val = first_col.get_value(row_idx);
+            if &val == value {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn eval_binary_op_values(&self, left: Value, op: BinaryOp, right: Value) -> Result<Value> {
+        use yachtsql_ir::BinaryOp::*;
+        match op {
+            Add => match (&left, &right) {
+                (Value::Int64(l), Value::Int64(r)) => Ok(Value::Int64(l + r)),
+                (Value::Float64(l), Value::Float64(r)) => Ok(Value::Float64(*l + *r)),
+                (Value::Int64(l), Value::Float64(r)) => {
+                    Ok(Value::Float64(ordered_float::OrderedFloat(*l as f64) + *r))
+                }
+                (Value::Float64(l), Value::Int64(r)) => {
+                    Ok(Value::Float64(*l + ordered_float::OrderedFloat(*r as f64)))
+                }
+                _ => Ok(Value::Null),
+            },
+            Sub => match (&left, &right) {
+                (Value::Int64(l), Value::Int64(r)) => Ok(Value::Int64(l - r)),
+                (Value::Float64(l), Value::Float64(r)) => Ok(Value::Float64(*l - *r)),
+                (Value::Int64(l), Value::Float64(r)) => {
+                    Ok(Value::Float64(ordered_float::OrderedFloat(*l as f64) - *r))
+                }
+                (Value::Float64(l), Value::Int64(r)) => {
+                    Ok(Value::Float64(*l - ordered_float::OrderedFloat(*r as f64)))
+                }
+                _ => Ok(Value::Null),
+            },
+            Mul => match (&left, &right) {
+                (Value::Int64(l), Value::Int64(r)) => Ok(Value::Int64(l * r)),
+                (Value::Float64(l), Value::Float64(r)) => Ok(Value::Float64(*l * *r)),
+                (Value::Int64(l), Value::Float64(r)) => {
+                    Ok(Value::Float64(ordered_float::OrderedFloat(*l as f64) * *r))
+                }
+                (Value::Float64(l), Value::Int64(r)) => {
+                    Ok(Value::Float64(*l * ordered_float::OrderedFloat(*r as f64)))
+                }
+                _ => Ok(Value::Null),
+            },
+            Div => match (&left, &right) {
+                (Value::Int64(l), Value::Int64(r)) if *r != 0 => Ok(Value::Float64(
+                    ordered_float::OrderedFloat(*l as f64 / *r as f64),
+                )),
+                (Value::Float64(l), Value::Float64(r)) if r.0 != 0.0 => Ok(Value::Float64(*l / *r)),
+                (Value::Int64(l), Value::Float64(r)) if r.0 != 0.0 => {
+                    Ok(Value::Float64(ordered_float::OrderedFloat(*l as f64) / *r))
+                }
+                (Value::Float64(l), Value::Int64(r)) if *r != 0 => {
+                    Ok(Value::Float64(*l / ordered_float::OrderedFloat(*r as f64)))
+                }
+                _ => Ok(Value::Null),
+            },
+            And => {
+                let l = left.as_bool().unwrap_or(false);
+                let r = right.as_bool().unwrap_or(false);
+                Ok(Value::Bool(l && r))
+            }
+            Or => {
+                let l = left.as_bool().unwrap_or(false);
+                let r = right.as_bool().unwrap_or(false);
+                Ok(Value::Bool(l || r))
+            }
+            Eq => Ok(Value::Bool(left == right)),
+            NotEq => Ok(Value::Bool(left != right)),
+            Lt => Ok(Value::Bool(left < right)),
+            LtEq => Ok(Value::Bool(left <= right)),
+            Gt => Ok(Value::Bool(left > right)),
+            GtEq => Ok(Value::Bool(left >= right)),
+            _ => Ok(Value::Null),
+        }
+    }
+
+    fn eval_unary_op_value(&self, op: yachtsql_ir::UnaryOp, val: Value) -> Result<Value> {
+        use yachtsql_ir::UnaryOp::*;
+        match op {
+            Not => Ok(Value::Bool(!val.as_bool().unwrap_or(false))),
+            Minus => match val {
+                Value::Int64(n) => Ok(Value::Int64(-n)),
+                Value::Float64(f) => Ok(Value::Float64(-f)),
+                _ => Ok(Value::Null),
+            },
+            Plus => Ok(val),
+            BitwiseNot => match val {
+                Value::Int64(n) => Ok(Value::Int64(!n)),
+                _ => Ok(Value::Null),
+            },
+        }
+    }
+
+    fn expr_contains_subquery_or_scalar_subquery(expr: &Expr) -> bool {
+        match expr {
+            Expr::Subquery(_)
+            | Expr::ScalarSubquery(_)
+            | Expr::ArraySubquery(_)
+            | Expr::Exists { .. }
+            | Expr::InSubquery { .. } => true,
+            Expr::InUnnest { array_expr, .. } => {
+                Self::expr_contains_subquery_or_scalar_subquery(array_expr)
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                Self::expr_contains_subquery_or_scalar_subquery(left)
+                    || Self::expr_contains_subquery_or_scalar_subquery(right)
+            }
+            Expr::UnaryOp { expr, .. } => Self::expr_contains_subquery_or_scalar_subquery(expr),
+            Expr::ScalarFunction { args, .. } => args
+                .iter()
+                .any(Self::expr_contains_subquery_or_scalar_subquery),
+            Expr::Cast { expr, .. } => Self::expr_contains_subquery_or_scalar_subquery(expr),
+            Expr::Case {
+                operand,
+                when_clauses,
+                else_result,
+            } => {
+                operand
+                    .as_ref()
+                    .is_some_and(|o| Self::expr_contains_subquery_or_scalar_subquery(o))
+                    || when_clauses.iter().any(|w| {
+                        Self::expr_contains_subquery_or_scalar_subquery(&w.condition)
+                            || Self::expr_contains_subquery_or_scalar_subquery(&w.result)
+                    })
+                    || else_result
+                        .as_ref()
+                        .is_some_and(|e| Self::expr_contains_subquery_or_scalar_subquery(e))
+            }
+            Expr::Alias { expr, .. } => Self::expr_contains_subquery_or_scalar_subquery(expr),
+            _ => false,
+        }
+    }
+}

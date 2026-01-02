@@ -1,0 +1,20 @@
+# Rustfmt configuration for YachtSQL
+#
+# This file specifies the formatting rules for the project.
+# Run `cargo fmt` to format all code according to these rules.
+
+edition = "2024"
+max_width = 100
+tab_spaces = 4
+newline_style = "Unix"
+use_small_heuristics = "Default"
+
+# Imports
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+
+# Other
+format_code_in_doc_comments = true
+format_macro_matchers = true
+format_strings = false

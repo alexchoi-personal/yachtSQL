@@ -1,0 +1,532 @@
+use crate::assert_table_eq;
+use crate::common::create_session;
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_geography_point() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_ASTEXT(ST_GEOGPOINT(-122.4194, 37.7749))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["POINT(-122.4194 37.7749)"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_geography_from_text() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_ASTEXT(ST_GEOGFROMTEXT('POINT(-122.4194 37.7749)'))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["POINT(-122.4194 37.7749)"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_geography_column() {
+    let session = create_session();
+    session
+        .execute_sql("CREATE TABLE locations (id INT64, name STRING, location GEOGRAPHY)")
+        .await
+        .unwrap();
+    session
+        .execute_sql(
+            "INSERT INTO locations VALUES (1, 'San Francisco', ST_GEOGPOINT(-122.4194, 37.7749))",
+        )
+        .await
+        .unwrap();
+
+    let result = session
+        .execute_sql("SELECT name FROM locations")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["San Francisco"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_geography_line() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_ASTEXT(ST_GEOGFROMTEXT('LINESTRING(-122.4194 37.7749, -118.2437 34.0522)'))",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [["LINESTRING(-122.4194 37.7749, -118.2437 34.0522)"]]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_geography_polygon() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_ASTEXT(ST_GEOGFROMTEXT('POLYGON((-122.5 37.5, -122.5 38.0, -122.0 38.0, -122.0 37.5, -122.5 37.5))'))",
+        ).await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [["POLYGON((-122.5 37.5, -122.5 38.0, -122.0 38.0, -122.0 37.5, -122.5 37.5))"]]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_distance() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ROUND(ST_DISTANCE(
+                ST_GEOGPOINT(-122.4194, 37.7749),
+                ST_GEOGPOINT(-118.2437, 34.0522)
+            ), 0)",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[559042.0]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_contains() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_CONTAINS(
+                ST_GEOGFROMTEXT('POLYGON((-123 37, -123 38, -121 38, -121 37, -123 37))'),
+                ST_GEOGPOINT(-122, 37.5)
+            )",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[true]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_within() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_WITHIN(
+                ST_GEOGPOINT(-122, 37.5),
+                ST_GEOGFROMTEXT('POLYGON((-123 37, -123 38, -121 38, -121 37, -123 37))')
+            )",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[true]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_intersects() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_INTERSECTS(
+                ST_GEOGFROMTEXT('LINESTRING(-122 37, -121 38)'),
+                ST_GEOGFROMTEXT('LINESTRING(-123 37.5, -120 37.5)')
+            )",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[true]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_covers() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_COVERS(
+                ST_GEOGFROMTEXT('POLYGON((-123 37, -123 38, -121 38, -121 37, -123 37))'),
+                ST_GEOGPOINT(-122, 37.5)
+            )",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[true]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_dwithin() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_DWITHIN(
+                ST_GEOGPOINT(-122.4194, 37.7749),
+                ST_GEOGPOINT(-122.4184, 37.7759),
+                1000
+            )",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[true]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_area() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ROUND(ST_AREA(ST_GEOGFROMTEXT('POLYGON((-122 37, -122 38, -121 38, -121 37, -122 37))')), 0)",
+        ).await
+        .unwrap();
+    assert_table_eq!(result, [[9813924697.0]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_length() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ROUND(ST_LENGTH(ST_GEOGFROMTEXT('LINESTRING(-122 37, -121 38)')), 0)")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[141903.0]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_perimeter() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ROUND(ST_PERIMETER(ST_GEOGFROMTEXT('POLYGON((-122 37, -122 38, -121 38, -121 37, -122 37))')), 0)",
+        ).await
+        .unwrap();
+    assert_table_eq!(result, [[398817.0]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_centroid() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_ASTEXT(ST_CENTROID(ST_GEOGFROMTEXT('POLYGON((-122 37, -122 38, -121 38, -121 37, -122 37))')))",
+        ).await
+        .unwrap();
+    assert_table_eq!(result, [["POINT(-121.5 37.5)"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_buffer() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_GEOMETRYTYPE(ST_BUFFER(ST_GEOGPOINT(-122.4194, 37.7749), 1000))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["Polygon"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_union() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_GEOMETRYTYPE(ST_UNION(
+                ST_GEOGFROMTEXT('POLYGON((-122 37, -122 38, -121 38, -121 37, -122 37))'),
+                ST_GEOGFROMTEXT('POLYGON((-121.5 37.5, -121.5 38.5, -120.5 38.5, -120.5 37.5, -121.5 37.5))')
+            ))",
+        ).await
+        .unwrap();
+    assert_table_eq!(result, [["MultiPolygon"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_intersection() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_GEOMETRYTYPE(ST_INTERSECTION(
+                ST_GEOGFROMTEXT('POLYGON((-122 37, -122 38, -121 38, -121 37, -122 37))'),
+                ST_GEOGFROMTEXT('POLYGON((-121.5 37.5, -121.5 38.5, -120.5 38.5, -120.5 37.5, -121.5 37.5))')
+            ))",
+        ).await
+        .unwrap();
+    assert_table_eq!(result, [["MultiPolygon"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_difference() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_GEOMETRYTYPE(ST_DIFFERENCE(
+                ST_GEOGFROMTEXT('POLYGON((-122 37, -122 38, -121 38, -121 37, -122 37))'),
+                ST_GEOGFROMTEXT('POLYGON((-121.5 37.5, -121.5 38.5, -120.5 38.5, -120.5 37.5, -121.5 37.5))')
+            ))",
+        ).await
+        .unwrap();
+    assert_table_eq!(result, [["MultiPolygon"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_x() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_X(ST_GEOGPOINT(-122.4194, 37.7749))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[-122.4194]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_y() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_Y(ST_GEOGPOINT(-122.4194, 37.7749))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[37.7749]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_astext() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_ASTEXT(ST_GEOGPOINT(-122.4194, 37.7749))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["POINT(-122.4194 37.7749)"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_asgeojson() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_ASGEOJSON(ST_GEOGPOINT(-122.4194, 37.7749))")
+        .await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [["{\"type\":\"Point\",\"coordinates\":[-122.4194,37.7749]}"]]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_asbinary() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT LENGTH(ST_ASBINARY(ST_GEOGPOINT(-122.4194, 37.7749)))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[24]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_geogfromgeojson() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_ASTEXT(ST_GEOGFROMGEOJSON('{\"type\": \"Point\", \"coordinates\": [-122.4194, 37.7749]}'))",
+        ).await
+        .unwrap();
+    assert_table_eq!(result, [["POINT(-122.4194 37.7749)"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_makeline() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_ASTEXT(ST_MAKELINE(ST_GEOGPOINT(-122, 37), ST_GEOGPOINT(-121, 38)))",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["LINESTRING(-122 37, -121 38)"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_makepolygon() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_ASTEXT(ST_MAKEPOLYGON(ST_GEOGFROMTEXT('LINESTRING(-122 37, -122 38, -121 38, -121 37, -122 37)')))",
+        ).await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [["POLYGON((-122 37, -122 38, -121 38, -121 37, -122 37))"]]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_numpoints() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_NUMPOINTS(ST_GEOGFROMTEXT('LINESTRING(-122 37, -121 38, -120 37)'))",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[3]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_dimension() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_DIMENSION(ST_GEOGPOINT(-122, 37))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[0]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_dimension_polygon() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_DIMENSION(ST_GEOGFROMTEXT('POLYGON((-122 37, -122 38, -121 38, -121 37, -122 37))'))",
+        ).await
+        .unwrap();
+    assert_table_eq!(result, [[2]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_iscollection() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_ISCOLLECTION(ST_GEOGPOINT(-122, 37))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[false]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_isempty() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_ISEMPTY(ST_GEOGPOINT(-122, 37))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [[false]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_geography_in_join() {
+    let session = create_session();
+    session
+        .execute_sql("CREATE TABLE cities (id INT64, name STRING, location GEOGRAPHY)")
+        .await
+        .unwrap();
+    session
+        .execute_sql("CREATE TABLE regions (id INT64, name STRING, boundary GEOGRAPHY)")
+        .await
+        .unwrap();
+    session
+        .execute_sql(
+            "INSERT INTO cities VALUES (1, 'San Francisco', ST_GEOGPOINT(-122.4194, 37.7749))",
+        )
+        .await
+        .unwrap();
+    session
+        .execute_sql(
+            "INSERT INTO regions VALUES (1, 'Bay Area', ST_GEOGFROMTEXT('POLYGON((-123 37, -123 38, -121 38, -121 37, -123 37))'))",
+        ).await
+        .unwrap();
+
+    let result = session
+        .execute_sql(
+            "SELECT c.name, r.name AS region
+            FROM cities c
+            JOIN regions r ON ST_CONTAINS(r.boundary, c.location)",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["San Francisco", "Bay Area"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_snaptogrid() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql("SELECT ST_ASTEXT(ST_SNAPTOGRID(ST_GEOGPOINT(-122.4194, 37.7749), 0.01))")
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["POINT(-122.42 37.77)"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_simplify() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_GEOMETRYTYPE(ST_SIMPLIFY(ST_GEOGFROMTEXT('LINESTRING(-122 37, -122.1 37.1, -122 37.2, -121.9 37.1, -122 37)'), 1000))",
+        ).await
+        .unwrap();
+    assert_table_eq!(result, [["LineString"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_convexhull() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_GEOMETRYTYPE(ST_CONVEXHULL(ST_GEOGFROMTEXT('MULTIPOINT(-122 37, -121 38, -120 37, -121 36)')))",
+        ).await
+        .unwrap();
+    assert_table_eq!(result, [["Polygon"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_closestpoint() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_GEOMETRYTYPE(ST_CLOSESTPOINT(
+                ST_GEOGFROMTEXT('LINESTRING(-122 37, -121 38)'),
+                ST_GEOGPOINT(-121.5, 37.2)
+            ))",
+        )
+        .await
+        .unwrap();
+    assert_table_eq!(result, [["Point"]]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_st_boundingbox() {
+    let session = create_session();
+
+    let result = session
+        .execute_sql(
+            "SELECT ST_ASTEXT(ST_BOUNDINGBOX(ST_GEOGFROMTEXT('POLYGON((-122 37, -122 38, -121 38, -121 37, -122 37))')))",
+        ).await
+        .unwrap();
+    assert_table_eq!(
+        result,
+        [["POLYGON((-122 37, -122 38, -121 38, -121 37, -122 37))"]]
+    );
+}
