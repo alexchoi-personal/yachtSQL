@@ -120,34 +120,27 @@ mod tests {
     fn test_plan_exists_with_planner() {
         let query = make_simple_query();
         let result = plan_exists(&query, false, Some(&mock_subquery_planner));
-        assert!(result.is_ok());
-        match result.unwrap() {
-            Expr::Exists { negated, .. } => {
-                assert!(!negated);
-            }
-            _ => panic!("Expected Expr::Exists"),
-        }
+        let Expr::Exists { negated, .. } = result.expect("plan_exists should succeed") else {
+            unreachable!("Expected Expr::Exists");
+        };
+        assert!(!negated);
     }
 
     #[test]
     fn test_plan_exists_negated_with_planner() {
         let query = make_simple_query();
         let result = plan_exists(&query, true, Some(&mock_subquery_planner));
-        assert!(result.is_ok());
-        match result.unwrap() {
-            Expr::Exists { negated, .. } => {
-                assert!(negated);
-            }
-            _ => panic!("Expected Expr::Exists"),
-        }
+        let Expr::Exists { negated, .. } = result.expect("plan_exists should succeed") else {
+            unreachable!("Expected Expr::Exists");
+        };
+        assert!(negated);
     }
 
     #[test]
     fn test_plan_exists_without_planner() {
         let query = make_simple_query();
         let result = plan_exists(&query, false, None);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.expect_err("plan_exists without planner should fail");
         assert!(
             err.to_string()
                 .contains("EXISTS subquery requires subquery planner context")
@@ -168,13 +161,11 @@ mod tests {
             &[],
             None,
         );
-        assert!(result.is_ok());
-        match result.unwrap() {
-            Expr::InSubquery { negated, .. } => {
-                assert!(!negated);
-            }
-            _ => panic!("Expected Expr::InSubquery"),
-        }
+        let Expr::InSubquery { negated, .. } = result.expect("plan_in_subquery should succeed")
+        else {
+            unreachable!("Expected Expr::InSubquery");
+        };
+        assert!(!negated);
     }
 
     #[test]
@@ -191,13 +182,11 @@ mod tests {
             &[],
             None,
         );
-        assert!(result.is_ok());
-        match result.unwrap() {
-            Expr::InSubquery { negated, .. } => {
-                assert!(negated);
-            }
-            _ => panic!("Expected Expr::InSubquery"),
-        }
+        let Expr::InSubquery { negated, .. } = result.expect("plan_in_subquery should succeed")
+        else {
+            unreachable!("Expected Expr::InSubquery");
+        };
+        assert!(negated);
     }
 
     #[test]
@@ -206,8 +195,7 @@ mod tests {
         let schema = PlanSchema::from_fields(vec![PlanField::new("x", DataType::Int64)]);
         let expr = ast::Expr::Identifier(ast::Ident::new("x"));
         let result = plan_in_subquery(&expr, &query, false, &schema, None, &[], None);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.expect_err("plan_in_subquery without planner should fail");
         assert!(
             err.to_string()
                 .contains("IN subquery requires subquery planner context")
@@ -218,19 +206,16 @@ mod tests {
     fn test_plan_scalar_subquery_with_planner() {
         let query = make_simple_query();
         let result = plan_scalar_subquery(&query, Some(&mock_subquery_planner));
-        assert!(result.is_ok());
-        match result.unwrap() {
-            Expr::Subquery(_) => {}
-            _ => panic!("Expected Expr::Subquery"),
-        }
+        let Expr::Subquery(_) = result.expect("plan_scalar_subquery should succeed") else {
+            unreachable!("Expected Expr::Subquery");
+        };
     }
 
     #[test]
     fn test_plan_scalar_subquery_without_planner() {
         let query = make_simple_query();
         let result = plan_scalar_subquery(&query, None);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.expect_err("plan_scalar_subquery without planner should fail");
         assert!(
             err.to_string()
                 .contains("Scalar subquery requires subquery planner context")
@@ -241,19 +226,16 @@ mod tests {
     fn test_plan_array_subquery_with_planner() {
         let query = make_simple_query();
         let result = plan_array_subquery(&query, Some(&mock_subquery_planner));
-        assert!(result.is_ok());
-        match result.unwrap() {
-            Expr::ArraySubquery(_) => {}
-            _ => panic!("Expected Expr::ArraySubquery"),
-        }
+        let Expr::ArraySubquery(_) = result.expect("plan_array_subquery should succeed") else {
+            unreachable!("Expected Expr::ArraySubquery");
+        };
     }
 
     #[test]
     fn test_plan_array_subquery_without_planner() {
         let query = make_simple_query();
         let result = plan_array_subquery(&query, None);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.expect_err("plan_array_subquery without planner should fail");
         assert!(
             err.to_string()
                 .contains("ARRAY subquery requires subquery planner context")
@@ -272,8 +254,7 @@ mod tests {
     fn test_plan_exists_planner_error() {
         let query = make_simple_query();
         let result = plan_exists(&query, false, Some(&failing_subquery_planner));
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.expect_err("plan_exists with failing planner should fail");
         assert!(err.to_string().contains("Subquery planning failed"));
     }
 
@@ -291,8 +272,7 @@ mod tests {
             &[],
             None,
         );
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.expect_err("plan_in_subquery with failing planner should fail");
         assert!(err.to_string().contains("Subquery planning failed"));
     }
 
@@ -300,8 +280,7 @@ mod tests {
     fn test_plan_scalar_subquery_planner_error() {
         let query = make_simple_query();
         let result = plan_scalar_subquery(&query, Some(&failing_subquery_planner));
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.expect_err("plan_scalar_subquery with failing planner should fail");
         assert!(err.to_string().contains("Subquery planning failed"));
     }
 
@@ -309,8 +288,7 @@ mod tests {
     fn test_plan_array_subquery_planner_error() {
         let query = make_simple_query();
         let result = plan_array_subquery(&query, Some(&failing_subquery_planner));
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.expect_err("plan_array_subquery with failing planner should fail");
         assert!(err.to_string().contains("Subquery planning failed"));
     }
 

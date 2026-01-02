@@ -538,12 +538,10 @@ mod tests {
             schema: schema.clone(),
         };
         let result = Planner::<MockCatalog>::substitute_params_in_plan(plan, &bindings);
-        match result {
-            LogicalPlan::Project { expressions, .. } => {
-                assert_eq!(expressions, vec![Expr::literal_i64(42)]);
-            }
-            _ => panic!("Expected Project plan"),
-        }
+        let LogicalPlan::Project { expressions, .. } = result else {
+            unreachable!("Expected Project plan");
+        };
+        assert_eq!(expressions, vec![Expr::literal_i64(42)]);
     }
 
     #[test]
@@ -565,19 +563,17 @@ mod tests {
             },
         };
         let result = Planner::<MockCatalog>::substitute_params_in_plan(plan, &bindings);
-        match result {
-            LogicalPlan::Filter { predicate, .. } => {
-                assert_eq!(
-                    predicate,
-                    Expr::BinaryOp {
-                        left: Box::new(Expr::literal_i64(42)),
-                        op: BinaryOp::Gt,
-                        right: Box::new(Expr::literal_i64(0)),
-                    }
-                );
+        let LogicalPlan::Filter { predicate, .. } = result else {
+            unreachable!("Expected Filter plan");
+        };
+        assert_eq!(
+            predicate,
+            Expr::BinaryOp {
+                left: Box::new(Expr::literal_i64(42)),
+                op: BinaryOp::Gt,
+                right: Box::new(Expr::literal_i64(0)),
             }
-            _ => panic!("Expected Filter plan"),
-        }
+        );
     }
 
     #[test]
@@ -606,18 +602,16 @@ mod tests {
             schema,
         };
         let result = Planner::<MockCatalog>::substitute_params_in_plan(plan, &bindings);
-        match result {
-            LogicalPlan::Values { values, .. } => {
-                assert_eq!(
-                    values,
-                    vec![
-                        vec![Expr::literal_i64(42), Expr::literal_string("hello")],
-                        vec![Expr::literal_i64(1), Expr::literal_string("world")],
-                    ]
-                );
-            }
-            _ => panic!("Expected Values plan"),
-        }
+        let LogicalPlan::Values { values, .. } = result else {
+            unreachable!("Expected Values plan");
+        };
+        assert_eq!(
+            values,
+            vec![
+                vec![Expr::literal_i64(42), Expr::literal_string("hello")],
+                vec![Expr::literal_i64(1), Expr::literal_string("world")],
+            ]
+        );
     }
 
     #[test]
@@ -654,20 +648,17 @@ mod tests {
             schema,
         };
         let result = Planner::<MockCatalog>::substitute_params_in_plan(outer, &bindings);
-        match result {
-            LogicalPlan::Project {
-                input, expressions, ..
-            } => {
-                assert_eq!(expressions, vec![Expr::literal_string("hello")]);
-                match *input {
-                    LogicalPlan::Filter { predicate, .. } => {
-                        assert_eq!(predicate, Expr::literal_i64(42));
-                    }
-                    _ => panic!("Expected Filter plan"),
-                }
-            }
-            _ => panic!("Expected Project plan"),
-        }
+        let LogicalPlan::Project {
+            input, expressions, ..
+        } = result
+        else {
+            unreachable!("Expected Project plan");
+        };
+        assert_eq!(expressions, vec![Expr::literal_string("hello")]);
+        let LogicalPlan::Filter { predicate, .. } = *input else {
+            unreachable!("Expected Filter plan");
+        };
+        assert_eq!(predicate, Expr::literal_i64(42));
     }
 
     #[test]
