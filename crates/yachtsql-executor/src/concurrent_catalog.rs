@@ -95,19 +95,27 @@ impl TableLockSet {
     }
 
     pub fn add_read_table(&self, name: String, table: Table) {
-        self.read_tables.lock().unwrap().insert(name, table);
+        if let Ok(mut guard) = self.read_tables.lock() {
+            guard.insert(name, table);
+        }
     }
 
     pub fn add_write_table(&self, name: String, table: Table) {
-        self.write_tables.lock().unwrap().insert(name, table);
+        if let Ok(mut guard) = self.write_tables.lock() {
+            guard.insert(name, table);
+        }
     }
 
     pub fn get_table(&self, name: &str) -> Option<Table> {
         let upper = name.to_uppercase();
-        if let Some(table) = self.write_tables.lock().unwrap().get(&upper) {
+        if let Ok(guard) = self.write_tables.lock()
+            && let Some(table) = guard.get(&upper)
+        {
             return Some(table.clone());
         }
-        if let Some(table) = self.read_tables.lock().unwrap().get(&upper) {
+        if let Ok(guard) = self.read_tables.lock()
+            && let Some(table) = guard.get(&upper)
+        {
             return Some(table.clone());
         }
         None
@@ -116,25 +124,36 @@ impl TableLockSet {
     #[allow(clippy::mut_from_ref)]
     pub fn get_table_mut(&self, name: &str) -> Option<&mut Table> {
         let upper = name.to_uppercase();
-        let mut write_tables = self.write_tables.lock().unwrap();
+        let Ok(mut write_tables) = self.write_tables.lock() else {
+            return None;
+        };
         if write_tables.contains_key(&upper) {
-            return Some(unsafe { &mut *(write_tables.get_mut(&upper).unwrap() as *mut Table) });
+            return write_tables
+                .get_mut(&upper)
+                .map(|t| unsafe { &mut *(t as *mut Table) });
         }
         None
     }
 
     pub fn update_table(&self, name: &str, table: Table) {
         let upper = name.to_uppercase();
-        self.write_tables.lock().unwrap().insert(upper, table);
+        if let Ok(mut guard) = self.write_tables.lock() {
+            guard.insert(upper, table);
+        }
     }
 
     pub fn snapshot_write_locked_tables(&self) -> HashMap<String, Table> {
-        self.write_tables.lock().unwrap().clone()
+        self.write_tables
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     pub fn commit_writes(&self) {
         if let Some(ref catalog) = self.catalog {
-            let write_tables = self.write_tables.lock().unwrap();
+            let Ok(write_tables) = self.write_tables.lock() else {
+                return;
+            };
             for (name, table) in write_tables.iter() {
                 catalog.update_table(name, table.clone());
             }

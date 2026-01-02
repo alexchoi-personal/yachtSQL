@@ -44,7 +44,11 @@ impl ConcurrentPlanExecutor {
         }
 
         let path = if options.uri.starts_with("file://") {
-            options.uri.strip_prefix("file://").unwrap().to_string()
+            options
+                .uri
+                .strip_prefix("file://")
+                .unwrap_or(&options.uri)
+                .to_string()
         } else {
             options.uri.replace('*', "data")
         };
@@ -96,7 +100,7 @@ impl ConcurrentPlanExecutor {
         let schema = data.schema();
         let n = data.row_count();
         let columns: Vec<_> = (0..data.num_columns())
-            .map(|i| data.column(i).unwrap())
+            .filter_map(|i| data.column(i))
             .collect();
 
         let mut file = File::create(path)

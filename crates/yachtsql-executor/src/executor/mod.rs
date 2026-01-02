@@ -554,7 +554,9 @@ impl<'a> PlanExecutor<'a> {
                 if result_table.row_count() == 0 || result_table.num_columns() == 0 {
                     return Ok(Value::Null);
                 }
-                let first_col = result_table.column(0).unwrap();
+                let first_col = result_table
+                    .column(0)
+                    .ok_or_else(|| Error::internal("Expected at least one column"))?;
                 Ok(first_col.get_value(0))
             }
             Expr::BinaryOp { left, op, right } => {
@@ -682,7 +684,10 @@ impl<'a> PlanExecutor<'a> {
             let ts_millis = match &ts_val {
                 Value::DateTime(d) => d.and_utc().timestamp_millis(),
                 Value::Timestamp(d) => d.timestamp_millis(),
-                Value::Date(d) => d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis(),
+                Value::Date(d) => d
+                    .and_hms_opt(0, 0, 0)
+                    .map(|dt| dt.and_utc().timestamp_millis())
+                    .unwrap_or(0),
                 _ => continue,
             };
 
@@ -712,8 +717,12 @@ impl<'a> PlanExecutor<'a> {
                 continue;
             }
 
-            let min_original_ts = entries.first().map(|(ts, _)| *ts).unwrap();
-            let max_original_ts = entries.last().map(|(ts, _)| *ts).unwrap();
+            let Some(min_original_ts) = entries.first().map(|(ts, _)| *ts) else {
+                continue;
+            };
+            let Some(max_original_ts) = entries.last().map(|(ts, _)| *ts) else {
+                continue;
+            };
 
             let min_bucket = {
                 let floored = ((min_original_ts - origin_offset) / bucket_millis) * bucket_millis
@@ -784,19 +793,23 @@ impl<'a> PlanExecutor<'a> {
                 };
 
                 let ts_value = match &input_schema.fields[ts_idx].data_type {
-                    DataType::DateTime => Value::DateTime(
-                        chrono::DateTime::from_timestamp_millis(bucket)
-                            .unwrap()
-                            .naive_utc(),
-                    ),
-                    DataType::Timestamp => {
-                        Value::Timestamp(chrono::DateTime::from_timestamp_millis(bucket).unwrap())
+                    DataType::DateTime => {
+                        let dt = chrono::DateTime::from_timestamp_millis(bucket)
+                            .map(|d| d.naive_utc())
+                            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.naive_utc());
+                        Value::DateTime(dt)
                     }
-                    _ => Value::DateTime(
-                        chrono::DateTime::from_timestamp_millis(bucket)
-                            .unwrap()
-                            .naive_utc(),
-                    ),
+                    DataType::Timestamp => {
+                        let dt = chrono::DateTime::from_timestamp_millis(bucket)
+                            .unwrap_or(chrono::DateTime::UNIX_EPOCH);
+                        Value::Timestamp(dt)
+                    }
+                    _ => {
+                        let dt = chrono::DateTime::from_timestamp_millis(bucket)
+                            .map(|d| d.naive_utc())
+                            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.naive_utc());
+                        Value::DateTime(dt)
+                    }
                 };
 
                 let mut record_values = vec![ts_value];
