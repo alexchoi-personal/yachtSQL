@@ -2,7 +2,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use tokio::sync::{Barrier, Semaphore};
+use tokio::sync::Semaphore;
 use yachtsql_executor::AsyncQueryExecutor;
 use yachtsql_storage::Table;
 
@@ -23,7 +23,6 @@ pub struct ConcurrencyMetrics {
 
 pub struct ConcurrentTestHarness {
     executor: Arc<AsyncQueryExecutor>,
-    barrier: Arc<Barrier>,
     semaphore: Arc<Semaphore>,
     concurrency: usize,
     current_concurrent: Arc<AtomicU64>,
@@ -35,7 +34,6 @@ impl ConcurrentTestHarness {
     pub fn new(executor: AsyncQueryExecutor, concurrency: usize) -> Self {
         Self {
             executor: Arc::new(executor),
-            barrier: Arc::new(Barrier::new(concurrency)),
             semaphore: Arc::new(Semaphore::new(concurrency)),
             concurrency,
             current_concurrent: Arc::new(AtomicU64::new(0)),
@@ -58,21 +56,17 @@ impl ConcurrentTestHarness {
         Fut: Future<Output = Result<Table, yachtsql_common::error::Error>> + Send + 'static,
     {
         let task_count = tasks.len();
-        let barrier = Arc::new(Barrier::new(task_count));
 
         let mut handles = Vec::with_capacity(task_count);
 
         for task in tasks {
             let executor = Arc::clone(&self.executor);
-            let barrier = Arc::clone(&barrier);
             let semaphore = Arc::clone(&self.semaphore);
             let current_concurrent = Arc::clone(&self.current_concurrent);
             let max_concurrent_observed = Arc::clone(&self.max_concurrent_observed);
 
             let handle = tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
-
-                barrier.wait().await;
 
                 let concurrent = current_concurrent.fetch_add(1, Ordering::SeqCst) + 1;
                 loop {
@@ -114,21 +108,17 @@ impl ConcurrentTestHarness {
 
     pub async fn run_concurrent_queries(&self, queries: Vec<String>) -> Vec<TaskResult> {
         let task_count = queries.len();
-        let barrier = Arc::new(Barrier::new(task_count));
 
         let mut handles = Vec::with_capacity(task_count);
 
         for query in queries {
             let executor = Arc::clone(&self.executor);
-            let barrier = Arc::clone(&barrier);
             let semaphore = Arc::clone(&self.semaphore);
             let current_concurrent = Arc::clone(&self.current_concurrent);
             let max_concurrent_observed = Arc::clone(&self.max_concurrent_observed);
 
             let handle = tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
-
-                barrier.wait().await;
 
                 let concurrent = current_concurrent.fetch_add(1, Ordering::SeqCst) + 1;
                 loop {
@@ -200,19 +190,16 @@ impl ConcurrentTestHarness {
         num_writers: usize,
     ) -> Vec<TaskResult> {
         let total = num_readers + num_writers;
-        let barrier = Arc::new(Barrier::new(total));
 
         let mut handles = Vec::with_capacity(total);
 
         for _ in 0..num_readers {
             let executor = Arc::clone(&self.executor);
-            let barrier = Arc::clone(&barrier);
             let semaphore = Arc::clone(&self.semaphore);
             let query = format!("SELECT * FROM {}", table_name);
 
             let handle = tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
-                barrier.wait().await;
 
                 match executor.execute_sql(&query).await {
                     Ok(table) => TaskResult::Success(table.row_count()),
@@ -225,7 +212,6 @@ impl ConcurrentTestHarness {
 
         for i in 0..num_writers {
             let executor = Arc::clone(&self.executor);
-            let barrier = Arc::clone(&barrier);
             let semaphore = Arc::clone(&self.semaphore);
             let query = format!(
                 "INSERT INTO {} VALUES ({}, 'writer_{}', {})",
@@ -237,7 +223,6 @@ impl ConcurrentTestHarness {
 
             let handle = tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
-                barrier.wait().await;
 
                 match executor.execute_sql(&query).await {
                     Ok(table) => TaskResult::Success(table.row_count()),
@@ -264,13 +249,10 @@ impl ConcurrentTestHarness {
         table_name: &str,
         num_writers: usize,
     ) -> Vec<TaskResult> {
-        let barrier = Arc::new(Barrier::new(num_writers));
-
         let mut handles = Vec::with_capacity(num_writers);
 
         for i in 0..num_writers {
             let executor = Arc::clone(&self.executor);
-            let barrier = Arc::clone(&barrier);
             let semaphore = Arc::clone(&self.semaphore);
             let query = format!(
                 "INSERT INTO {} VALUES ({}, 'concurrent_writer_{}', {})",
@@ -282,7 +264,6 @@ impl ConcurrentTestHarness {
 
             let handle = tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
-                barrier.wait().await;
 
                 match executor.execute_sql(&query).await {
                     Ok(table) => TaskResult::Success(table.row_count()),
