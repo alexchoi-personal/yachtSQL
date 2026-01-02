@@ -130,7 +130,3 @@ members = [
 ]
 resolver = "2"
 
-[[bench]]
-name = "optimizer_bench"
-harness = false
-
