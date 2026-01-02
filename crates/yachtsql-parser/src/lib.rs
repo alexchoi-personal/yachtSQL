@@ -90,7 +90,10 @@ fn try_parse_load_data(sql: &str) -> Result<Option<LogicalPlan>> {
     let is_temp_table = upper.contains("TEMP TABLE");
 
     let (table_name, column_defs) = if overwrite {
-        let after_overwrite = &sql[upper.find("OVERWRITE").unwrap() + 9..];
+        let overwrite_pos = upper
+            .find("OVERWRITE")
+            .ok_or_else(|| Error::internal("OVERWRITE keyword not found after check"))?;
+        let after_overwrite = &sql[overwrite_pos + 9..];
         let trimmed = after_overwrite.trim_start();
         let end = trimmed
             .find(|c: char| c.is_whitespace())
@@ -104,7 +107,10 @@ fn try_parse_load_data(sql: &str) -> Result<Option<LogicalPlan>> {
         let trimmed = after_into.trim_start();
 
         let trimmed = if is_temp_table {
-            let temp_pos = trimmed.to_uppercase().find("TEMP TABLE").unwrap();
+            let temp_pos = trimmed
+                .to_uppercase()
+                .find("TEMP TABLE")
+                .ok_or_else(|| Error::internal("TEMP TABLE keyword not found after check"))?;
             let after_temp = &trimmed[temp_pos + 10..];
             after_temp.trim_start()
         } else {
@@ -328,10 +334,16 @@ fn parse_create_snapshot(sql: &str) -> Result<LogicalPlan> {
     let if_not_exists = upper.contains("IF NOT EXISTS");
 
     let rest = if if_not_exists {
-        let idx = upper.find("IF NOT EXISTS").unwrap() + 13;
+        let idx = upper
+            .find("IF NOT EXISTS")
+            .ok_or_else(|| Error::internal("IF NOT EXISTS not found after check"))?
+            + 13;
         sql[idx..].trim()
     } else {
-        let idx = upper.find("CREATE SNAPSHOT TABLE").unwrap() + 21;
+        let idx = upper
+            .find("CREATE SNAPSHOT TABLE")
+            .ok_or_else(|| Error::internal("CREATE SNAPSHOT TABLE not found after check"))?
+            + 21;
         sql[idx..].trim()
     };
 
@@ -362,10 +374,16 @@ fn parse_drop_snapshot(sql: &str) -> Result<LogicalPlan> {
     let if_exists = upper.contains("IF EXISTS");
 
     let rest = if if_exists {
-        let idx = upper.find("IF EXISTS").unwrap() + 9;
+        let idx = upper
+            .find("IF EXISTS")
+            .ok_or_else(|| Error::internal("IF EXISTS not found after check"))?
+            + 9;
         sql[idx..].trim()
     } else {
-        let idx = upper.find("DROP SNAPSHOT TABLE").unwrap() + 19;
+        let idx = upper
+            .find("DROP SNAPSHOT TABLE")
+            .ok_or_else(|| Error::internal("DROP SNAPSHOT TABLE not found after check"))?
+            + 19;
         sql[idx..].trim()
     };
 
@@ -378,23 +396,39 @@ fn parse_drop_snapshot(sql: &str) -> Result<LogicalPlan> {
 }
 
 fn preprocess_range_types(sql: &str) -> String {
+    use std::sync::OnceLock;
+
     use regex::Regex;
+
+    static RANGE_RE: OnceLock<Regex> = OnceLock::new();
+    static REPLACE_PROC_RE: OnceLock<Regex> = OnceLock::new();
+    static PROC_RE: OnceLock<Regex> = OnceLock::new();
+
+    let range_re = RANGE_RE.get_or_init(|| {
+        Regex::new(r"(?i)\bRANGE\s*<\s*(DATE|DATETIME|TIMESTAMP)\s*>")
+            .expect("static regex RANGE_RE is invalid")
+    });
+    let replace_proc_re = REPLACE_PROC_RE.get_or_init(|| {
+        Regex::new(r"(?i)CREATE\s+OR\s+REPLACE\s+PROCEDURE\s+(\w+)")
+            .expect("static regex REPLACE_PROC_RE is invalid")
+    });
+    let proc_re = PROC_RE.get_or_init(|| {
+        Regex::new(r"(?i)(CREATE\s+PROCEDURE\s+\w+\s*\([^)]*\))\s*\n?\s*(BEGIN)")
+            .expect("static regex PROC_RE is invalid")
+    });
+
     let mut result = sql.to_string();
 
-    let range_re = Regex::new(r"(?i)\bRANGE\s*<\s*(DATE|DATETIME|TIMESTAMP)\s*>").unwrap();
     result = range_re
         .replace_all(&result, |caps: &regex::Captures| {
             format!("RANGE_{}", caps[1].to_uppercase())
         })
         .to_string();
 
-    let replace_proc_re = Regex::new(r"(?i)CREATE\s+OR\s+REPLACE\s+PROCEDURE\s+(\w+)").unwrap();
     result = replace_proc_re
         .replace_all(&result, "CREATE PROCEDURE __orp__$1")
         .to_string();
 
-    let proc_re =
-        Regex::new(r"(?i)(CREATE\s+PROCEDURE\s+\w+\s*\([^)]*\))\s*\n?\s*(BEGIN)").unwrap();
     result = proc_re.replace_all(&result, "$1 AS $2").to_string();
 
     result
