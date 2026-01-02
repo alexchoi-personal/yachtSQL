@@ -331,16 +331,25 @@ impl<'a> ColumnarEvaluator<'a> {
             Literal::String(s) => Value::String(s.clone()),
             Literal::Bytes(b) => Value::Bytes(b.clone()),
             Literal::Date(d) => {
-                let date = chrono::NaiveDate::from_num_days_from_ce_opt(*d)
-                    .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+                const UNIX_EPOCH_DATE: chrono::NaiveDate =
+                    match chrono::NaiveDate::from_ymd_opt(1970, 1, 1) {
+                        Some(d) => d,
+                        None => panic!("1970-01-01 is a valid date"),
+                    };
+                let date =
+                    chrono::NaiveDate::from_num_days_from_ce_opt(*d).unwrap_or(UNIX_EPOCH_DATE);
                 Value::Date(date)
             }
             Literal::Time(t) => {
+                const MIDNIGHT: chrono::NaiveTime = match chrono::NaiveTime::from_hms_opt(0, 0, 0) {
+                    Some(t) => t,
+                    None => panic!("midnight is a valid time"),
+                };
                 let nanos = *t;
                 let secs = (nanos / 1_000_000_000) as u32;
                 let nsecs = (nanos % 1_000_000_000) as u32;
                 let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, nsecs)
-                    .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+                    .unwrap_or(MIDNIGHT);
                 Value::Time(time)
             }
             Literal::Timestamp(ts) => {
@@ -399,16 +408,25 @@ impl<'a> ColumnarEvaluator<'a> {
             Literal::String(s) => Ok(Value::String(s.clone())),
             Literal::Bytes(b) => Ok(Value::Bytes(b.clone())),
             Literal::Date(d) => {
-                let date = chrono::NaiveDate::from_num_days_from_ce_opt(*d)
-                    .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+                const UNIX_EPOCH_DATE: chrono::NaiveDate =
+                    match chrono::NaiveDate::from_ymd_opt(1970, 1, 1) {
+                        Some(d) => d,
+                        None => panic!("1970-01-01 is a valid date"),
+                    };
+                let date =
+                    chrono::NaiveDate::from_num_days_from_ce_opt(*d).unwrap_or(UNIX_EPOCH_DATE);
                 Ok(Value::Date(date))
             }
             Literal::Time(t) => {
+                const MIDNIGHT: chrono::NaiveTime = match chrono::NaiveTime::from_hms_opt(0, 0, 0) {
+                    Some(t) => t,
+                    None => panic!("midnight is a valid time"),
+                };
                 let nanos = *t;
                 let secs = (nanos / 1_000_000_000) as u32;
                 let nsecs = (nanos % 1_000_000_000) as u32;
                 let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, nsecs)
-                    .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+                    .unwrap_or(MIDNIGHT);
                 Ok(Value::Time(time))
             }
             Literal::Timestamp(ts) => {
@@ -425,7 +443,7 @@ impl<'a> ColumnarEvaluator<'a> {
                     ((*dt % 1_000_000) * 1000) as u32,
                 )
                 .map(|d| d.naive_utc())
-                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.naive_utc());
+                .unwrap_or(chrono::DateTime::UNIX_EPOCH.naive_utc());
                 Ok(Value::DateTime(ndt))
             }
             Literal::Interval {

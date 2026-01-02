@@ -27,7 +27,10 @@ pub fn eval_extract(
 }
 
 fn week_number_from_date(date: &chrono::NaiveDate, start_day: WeekStartDay) -> i64 {
-    let year_start = chrono::NaiveDate::from_ymd_opt(date.year(), 1, 1).unwrap();
+    let year_start = match chrono::NaiveDate::from_ymd_opt(date.year(), 1, 1) {
+        Some(d) => d,
+        None => return 0,
+    };
     let start_weekday = match start_day {
         WeekStartDay::Sunday => chrono::Weekday::Sun,
         WeekStartDay::Monday => chrono::Weekday::Mon,
