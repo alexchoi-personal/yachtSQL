@@ -1,4 +1,5 @@
 target/
+CLAUDE.md
 **/*.rs.bk
 vendor/*
 !vendor/yachtsql-sqlparser/
