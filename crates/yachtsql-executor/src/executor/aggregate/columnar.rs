@@ -1,4 +1,4 @@
-use yachtsql_common::error::Result;
+use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{AggregateFunction, Expr, PlanSchema};
 use yachtsql_storage::Table;
@@ -79,9 +79,17 @@ pub(super) fn execute_columnar_aggregate(
             Expr::Aggregate { func, args, .. } => (func, args),
             Expr::Alias { expr, .. } => match expr.as_ref() {
                 Expr::Aggregate { func, args, .. } => (func, args),
-                _ => unreachable!(),
+                _ => {
+                    return Err(Error::internal(
+                        "Expected Aggregate inside Alias in columnar aggregate",
+                    ))
+                }
             },
-            _ => unreachable!(),
+            _ => {
+                return Err(Error::internal(
+                    "Expected Aggregate expression in columnar aggregate",
+                ))
+            }
         };
 
         let value = match func {
@@ -89,19 +97,28 @@ pub(super) fn execute_columnar_aggregate(
                 if args.is_empty() || matches!(args.first(), Some(Expr::Wildcard { .. })) {
                     Value::Int64(input_table.row_count() as i64)
                 } else {
-                    let col_idx = get_simple_column_index(&args[0]).unwrap();
-                    let column = input_table.column(col_idx).unwrap();
+                    let col_idx = get_simple_column_index(&args[0])
+                        .ok_or_else(|| Error::internal("Missing column index for COUNT"))?;
+                    let column = input_table
+                        .column(col_idx)
+                        .ok_or_else(|| Error::internal("Column not found for COUNT"))?;
                     Value::Int64(column.count_valid() as i64)
                 }
             }
             AggregateFunction::Sum => {
-                let col_idx = get_simple_column_index(&args[0]).unwrap();
-                let column = input_table.column(col_idx).unwrap();
+                let col_idx = get_simple_column_index(&args[0])
+                    .ok_or_else(|| Error::internal("Missing column index for SUM"))?;
+                let column = input_table
+                    .column(col_idx)
+                    .ok_or_else(|| Error::internal("Column not found for SUM"))?;
                 column.sum().map(Value::float64).unwrap_or(Value::Null)
             }
             AggregateFunction::Avg => {
-                let col_idx = get_simple_column_index(&args[0]).unwrap();
-                let column = input_table.column(col_idx).unwrap();
+                let col_idx = get_simple_column_index(&args[0])
+                    .ok_or_else(|| Error::internal("Missing column index for AVG"))?;
+                let column = input_table
+                    .column(col_idx)
+                    .ok_or_else(|| Error::internal("Column not found for AVG"))?;
                 let count = column.count_valid();
                 if count == 0 {
                     Value::Null
@@ -113,16 +130,27 @@ pub(super) fn execute_columnar_aggregate(
                 }
             }
             AggregateFunction::Min => {
-                let col_idx = get_simple_column_index(&args[0]).unwrap();
-                let column = input_table.column(col_idx).unwrap();
+                let col_idx = get_simple_column_index(&args[0])
+                    .ok_or_else(|| Error::internal("Missing column index for MIN"))?;
+                let column = input_table
+                    .column(col_idx)
+                    .ok_or_else(|| Error::internal("Column not found for MIN"))?;
                 column.min().unwrap_or(Value::Null)
             }
             AggregateFunction::Max => {
-                let col_idx = get_simple_column_index(&args[0]).unwrap();
-                let column = input_table.column(col_idx).unwrap();
+                let col_idx = get_simple_column_index(&args[0])
+                    .ok_or_else(|| Error::internal("Missing column index for MAX"))?;
+                let column = input_table
+                    .column(col_idx)
+                    .ok_or_else(|| Error::internal("Column not found for MAX"))?;
                 column.max().unwrap_or(Value::Null)
             }
-            _ => unreachable!(),
+            _ => {
+                return Err(Error::internal(format!(
+                    "Unsupported aggregate function in columnar aggregate: {:?}",
+                    func
+                )))
+            }
         };
         row.push(value);
     }

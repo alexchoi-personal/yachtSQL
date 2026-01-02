@@ -30,7 +30,7 @@ where
         if borrow.is_none() {
             *borrow = Some(v8::Isolate::new(v8::CreateParams::default()));
         }
-        f(borrow.as_mut().unwrap())
+        f(borrow.as_mut().expect("V8 isolate should be initialized"))
     })
 }
 

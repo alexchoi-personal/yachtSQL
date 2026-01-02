@@ -48,7 +48,9 @@ pub fn extract_datetime_field(val: &Value, field: DateTimeField) -> Result<Value
 }
 
 fn week_number_from_date(date: &NaiveDate, start_day: WeekStartDay) -> i64 {
-    let year_start = NaiveDate::from_ymd_opt(date.year(), 1, 1).unwrap();
+    let Some(year_start) = NaiveDate::from_ymd_opt(date.year(), 1, 1) else {
+        return 0;
+    };
     let start_weekday = match start_day {
         WeekStartDay::Sunday => chrono::Weekday::Sun,
         WeekStartDay::Monday => chrono::Weekday::Mon,

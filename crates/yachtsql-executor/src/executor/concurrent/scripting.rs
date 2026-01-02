@@ -42,7 +42,7 @@ impl ConcurrentPlanExecutor {
                     };
                     self.variables
                         .write()
-                        .unwrap()
+                        .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
                         .insert(param_name.clone(), value.clone());
                     self.session.set_variable(&param_name, value);
                 }
@@ -50,7 +50,7 @@ impl ConcurrentPlanExecutor {
                     let value = default_value_for_type(&param.data_type);
                     self.variables
                         .write()
-                        .unwrap()
+                        .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
                         .insert(param_name.clone(), value.clone());
                     self.session.set_variable(&param_name, value);
 
@@ -71,7 +71,7 @@ impl ConcurrentPlanExecutor {
                     };
                     self.variables
                         .write()
-                        .unwrap()
+                        .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
                         .insert(param_name.clone(), value.clone());
                     self.session.set_variable(&param_name, value);
 
@@ -118,12 +118,17 @@ impl ConcurrentPlanExecutor {
         }
 
         for (param_name, var_name) in out_var_mappings {
-            let value = self.variables.read().unwrap().get(&param_name).cloned();
+            let value = self
+                .variables
+                .read()
+                .map_err(|_| Error::internal("Failed to acquire variable read lock"))?
+                .get(&param_name)
+                .cloned();
             if let Some(value) = value {
                 let var_name_upper = var_name.to_uppercase();
                 self.variables
                     .write()
-                    .unwrap()
+                    .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
                     .insert(var_name_upper.clone(), value.clone());
                 self.session.set_variable(&var_name_upper, value);
             }
@@ -187,7 +192,7 @@ impl ConcurrentPlanExecutor {
         };
         self.variables
             .write()
-            .unwrap()
+            .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
             .insert(name.to_uppercase(), value.clone());
         self.session.set_variable(name, value);
         Ok(Table::empty(Schema::new()))
@@ -227,7 +232,7 @@ impl ConcurrentPlanExecutor {
             {
                 self.variables
                     .write()
-                    .unwrap()
+                    .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
                     .insert(upper_name, val.clone());
             }
             self.session.set_variable(name, val);
@@ -289,7 +294,7 @@ impl ConcurrentPlanExecutor {
             let upper_name = name.to_uppercase();
             self.variables
                 .write()
-                .unwrap()
+                .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
                 .insert(upper_name.clone(), field_val.clone());
             self.session.set_variable(name, field_val);
         }
@@ -545,7 +550,7 @@ impl ConcurrentPlanExecutor {
             let row_value = Value::Struct(struct_fields);
             self.variables
                 .write()
-                .unwrap()
+                .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
                 .insert(variable.to_uppercase(), row_value.clone());
             self.session.set_variable(variable, row_value);
 
@@ -619,11 +624,13 @@ impl ConcurrentPlanExecutor {
                     ]);
                     self.variables
                         .write()
-                        .unwrap()
+                        .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
                         .insert("@@ERROR".to_string(), error_struct.clone());
                     self.system_variables
                         .write()
-                        .unwrap()
+                        .map_err(|_| {
+                            Error::internal("Failed to acquire system variable write lock")
+                        })?
                         .insert("@@error".to_string(), error_struct.clone());
                     self.session.set_system_variable("@@error", error_struct);
 
@@ -690,12 +697,12 @@ impl ConcurrentPlanExecutor {
         for (upper_name, value) in &named_params {
             self.variables
                 .write()
-                .unwrap()
+                .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
                 .insert(upper_name.clone(), value.clone());
             self.session.set_variable(upper_name, value.clone());
         }
 
-        let processed_sql = self.substitute_parameters(&sql_string, &positional_values);
+        let processed_sql = self.substitute_parameters(&sql_string, &positional_values)?;
 
         let result = self.execute_dynamic_sql(&processed_sql).await?;
 
@@ -709,7 +716,7 @@ impl ConcurrentPlanExecutor {
                         let upper_name = var_name.to_uppercase();
                         self.variables
                             .write()
-                            .unwrap()
+                            .map_err(|_| Error::internal("Failed to acquire variable write lock"))?
                             .insert(upper_name.clone(), val.clone());
                         self.session.set_variable(&upper_name, val);
                     }
@@ -720,7 +727,7 @@ impl ConcurrentPlanExecutor {
         Ok(result)
     }
 
-    fn substitute_parameters(&self, sql: &str, positional_values: &[Value]) -> String {
+    fn substitute_parameters(&self, sql: &str, positional_values: &[Value]) -> Result<String> {
         let mut positional_idx = 0;
         let chars: Vec<char> = sql.chars().collect();
         let mut output = String::new();
@@ -743,7 +750,11 @@ impl ConcurrentPlanExecutor {
                 }
                 let param_name: String = chars[start..i].iter().collect();
                 let upper_name = param_name[1..].to_uppercase();
-                if let Some(val) = self.variables.read().unwrap().get(&upper_name) {
+                let vars = self
+                    .variables
+                    .read()
+                    .map_err(|_| Error::internal("Failed to acquire variable read lock"))?;
+                if let Some(val) = vars.get(&upper_name) {
                     output.push_str(&self.value_to_sql_literal(val));
                 } else {
                     output.push_str(&param_name);
@@ -754,7 +765,7 @@ impl ConcurrentPlanExecutor {
             }
         }
 
-        output
+        Ok(output)
     }
 
     fn value_to_sql_literal(&self, val: &Value) -> String {

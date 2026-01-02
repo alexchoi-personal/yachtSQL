@@ -115,10 +115,14 @@ pub fn fn_net_ip_to_string(args: &[Value]) -> Result<Value> {
         Value::Null => Ok(Value::Null),
         Value::Bytes(bytes) => {
             if bytes.len() == 4 {
-                let arr: [u8; 4] = bytes[..4].try_into().unwrap();
+                let arr: [u8; 4] = bytes[..4]
+                    .try_into()
+                    .map_err(|_| Error::internal("IPv4 byte conversion failed"))?;
                 Ok(Value::String(Ipv4Addr::from(arr).to_string()))
             } else if bytes.len() == 16 {
-                let arr: [u8; 16] = bytes[..16].try_into().unwrap();
+                let arr: [u8; 16] = bytes[..16]
+                    .try_into()
+                    .map_err(|_| Error::internal("IPv6 byte conversion failed"))?;
                 Ok(Value::String(Ipv6Addr::from(arr).to_string()))
             } else {
                 Err(Error::InvalidQuery(
@@ -226,10 +230,14 @@ pub fn fn_net_ip_in_net(args: &[Value]) -> Result<Value> {
                 .map_err(|_| Error::InvalidQuery("Invalid prefix length".into()))?;
 
             let ip = if ip_bytes.len() == 4 {
-                let arr: [u8; 4] = ip_bytes[..4].try_into().unwrap();
+                let arr: [u8; 4] = ip_bytes[..4]
+                    .try_into()
+                    .map_err(|_| Error::internal("IPv4 byte conversion failed"))?;
                 IpAddr::V4(Ipv4Addr::from(arr))
             } else if ip_bytes.len() == 16 {
-                let arr: [u8; 16] = ip_bytes[..16].try_into().unwrap();
+                let arr: [u8; 16] = ip_bytes[..16]
+                    .try_into()
+                    .map_err(|_| Error::internal("IPv6 byte conversion failed"))?;
                 IpAddr::V6(Ipv6Addr::from(arr))
             } else {
                 return Err(Error::InvalidQuery("Invalid IP bytes length".into()));
@@ -274,10 +282,14 @@ pub fn fn_net_make_net(args: &[Value]) -> Result<Value> {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::Bytes(ip_bytes), Value::Int64(prefix_len)) => {
             let ip_str = if ip_bytes.len() == 4 {
-                let arr: [u8; 4] = ip_bytes[..4].try_into().unwrap();
+                let arr: [u8; 4] = ip_bytes[..4]
+                    .try_into()
+                    .map_err(|_| Error::internal("IPv4 byte conversion failed"))?;
                 Ipv4Addr::from(arr).to_string()
             } else if ip_bytes.len() == 16 {
-                let arr: [u8; 16] = ip_bytes[..16].try_into().unwrap();
+                let arr: [u8; 16] = ip_bytes[..16]
+                    .try_into()
+                    .map_err(|_| Error::internal("IPv6 byte conversion failed"))?;
                 Ipv6Addr::from(arr).to_string()
             } else {
                 return Err(Error::InvalidQuery("Invalid IP bytes length".into()));
@@ -298,7 +310,9 @@ pub fn fn_net_ip_is_private(args: &[Value]) -> Result<Value> {
         Value::Null => Ok(Value::Null),
         Value::Bytes(ip_bytes) => {
             if ip_bytes.len() == 4 {
-                let arr: [u8; 4] = ip_bytes[..4].try_into().unwrap();
+                let arr: [u8; 4] = ip_bytes[..4]
+                    .try_into()
+                    .map_err(|_| Error::internal("IPv4 byte conversion failed"))?;
                 let ip = Ipv4Addr::from(arr);
                 let octets = ip.octets();
                 let is_private = octets[0] == 10
@@ -307,7 +321,9 @@ pub fn fn_net_ip_is_private(args: &[Value]) -> Result<Value> {
                     || octets[0] == 127;
                 Ok(Value::Bool(is_private))
             } else if ip_bytes.len() == 16 {
-                let arr: [u8; 16] = ip_bytes[..16].try_into().unwrap();
+                let arr: [u8; 16] = ip_bytes[..16]
+                    .try_into()
+                    .map_err(|_| Error::internal("IPv6 byte conversion failed"))?;
                 let ip = Ipv6Addr::from(arr);
                 let segments = ip.segments();
                 let is_private = (segments[0] & 0xfe00) == 0xfc00 || ip.is_loopback();
@@ -353,7 +369,9 @@ pub fn fn_net_ipv4_to_int64(args: &[Value]) -> Result<Value> {
                     "NET.IPV4_TO_INT64 expects 4-byte IPv4 address".into(),
                 ));
             }
-            let arr: [u8; 4] = ip_bytes[..4].try_into().unwrap();
+            let arr: [u8; 4] = ip_bytes[..4]
+                .try_into()
+                .map_err(|_| Error::internal("IPv4 byte conversion failed"))?;
             Ok(Value::Int64(u32::from_be_bytes(arr) as i64))
         }
         _ => Err(Error::InvalidQuery(
