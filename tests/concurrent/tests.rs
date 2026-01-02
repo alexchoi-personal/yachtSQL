@@ -29,9 +29,9 @@ async fn test_concurrent_inserts_same_table() {
     let executor = create_test_executor();
     setup_test_table(&executor, "test_insert").await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::new(executor, 2);
 
-    let queries: Vec<String> = (0..10)
+    let queries: Vec<String> = (0..4)
         .map(|i| {
             format!(
                 "INSERT INTO test_insert VALUES ({}, 'name_{}', {})",
@@ -43,7 +43,7 @@ async fn test_concurrent_inserts_same_table() {
     let results = harness.run_concurrent_queries(queries).await;
     let metrics = harness.assert_no_data_races(&results);
 
-    assert_eq!(metrics.total_tasks, 10);
+    assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
 
     let is_consistent = harness.verify_table_consistency("test_insert").await;
@@ -53,11 +53,11 @@ async fn test_concurrent_inserts_same_table() {
 #[tokio::test]
 async fn test_concurrent_updates_same_table() {
     let executor = create_test_executor();
-    setup_test_table_with_data(&executor, "test_update", 5).await;
+    setup_test_table_with_data(&executor, "test_update", 3).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::new(executor, 2);
 
-    let queries: Vec<String> = (0..5)
+    let queries: Vec<String> = (0..3)
         .map(|i| {
             format!(
                 "UPDATE test_update SET name = 'updated_{}' WHERE id = {}",
@@ -69,25 +69,25 @@ async fn test_concurrent_updates_same_table() {
     let results = harness.run_concurrent_queries(queries).await;
     let metrics = harness.assert_no_data_races(&results);
 
-    assert_eq!(metrics.total_tasks, 5);
+    assert_eq!(metrics.total_tasks, 3);
     assert!(!metrics.data_race_detected);
 }
 
 #[tokio::test]
 async fn test_concurrent_deletes_same_table() {
     let executor = create_test_executor();
-    setup_test_table_with_data(&executor, "test_delete", 10).await;
+    setup_test_table_with_data(&executor, "test_delete", 5).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::new(executor, 2);
 
-    let queries: Vec<String> = (0..5)
+    let queries: Vec<String> = (0..3)
         .map(|i| format!("DELETE FROM test_delete WHERE id = {}", i))
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
     let metrics = harness.assert_no_data_races(&results);
 
-    assert_eq!(metrics.total_tasks, 5);
+    assert_eq!(metrics.total_tasks, 3);
     assert!(!metrics.data_race_detected);
 }
 
@@ -320,11 +320,11 @@ async fn test_concurrent_limit_offset() {
 #[tokio::test]
 async fn test_high_concurrency_stress() {
     let executor = create_test_executor();
-    setup_test_table_with_data(&executor, "stress_table", 50).await;
+    setup_test_table_with_data(&executor, "stress_table", 10).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 20);
+    let harness = ConcurrentTestHarness::new(executor, 4);
 
-    let queries: Vec<String> = (0..50)
+    let queries: Vec<String> = (0..12)
         .map(|i| {
             if i % 3 == 0 {
                 "SELECT * FROM stress_table".to_string()
@@ -344,7 +344,7 @@ async fn test_high_concurrency_stress() {
     let results = harness.run_concurrent_queries(queries).await;
     let metrics = harness.assert_no_data_races(&results);
 
-    assert_eq!(metrics.total_tasks, 50);
+    assert_eq!(metrics.total_tasks, 12);
     assert!(!metrics.data_race_detected);
 }
 

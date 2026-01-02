@@ -13,7 +13,10 @@ pub enum Error {
     FunctionNotFound(String),
     ColumnNotFound(String),
     AmbiguousColumn(String),
-    TypeMismatch { expected: String, actual: String },
+    TypeMismatch {
+        expected: String,
+        actual: String,
+    },
     SchemaMismatch(String),
     UnsupportedFeature(String),
     UnsupportedStatement(String),
@@ -23,6 +26,73 @@ pub enum Error {
     DivisionByZero,
     Overflow,
     Internal(String),
+    IntervalOverflow {
+        operation: String,
+        value: String,
+    },
+    NumericOverflow {
+        operation: String,
+    },
+    DivisionByZeroWithContext {
+        context: String,
+    },
+    TypeCoercionFailed {
+        from: String,
+        to: String,
+        value: String,
+    },
+    DateTimeError {
+        operation: String,
+        reason: String,
+    },
+    ExtractError {
+        field: String,
+        from_type: String,
+    },
+    AggregateError {
+        function: String,
+        reason: String,
+    },
+    ScriptingError {
+        script: String,
+        reason: String,
+    },
+    UdfError {
+        function: String,
+        reason: String,
+    },
+    NetworkError {
+        operation: String,
+        reason: String,
+    },
+    JsonAccessError {
+        path: String,
+        reason: String,
+    },
+    IoError {
+        operation: String,
+        message: String,
+    },
+    IndexOutOfBounds {
+        index: usize,
+        length: usize,
+    },
+    NullValue {
+        context: String,
+    },
+    InvalidArgument {
+        function: String,
+        argument: String,
+        reason: String,
+    },
+    OutOfRange {
+        value: String,
+        typ: String,
+    },
+    RegexError {
+        pattern: String,
+        reason: String,
+    },
 }
 
 impl Error {
@@ -93,6 +163,129 @@ impl Error {
     pub fn internal(msg: impl Into<String>) -> Self {
         Error::Internal(msg.into())
     }
+
+    pub fn interval_overflow(operation: impl Into<String>, value: impl Into<String>) -> Self {
+        Error::IntervalOverflow {
+            operation: operation.into(),
+            value: value.into(),
+        }
+    }
+
+    pub fn numeric_overflow(operation: impl Into<String>) -> Self {
+        Error::NumericOverflow {
+            operation: operation.into(),
+        }
+    }
+
+    pub fn division_by_zero_ctx(context: impl Into<String>) -> Self {
+        Error::DivisionByZeroWithContext {
+            context: context.into(),
+        }
+    }
+
+    pub fn type_coercion_failed(
+        from: impl Into<String>,
+        to: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        Error::TypeCoercionFailed {
+            from: from.into(),
+            to: to.into(),
+            value: value.into(),
+        }
+    }
+
+    pub fn datetime_error(operation: impl Into<String>, reason: impl Into<String>) -> Self {
+        Error::DateTimeError {
+            operation: operation.into(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn extract_error(field: impl Into<String>, from_type: impl Into<String>) -> Self {
+        Error::ExtractError {
+            field: field.into(),
+            from_type: from_type.into(),
+        }
+    }
+
+    pub fn aggregate_error(function: impl Into<String>, reason: impl Into<String>) -> Self {
+        Error::AggregateError {
+            function: function.into(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn scripting_error(script: impl Into<String>, reason: impl Into<String>) -> Self {
+        Error::ScriptingError {
+            script: script.into(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn udf_error(function: impl Into<String>, reason: impl Into<String>) -> Self {
+        Error::UdfError {
+            function: function.into(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn network_error(operation: impl Into<String>, reason: impl Into<String>) -> Self {
+        Error::NetworkError {
+            operation: operation.into(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn json_access_error(path: impl Into<String>, reason: impl Into<String>) -> Self {
+        Error::JsonAccessError {
+            path: path.into(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn io_error(operation: impl Into<String>, message: impl Into<String>) -> Self {
+        Error::IoError {
+            operation: operation.into(),
+            message: message.into(),
+        }
+    }
+
+    pub fn index_out_of_bounds(index: usize, length: usize) -> Self {
+        Error::IndexOutOfBounds { index, length }
+    }
+
+    pub fn null_value(context: impl Into<String>) -> Self {
+        Error::NullValue {
+            context: context.into(),
+        }
+    }
+
+    pub fn invalid_argument(
+        function: impl Into<String>,
+        argument: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Error::InvalidArgument {
+            function: function.into(),
+            argument: argument.into(),
+            reason: reason.into(),
+        }
+    }
+
+    pub fn out_of_range(value: impl Into<String>, typ: impl Into<String>) -> Self {
+        Error::OutOfRange {
+            value: value.into(),
+            typ: typ.into(),
+        }
+    }
+
+    pub fn regex_error(pattern: impl Into<String>, reason: impl Into<String>) -> Self {
+        Error::RegexError {
+            pattern: pattern.into(),
+            reason: reason.into(),
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -117,6 +310,65 @@ impl fmt::Display for Error {
             Error::DivisionByZero => write!(f, "Division by zero"),
             Error::Overflow => write!(f, "Numeric overflow"),
             Error::Internal(msg) => write!(f, "Internal error: {}", msg),
+            Error::IntervalOverflow { operation, value } => {
+                write!(f, "Interval overflow in {}: {}", operation, value)
+            }
+            Error::NumericOverflow { operation } => {
+                write!(f, "Numeric overflow in {}", operation)
+            }
+            Error::DivisionByZeroWithContext { context } => {
+                write!(f, "Division by zero: {}", context)
+            }
+            Error::TypeCoercionFailed { from, to, value } => {
+                write!(f, "Cannot coerce {} from {} to {}", value, from, to)
+            }
+            Error::DateTimeError { operation, reason } => {
+                write!(f, "DateTime error in {}: {}", operation, reason)
+            }
+            Error::ExtractError { field, from_type } => {
+                write!(f, "Cannot extract {} from {}", field, from_type)
+            }
+            Error::AggregateError { function, reason } => {
+                write!(f, "Aggregate error in {}: {}", function, reason)
+            }
+            Error::ScriptingError { script, reason } => {
+                write!(f, "Scripting error in {}: {}", script, reason)
+            }
+            Error::UdfError { function, reason } => {
+                write!(f, "UDF error in {}: {}", function, reason)
+            }
+            Error::NetworkError { operation, reason } => {
+                write!(f, "Network error in {}: {}", operation, reason)
+            }
+            Error::JsonAccessError { path, reason } => {
+                write!(f, "JSON access error at {}: {}", path, reason)
+            }
+            Error::IoError { operation, message } => {
+                write!(f, "I/O error in {}: {}", operation, message)
+            }
+            Error::IndexOutOfBounds { index, length } => {
+                write!(f, "Index {} out of bounds for length {}", index, length)
+            }
+            Error::NullValue { context } => {
+                write!(f, "Null value encountered: {}", context)
+            }
+            Error::InvalidArgument {
+                function,
+                argument,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "Invalid argument '{}' for {}: {}",
+                    argument, function, reason
+                )
+            }
+            Error::OutOfRange { value, typ } => {
+                write!(f, "Value {} out of range for type {}", value, typ)
+            }
+            Error::RegexError { pattern, reason } => {
+                write!(f, "Regex error in pattern '{}': {}", pattern, reason)
+            }
         }
     }
 }
