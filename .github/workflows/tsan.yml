@@ -1,0 +1,37 @@
+name: ThreadSanitizer
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  tsan:
+    name: ThreadSanitizer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly
+        run: rustup install nightly
+
+      - name: Install target
+        run: rustup +nightly target add x86_64-unknown-linux-gnu
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "tsan"
+
+      - name: Run with TSan
+        run: |
+          RUSTFLAGS="-Z sanitizer=thread" \
+          cargo +nightly test --target x86_64-unknown-linux-gnu \
+          -p yachtsql-executor -- --test-threads=1
+        env:
+          TSAN_OPTIONS: "suppressions=tsan_suppressions.txt"

@@ -1,0 +1,37 @@
+name: Loom
+
+on: [push, pull_request]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "--cfg loom"
+
+jobs:
+  loom:
+    name: Loom Concurrency Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "loom"
+
+      - name: Run Loom tests
+        run: cargo nextest run --release -p yachtsql-executor --features loom loom
+        env:
+          LOOM_MAX_PREEMPTIONS: 2
