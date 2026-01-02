@@ -70,9 +70,6 @@ pub struct TableLockSet {
     catalog: Option<Arc<ConcurrentCatalog>>,
 }
 
-unsafe impl Send for TableLockSet {}
-unsafe impl Sync for TableLockSet {}
-
 impl TableLockSet {
     pub fn new() -> Self {
         Self {
@@ -121,18 +118,15 @@ impl TableLockSet {
         None
     }
 
-    #[allow(clippy::mut_from_ref)]
-    pub fn get_table_mut(&self, name: &str) -> Option<&mut Table> {
+    pub fn with_table_mut<F, R>(&self, name: &str, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut Table) -> R,
+    {
         let upper = name.to_uppercase();
         let Ok(mut write_tables) = self.write_tables.lock() else {
             return None;
         };
-        if write_tables.contains_key(&upper) {
-            return write_tables
-                .get_mut(&upper)
-                .map(|t| unsafe { &mut *(t as *mut Table) });
-        }
-        None
+        write_tables.get_mut(&upper).map(f)
     }
 
     pub fn update_table(&self, name: &str, table: Table) {

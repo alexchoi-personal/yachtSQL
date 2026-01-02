@@ -517,10 +517,10 @@ impl ConcurrentPlanExecutor {
             .schema()
             .clone();
 
-        if options.overwrite
-            && let Some(t) = self.tables.get_table_mut(table_name)
-        {
-            t.clear();
+        if options.overwrite {
+            self.tables.with_table_mut(table_name, |t| {
+                t.clear();
+            });
         }
 
         for uri in &options.uris {
@@ -562,14 +562,14 @@ impl ConcurrentPlanExecutor {
                 }
             };
 
-            let table = self
-                .tables
-                .get_table_mut(table_name)
-                .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-
-            for row in rows {
-                table.push_row(row)?;
-            }
+            self.tables
+                .with_table_mut(table_name, |table| -> Result<()> {
+                    for row in rows {
+                        table.push_row(row)?;
+                    }
+                    Ok(())
+                })
+                .ok_or_else(|| Error::TableNotFound(table_name.to_string()))??;
         }
 
         Ok(Table::empty(Schema::new()))

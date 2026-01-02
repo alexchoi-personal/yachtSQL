@@ -141,8 +141,13 @@ impl ConcurrentPlanExecutor {
         if let Some(mut snapshot) = self.catalog.take_transaction_snapshot() {
             let mut restored_tables = Vec::new();
             for (name, table_data) in &snapshot.tables {
-                if let Some(table) = self.tables.get_table_mut(name) {
-                    *table = table_data.clone();
+                if self
+                    .tables
+                    .with_table_mut(name, |table| {
+                        *table = table_data.clone();
+                    })
+                    .is_some()
+                {
                     restored_tables.push(name.clone());
                 }
             }

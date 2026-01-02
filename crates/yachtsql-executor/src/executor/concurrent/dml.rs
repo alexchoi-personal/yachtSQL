@@ -18,35 +18,36 @@ impl ConcurrentPlanExecutor {
         columns: &[String],
         source: &PhysicalPlan,
     ) -> Result<Table> {
-        let (target_schema, fields, default_values) = {
-            let target = self
-                .tables
-                .get_table_mut(table_name)
-                .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-            let target_schema = target.schema().clone();
-            let fields = target_schema.fields().to_vec();
+        let (target_schema, fields, default_values) = self
+            .tables
+            .with_table_mut(table_name, |target| {
+                let target_schema = target.schema().clone();
+                let fields = target_schema.fields().to_vec();
 
-            let vars = self.get_variables();
-            let sys_vars = self.get_system_variables();
-            let udf = self.get_user_functions();
-            let evaluator = ValueEvaluator::new(&target_schema)
-                .with_variables(&vars)
-                .with_system_variables(&sys_vars)
-                .with_user_functions(&udf);
-            let empty_record = Record::new();
+                let vars = self.get_variables();
+                let sys_vars = self.get_system_variables();
+                let udf = self.get_user_functions();
+                let evaluator = ValueEvaluator::new(&target_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+                let empty_record = Record::new();
 
-            let mut default_values: Vec<Option<Value>> = vec![None; target_schema.field_count()];
-            if let Some(defaults) = self.catalog.get_table_defaults(table_name) {
-                for default in defaults {
-                    if let Some(idx) = target_schema.field_index(&default.column_name)
-                        && let Ok(val) = evaluator.evaluate(&default.default_expr, &empty_record)
-                    {
-                        default_values[idx] = Some(val);
+                let mut default_values: Vec<Option<Value>> =
+                    vec![None; target_schema.field_count()];
+                if let Some(defaults) = self.catalog.get_table_defaults(table_name) {
+                    for default in defaults {
+                        if let Some(idx) = target_schema.field_index(&default.column_name)
+                            && let Ok(val) =
+                                evaluator.evaluate(&default.default_expr, &empty_record)
+                        {
+                            default_values[idx] = Some(val);
+                        }
                     }
                 }
-            }
-            (target_schema, fields, default_values)
-        };
+                (target_schema, fields, default_values)
+            })
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
 
         if let PhysicalPlan::Values { values, .. } = source {
             let empty_schema = Schema::new();
@@ -131,27 +132,24 @@ impl ConcurrentPlanExecutor {
                 }
             }
 
-            let target = self
-                .tables
-                .get_table_mut(table_name)
-                .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-            for row in all_rows {
-                target.push_row(row)?;
-            }
+            self.tables
+                .with_table_mut(table_name, |target| {
+                    for row in all_rows {
+                        target.push_row(row)?;
+                    }
+                    Ok::<_, Error>(())
+                })
+                .ok_or_else(|| Error::TableNotFound(table_name.to_string()))??;
 
             return Ok(Table::empty(Schema::new()));
         }
 
         let source_table = self.execute_plan(source).await?;
 
-        let target = self
-            .tables
-            .get_table_mut(table_name)
-            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-
         let source_n = source_table.row_count();
         let source_cols: Vec<&Column> = source_table.columns().iter().map(|(_, c)| c).collect();
 
+        let mut rows_to_insert = Vec::new();
         for row_idx in 0..source_n {
             let row_values: Vec<Value> = source_cols.iter().map(|c| c.get_value(row_idx)).collect();
             if columns.is_empty() {
@@ -167,7 +165,7 @@ impl ConcurrentPlanExecutor {
                         coerced_row.push(val.clone());
                     }
                 }
-                target.push_row(coerced_row)?;
+                rows_to_insert.push(coerced_row);
             } else {
                 let mut row: Vec<Value> = default_values
                     .iter()
@@ -188,9 +186,18 @@ impl ConcurrentPlanExecutor {
                         row[col_idx] = coerce_value(final_val, &fields[col_idx].data_type)?;
                     }
                 }
-                target.push_row(row)?;
+                rows_to_insert.push(row);
             }
         }
+
+        self.tables
+            .with_table_mut(table_name, |target| {
+                for row in rows_to_insert {
+                    target.push_row(row)?;
+                }
+                Ok::<_, Error>(())
+            })
+            .ok_or_else(|| Error::TableNotFound(table_name.to_string()))??;
 
         Ok(Table::empty(Schema::new()))
     }
@@ -461,11 +468,11 @@ impl ConcurrentPlanExecutor {
             }
         }
 
-        let target = self
-            .tables
-            .get_table_mut(table_name)
+        self.tables
+            .with_table_mut(table_name, |target| {
+                *target = new_table;
+            })
             .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-        *target = new_table;
 
         Ok(Table::empty(Schema::new()))
     }
@@ -584,11 +591,11 @@ impl ConcurrentPlanExecutor {
             }
         }
 
-        let target = self
-            .tables
-            .get_table_mut(table_name)
+        self.tables
+            .with_table_mut(table_name, |target| {
+                *target = new_table;
+            })
             .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-        *target = new_table;
 
         Ok(Table::empty(Schema::new()))
     }
@@ -937,23 +944,23 @@ impl ConcurrentPlanExecutor {
             }
         }
 
-        let target = self
-            .tables
-            .get_table_mut(target_table)
-            .ok_or_else(|| Error::TableNotFound(target_table.to_string()))?;
+        self.tables
+            .with_table_mut(target_table, |target| {
+                for (idx, new_values) in &updates {
+                    target.update_row(*idx, new_values.clone())?;
+                }
 
-        for (idx, new_values) in &updates {
-            target.update_row(*idx, new_values.clone())?;
-        }
+                deletes.sort();
+                for idx in deletes.into_iter().rev() {
+                    target.remove_row(idx);
+                }
 
-        deletes.sort();
-        for idx in deletes.into_iter().rev() {
-            target.remove_row(idx);
-        }
-
-        for insert_row in inserts {
-            target.push_row(insert_row)?;
-        }
+                for insert_row in inserts {
+                    target.push_row(insert_row)?;
+                }
+                Ok::<_, Error>(())
+            })
+            .ok_or_else(|| Error::TableNotFound(target_table.to_string()))??;
 
         Ok(Table::empty(Schema::new()))
     }

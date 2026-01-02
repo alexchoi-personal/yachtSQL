@@ -14,11 +14,11 @@ use crate::value_evaluator::ValueEvaluator;
 
 impl ConcurrentPlanExecutor {
     pub(crate) fn execute_truncate(&self, table_name: &str) -> Result<Table> {
-        let table = self
-            .tables
-            .get_table_mut(table_name)
+        self.tables
+            .with_table_mut(table_name, |table| {
+                table.clear();
+            })
             .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-        table.clear();
         Ok(Table::empty(Schema::new()))
     }
 
@@ -172,33 +172,28 @@ impl ConcurrentPlanExecutor {
                     None => None,
                 };
 
-                let table = self
-                    .tables
-                    .get_table_mut(table_name)
-                    .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-
                 use yachtsql_storage::TableSchemaOps;
-                table.add_column(field, default_value)?;
+                self.tables
+                    .with_table_mut(table_name, |table| table.add_column(field, default_value))
+                    .ok_or_else(|| Error::TableNotFound(table_name.to_string()))??;
             }
             AlterTableOp::DropColumn {
                 name,
                 if_exists: column_if_exists,
             } => {
-                let table = self
-                    .tables
-                    .get_table_mut(table_name)
-                    .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-                if *column_if_exists && table.schema().field(name).is_none() {
-                    return Ok(Table::empty(Schema::new()));
-                }
-                table.drop_column(name)?;
+                self.tables
+                    .with_table_mut(table_name, |table| {
+                        if *column_if_exists && table.schema().field(name).is_none() {
+                            return Ok(());
+                        }
+                        table.drop_column(name)
+                    })
+                    .ok_or_else(|| Error::TableNotFound(table_name.to_string()))??;
             }
             AlterTableOp::RenameColumn { old_name, new_name } => {
-                let table = self
-                    .tables
-                    .get_table_mut(table_name)
-                    .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-                table.rename_column(old_name, new_name)?;
+                self.tables
+                    .with_table_mut(table_name, |table| table.rename_column(old_name, new_name))
+                    .ok_or_else(|| Error::TableNotFound(table_name.to_string()))??;
             }
             AlterTableOp::RenameTable { new_name } => {
                 self.catalog.rename_table(table_name, new_name)?;
@@ -220,55 +215,56 @@ impl ConcurrentPlanExecutor {
                     _ => None,
                 };
 
-                let table = self
+                let catalog_update: Option<(String, Option<yachtsql_ir::Expr>)> = self
                     .tables
-                    .get_table_mut(table_name)
-                    .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
+                    .with_table_mut(table_name, |table| match action {
+                        yachtsql_ir::AlterColumnAction::SetNotNull => {
+                            table.set_column_not_null(name)?;
+                            Ok(None)
+                        }
+                        yachtsql_ir::AlterColumnAction::DropNotNull => {
+                            table.set_column_nullable(name)?;
+                            Ok(None)
+                        }
+                        yachtsql_ir::AlterColumnAction::SetDefault { default: _ } => {
+                            let (value, default_expr) = evaluated_default.ok_or_else(|| {
+                                Error::internal(
+                                    "Expected evaluated default value for SetDefault action",
+                                )
+                            })?;
+                            table.set_column_default(name, value)?;
+                            Ok(Some((name.clone(), Some(default_expr))))
+                        }
+                        yachtsql_ir::AlterColumnAction::DropDefault => {
+                            table.drop_column_default(name)?;
+                            Ok(Some((name.clone(), None)))
+                        }
+                        yachtsql_ir::AlterColumnAction::SetDataType { data_type } => {
+                            table.set_column_data_type(name, data_type.clone())?;
+                            Ok(None)
+                        }
+                        yachtsql_ir::AlterColumnAction::SetOptions { collation } => {
+                            if let Some(coll) = collation {
+                                table.set_column_collation(name, coll.clone())?;
+                            }
+                            Ok(None)
+                        }
+                    })
+                    .ok_or_else(|| Error::TableNotFound(table_name.to_string()))??;
 
-                match action {
-                    yachtsql_ir::AlterColumnAction::SetNotNull => {
-                        table.set_column_not_null(name)?;
-                    }
-                    yachtsql_ir::AlterColumnAction::DropNotNull => {
-                        table.set_column_nullable(name)?;
-                    }
-                    yachtsql_ir::AlterColumnAction::SetDefault { default: _ } => {
-                        let (value, default_expr) = evaluated_default.ok_or_else(|| {
-                            Error::internal(
-                                "Expected evaluated default value for SetDefault action",
-                            )
-                        })?;
-                        table.set_column_default(name, value)?;
-
-                        let mut defaults = self
-                            .catalog
-                            .get_table_defaults(table_name)
-                            .unwrap_or_default();
-                        defaults.retain(|d| d.column_name.to_uppercase() != name.to_uppercase());
+                if let Some((col_name, maybe_expr)) = catalog_update {
+                    let mut defaults = self
+                        .catalog
+                        .get_table_defaults(table_name)
+                        .unwrap_or_default();
+                    defaults.retain(|d| d.column_name.to_uppercase() != col_name.to_uppercase());
+                    if let Some(default_expr) = maybe_expr {
                         defaults.push(ColumnDefault {
-                            column_name: name.clone(),
+                            column_name: col_name,
                             default_expr,
                         });
-                        self.catalog.set_table_defaults(table_name, defaults);
                     }
-                    yachtsql_ir::AlterColumnAction::DropDefault => {
-                        table.drop_column_default(name)?;
-
-                        let mut defaults = self
-                            .catalog
-                            .get_table_defaults(table_name)
-                            .unwrap_or_default();
-                        defaults.retain(|d| d.column_name.to_uppercase() != name.to_uppercase());
-                        self.catalog.set_table_defaults(table_name, defaults);
-                    }
-                    yachtsql_ir::AlterColumnAction::SetDataType { data_type } => {
-                        table.set_column_data_type(name, data_type.clone())?;
-                    }
-                    yachtsql_ir::AlterColumnAction::SetOptions { collation } => {
-                        if let Some(coll) = collation {
-                            table.set_column_collation(name, coll.clone())?;
-                        }
-                    }
+                    self.catalog.set_table_defaults(table_name, defaults);
                 }
             }
             AlterTableOp::SetOptions { options: _ } => {}
