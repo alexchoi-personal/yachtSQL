@@ -83,7 +83,9 @@ impl ConcurrentPlanExecutor {
     pub(crate) fn get_system_variables(
         &self,
     ) -> std::sync::RwLockReadGuard<'_, HashMap<String, Value>> {
-        self.system_variables.read().unwrap()
+        self.system_variables
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     fn refresh_user_functions(&self) {
@@ -101,17 +103,22 @@ impl ConcurrentPlanExecutor {
                 )
             })
             .collect();
-        *self.user_function_defs.write().unwrap() = new_defs;
+        *self
+            .user_function_defs
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = new_defs;
     }
 
     pub(crate) fn get_variables(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, Value>> {
-        self.variables.read().unwrap()
+        self.variables.read().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn get_user_functions(
         &self,
     ) -> std::sync::RwLockReadGuard<'_, HashMap<String, UserFunctionDef>> {
-        self.user_function_defs.read().unwrap()
+        self.user_function_defs
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     pub async fn execute(&self, plan: &OptimizedLogicalPlan) -> Result<Table> {

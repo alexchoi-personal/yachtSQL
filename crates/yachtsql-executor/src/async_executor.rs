@@ -15,18 +15,19 @@ use crate::concurrent_session::ConcurrentSession;
 use crate::executor::concurrent::ConcurrentPlanExecutor;
 use crate::physical_planner::PhysicalPlanner;
 
-const PLAN_CACHE_SIZE: usize = 10000;
+const PLAN_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10000).unwrap();
 
 fn preprocess_range_types(sql: &str) -> String {
     lazy_static! {
         static ref RANGE_TYPE_RE: Regex =
-            Regex::new(r"(?i)\bRANGE\s*<\s*(DATE|DATETIME|TIMESTAMP)\s*>").unwrap();
+            Regex::new(r"(?i)\bRANGE\s*<\s*(DATE|DATETIME|TIMESTAMP)\s*>")
+                .expect("RANGE_TYPE_RE pattern is valid");
     }
     RANGE_TYPE_RE.replace_all(sql, "RANGE_$1").to_string()
 }
 
 fn default_plan_cache() -> LruCache<String, OptimizedLogicalPlan> {
-    LruCache::new(NonZeroUsize::new(PLAN_CACHE_SIZE).unwrap())
+    LruCache::new(PLAN_CACHE_SIZE)
 }
 
 fn is_cacheable_plan(plan: &OptimizedLogicalPlan) -> bool {
@@ -107,7 +108,7 @@ impl AsyncQueryExecutor {
     pub async fn execute_sql(&self, sql: &str) -> Result<Table> {
         let sql = preprocess_range_types(sql);
         let cached = {
-            let mut cache = self.plan_cache.write().unwrap();
+            let mut cache = self.plan_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.get(&sql).cloned()
         };
 
@@ -118,7 +119,7 @@ impl AsyncQueryExecutor {
                 let physical = yachtsql_optimizer::optimize(&logical)?;
 
                 if is_cacheable_plan(&physical) {
-                    let mut cache = self.plan_cache.write().unwrap();
+                    let mut cache = self.plan_cache.write().unwrap_or_else(|e| e.into_inner());
                     cache.put(sql.clone(), physical.clone());
                 }
 
@@ -143,7 +144,7 @@ impl AsyncQueryExecutor {
         executor.tables.commit_writes();
 
         if invalidates_cache(&physical) {
-            let mut cache = self.plan_cache.write().unwrap();
+            let mut cache = self.plan_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.clear();
         }
 

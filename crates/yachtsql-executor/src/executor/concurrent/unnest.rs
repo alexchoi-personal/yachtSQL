@@ -349,7 +349,7 @@ impl ConcurrentPlanExecutor {
                 frame.clone(),
                 WindowFuncType::Aggregate(*func),
             )),
-            _ => panic!("Expected window expression in qualify"),
+            _ => Err(Error::internal("Expected window expression in qualify")),
         }
     }
 }

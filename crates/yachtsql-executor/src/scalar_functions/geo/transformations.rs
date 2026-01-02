@@ -264,9 +264,7 @@ pub fn fn_st_boundary(args: &[Value]) -> Result<Value> {
             let boundary = match geom {
                 Geometry::Polygon(poly) => Geometry::LineString(poly.exterior().clone()),
                 Geometry::LineString(ls) => {
-                    if ls.0.len() >= 2 {
-                        let start = ls.0.first().unwrap();
-                        let end = ls.0.last().unwrap();
+                    if let (Some(start), Some(end)) = (ls.0.first(), ls.0.last()) {
                         if start == end {
                             Geometry::GeometryCollection(geo_types::GeometryCollection::new_from(
                                 vec![],

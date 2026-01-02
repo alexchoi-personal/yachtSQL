@@ -8,11 +8,7 @@ use super::super::PlanExecutor;
 
 impl<'a> PlanExecutor<'a> {
     pub(super) fn value_to_literal(value: Value) -> Literal {
-        use chrono::{NaiveDate, Timelike};
-        const UNIX_EPOCH_DATE: NaiveDate = match NaiveDate::from_ymd_opt(1970, 1, 1) {
-            Some(d) => d,
-            None => panic!("Invalid date"),
-        };
+        use chrono::Timelike;
         match value {
             Value::Null => Literal::Null,
             Value::Bool(b) => Literal::Bool(b),
@@ -23,7 +19,8 @@ impl<'a> PlanExecutor<'a> {
             Value::String(s) => Literal::String(s),
             Value::Bytes(b) => Literal::Bytes(b),
             Value::Date(d) => {
-                let days = d.signed_duration_since(UNIX_EPOCH_DATE).num_days() as i32;
+                let epoch = chrono::DateTime::UNIX_EPOCH.date_naive();
+                let days = d.signed_duration_since(epoch).num_days() as i32;
                 Literal::Date(days)
             }
             Value::Time(t) => {

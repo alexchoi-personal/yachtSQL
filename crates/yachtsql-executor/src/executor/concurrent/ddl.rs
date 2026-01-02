@@ -233,7 +233,11 @@ impl ConcurrentPlanExecutor {
                         table.set_column_nullable(name)?;
                     }
                     yachtsql_ir::AlterColumnAction::SetDefault { default: _ } => {
-                        let (value, default_expr) = evaluated_default.unwrap();
+                        let (value, default_expr) = evaluated_default.ok_or_else(|| {
+                            Error::internal(
+                                "Expected evaluated default value for SetDefault action",
+                            )
+                        })?;
                         table.set_column_default(name, value)?;
 
                         let mut defaults = self

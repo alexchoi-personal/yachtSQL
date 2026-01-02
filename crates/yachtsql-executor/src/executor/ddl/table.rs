@@ -123,7 +123,7 @@ impl<'a> PlanExecutor<'a> {
             }
             return Err(Error::TableNotFound(table_name.to_string()));
         }
-        let _table = table_opt.unwrap();
+        let _table = table_opt.ok_or_else(|| Error::table_not_found(table_name))?;
 
         match operation {
             AlterTableOp::AddColumn {

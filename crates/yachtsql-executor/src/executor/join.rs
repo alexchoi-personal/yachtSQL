@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use yachtsql_common::error::Result;
+use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{Expr, JoinType, PlanSchema};
 use yachtsql_storage::{Column, Record, Schema, Table};
@@ -204,7 +204,7 @@ impl<'a> PlanExecutor<'a> {
                 )?;
             }
             _ => {
-                panic!("HashJoin only supports Inner join type currently");
+                return Err(Error::unsupported("Only INNER JOIN supported in HashJoin"));
             }
         }
 

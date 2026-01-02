@@ -369,7 +369,13 @@ impl ConcurrentPlanExecutor {
                                 })
                             })
                             .collect();
-                        handles.into_iter().map(|h| h.join().unwrap()).collect()
+                        handles
+                            .into_iter()
+                            .map(|h| {
+                                h.join()
+                                    .unwrap_or_else(|_| Err(Error::internal("Thread join failed")))
+                            })
+                            .collect()
                     });
 
                     let mut result = Table::empty(result_schema);
@@ -404,9 +410,9 @@ impl ConcurrentPlanExecutor {
                     Ok(result)
                 }
             }
-            _ => {
-                panic!("HashJoin only supports Inner join type currently");
-            }
+            _ => Err(Error::unsupported(
+                "HashJoin only supports Inner join type currently",
+            )),
         }
     }
 }

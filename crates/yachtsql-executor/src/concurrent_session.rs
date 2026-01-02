@@ -34,26 +34,38 @@ impl ConcurrentSession {
     }
 
     pub fn get_system_variable(&self, name: &str) -> Option<Value> {
-        self.system_variables.read().unwrap().get(name).cloned()
+        self.system_variables
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned()
     }
 
     pub fn set_system_variable(&self, name: &str, value: Value) {
         self.system_variables
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(name.to_uppercase(), value);
     }
 
     pub fn system_variables(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, Value>> {
-        self.system_variables.read().unwrap()
+        self.system_variables
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn current_schema(&self) -> Option<String> {
-        self.current_schema.read().unwrap().clone()
+        self.current_schema
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn set_current_schema(&self, schema: Option<String>) {
-        *self.current_schema.write().unwrap() = schema;
+        *self
+            .current_schema
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = schema;
     }
 
     pub fn clear_variables(&self) {

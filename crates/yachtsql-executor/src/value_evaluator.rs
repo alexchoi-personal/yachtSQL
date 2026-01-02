@@ -467,7 +467,7 @@ impl<'a> ValueEvaluator<'a> {
             Literal::Numeric(n) => Value::Numeric(*n),
             Literal::BigNumeric(n) => Value::BigNumeric(*n),
             Literal::Date(d) => {
-                let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+                let epoch = chrono::DateTime::UNIX_EPOCH.date_naive();
                 Value::Date(epoch + chrono::Duration::days(*d as i64))
             }
             Literal::Time(t) => {
@@ -1352,7 +1352,11 @@ pub fn cast_value(val: Value, target_type: &DataType, safe: bool) -> Result<Valu
         DataType::Timestamp => match &val {
             Value::Timestamp(_) => Ok(val),
             Value::String(s) => parse_timestamp(s),
-            Value::Date(d) => Ok(Value::Timestamp(d.and_hms_opt(0, 0, 0).unwrap().and_utc())),
+            Value::Date(d) => Ok(Value::Timestamp(
+                d.and_hms_opt(0, 0, 0)
+                    .unwrap_or_else(|| d.and_time(chrono::NaiveTime::default()))
+                    .and_utc(),
+            )),
             Value::DateTime(dt) => Ok(Value::Timestamp(dt.and_utc())),
             _ => Err(Error::invalid_query(format!(
                 "Cannot cast {:?} to TIMESTAMP",

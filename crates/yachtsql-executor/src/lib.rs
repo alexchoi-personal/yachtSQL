@@ -42,10 +42,10 @@ pub use value_evaluator::{UserFunctionDef, ValueEvaluator, cast_value};
 use yachtsql_optimizer::OptimizedLogicalPlan;
 pub use yachtsql_storage::{Record, Table};
 
-const PLAN_CACHE_SIZE: usize = 10000;
+const PLAN_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10000).unwrap();
 
 fn default_plan_cache() -> LruCache<String, OptimizedLogicalPlan> {
-    LruCache::new(NonZeroUsize::new(PLAN_CACHE_SIZE).unwrap())
+    LruCache::new(PLAN_CACHE_SIZE)
 }
 
 fn is_cacheable_plan(plan: &OptimizedLogicalPlan) -> bool {

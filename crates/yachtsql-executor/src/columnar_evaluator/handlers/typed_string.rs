@@ -76,7 +76,9 @@ pub fn eval_typed_string(type_name: &DataType, value: &str, row_count: usize) ->
             } else if let Some(ts) = try_parse_with_tz(value) {
                 Value::Timestamp(ts)
             } else if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
-                let dt = date.and_hms_opt(0, 0, 0).unwrap();
+                let dt = date
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap_or_else(|| date.and_time(NaiveTime::MIN));
                 let ts = Utc.from_utc_datetime(&dt);
                 Value::Timestamp(ts)
             } else {
@@ -190,7 +192,9 @@ fn parse_range_element(value: &str, inner_type: Option<&DataType>) -> Result<Val
         }
         Some(DataType::Timestamp) => {
             if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
-                let dt = date.and_hms_opt(0, 0, 0).unwrap();
+                let dt = date
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap_or_else(|| date.and_time(NaiveTime::MIN));
                 let ts = Utc.from_utc_datetime(&dt);
                 return Ok(Value::Timestamp(ts));
             }

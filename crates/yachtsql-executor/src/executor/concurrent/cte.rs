@@ -61,7 +61,10 @@ impl ConcurrentPlanExecutor {
                     if let Some(ref cols) = columns {
                         table = self.apply_cte_column_aliases(&table, cols)?;
                     }
-                    self.cte_results.write().unwrap().insert(name, table);
+                    self.cte_results
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(name, table);
                 }
             } else {
                 for (_, cte) in wave_ctes {
@@ -78,7 +81,7 @@ impl ConcurrentPlanExecutor {
 
                         self.cte_results
                             .write()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .insert(cte.name.to_uppercase(), cte_result);
                     }
                 }
@@ -190,7 +193,7 @@ impl ConcurrentPlanExecutor {
 
         self.cte_results
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(cte.name.to_uppercase(), accumulated.clone());
 
         let mut working_set = accumulated.clone();
@@ -201,7 +204,7 @@ impl ConcurrentPlanExecutor {
 
             self.cte_results
                 .write()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(cte.name.to_uppercase(), working_set);
 
             let mut new_rows = Vec::new();
@@ -237,7 +240,7 @@ impl ConcurrentPlanExecutor {
 
         self.cte_results
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(cte.name.to_uppercase(), accumulated);
         Ok(())
     }

@@ -143,14 +143,15 @@ pub fn executor_plan_to_logical_plan(plan: &PhysicalPlan) -> yachtsql_ir::Logica
         } => {
             let mut iter = inputs.iter();
             let first = iter.next().map(executor_plan_to_logical_plan);
-            iter.fold(first, |acc, p| {
-                Some(LogicalPlan::SetOperation {
-                    left: Box::new(acc.unwrap()),
+            iter.fold(first, |acc, p| match acc {
+                Some(plan) => Some(LogicalPlan::SetOperation {
+                    left: Box::new(plan),
                     right: Box::new(executor_plan_to_logical_plan(p)),
                     op: yachtsql_ir::SetOperationType::Union,
                     all: *all,
                     schema: schema.clone(),
-                })
+                }),
+                None => Some(executor_plan_to_logical_plan(p)),
             })
             .unwrap_or_else(|| LogicalPlan::Empty {
                 schema: schema.clone(),

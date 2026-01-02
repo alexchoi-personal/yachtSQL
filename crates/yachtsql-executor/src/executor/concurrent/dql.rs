@@ -22,15 +22,30 @@ impl ConcurrentPlanExecutor {
         table_name: &str,
         planned_schema: &PlanSchema,
     ) -> Result<Table> {
-        if let Some(cte_table) = self.cte_results.read().unwrap().get(table_name) {
+        if let Some(cte_table) = self
+            .cte_results
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(table_name)
+        {
             return Ok(self.apply_planned_schema(cte_table, planned_schema));
         }
         let table_name_upper = table_name.to_uppercase();
-        if let Some(cte_table) = self.cte_results.read().unwrap().get(&table_name_upper) {
+        if let Some(cte_table) = self
+            .cte_results
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&table_name_upper)
+        {
             return Ok(self.apply_planned_schema(cte_table, planned_schema));
         }
         let table_name_lower = table_name.to_lowercase();
-        if let Some(cte_table) = self.cte_results.read().unwrap().get(&table_name_lower) {
+        if let Some(cte_table) = self
+            .cte_results
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&table_name_lower)
+        {
             return Ok(self.apply_planned_schema(cte_table, planned_schema));
         }
 
