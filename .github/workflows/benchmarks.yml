@@ -40,10 +40,20 @@ jobs:
         run: git stash && git checkout ${{ github.base_ref }}
 
       - name: Run benchmarks on base branch
-        run: cargo bench --bench baseline -- --save-baseline base
+        id: base_bench
+        run: |
+          # Check if baseline benchmark exists on base branch
+          if [ -f "benches/baseline.rs" ]; then
+            cargo bench --bench baseline -- --save-baseline base
+            echo "has_baseline=true" >> $GITHUB_OUTPUT
+          else
+            echo "Baseline benchmark not found on base branch, skipping comparison"
+            echo "has_baseline=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Compare benchmarks
         id: compare
+        if: steps.base_bench.outputs.has_baseline == 'true'
         run: |
           critcmp base pr --threshold 10 > bench_comparison.txt 2>&1 || true
           cat bench_comparison.txt
@@ -55,13 +65,14 @@ jobs:
           fi
 
       - name: Upload benchmark comparison
+        if: steps.base_bench.outputs.has_baseline == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-comparison
           path: bench_comparison.txt
 
       - name: Fail on regression > 10%
-        if: steps.compare.outputs.regression_detected == 'true'
+        if: steps.base_bench.outputs.has_baseline == 'true' && steps.compare.outputs.regression_detected == 'true'
         run: |
           echo "Performance regression detected (>10%)"
           cat bench_comparison.txt
