@@ -1,52 +1,91 @@
 #![coverage(off)]
 
-use yachtsql_common::error::Result;
+use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::{IntervalValue, Value};
 use yachtsql_ir::DateTimeField;
 use yachtsql_storage::Column;
 
 pub fn eval_interval(value: i64, leading_field: DateTimeField, row_count: usize) -> Result<Column> {
     let iv = match leading_field {
-        DateTimeField::Year => IntervalValue {
-            months: (value * 12) as i32,
-            days: 0,
-            nanos: 0,
-        },
-        DateTimeField::Month => IntervalValue {
-            months: value as i32,
-            days: 0,
-            nanos: 0,
-        },
-        DateTimeField::Day => IntervalValue {
-            months: 0,
-            days: value as i32,
-            nanos: 0,
-        },
-        DateTimeField::Hour => IntervalValue {
-            months: 0,
-            days: 0,
-            nanos: value * 3_600_000_000_000,
-        },
-        DateTimeField::Minute => IntervalValue {
-            months: 0,
-            days: 0,
-            nanos: value * 60_000_000_000,
-        },
-        DateTimeField::Second => IntervalValue {
-            months: 0,
-            days: 0,
-            nanos: value * 1_000_000_000,
-        },
-        DateTimeField::Millisecond => IntervalValue {
-            months: 0,
-            days: 0,
-            nanos: value * 1_000_000,
-        },
-        DateTimeField::Microsecond => IntervalValue {
-            months: 0,
-            days: 0,
-            nanos: value * 1_000,
-        },
+        DateTimeField::Year => {
+            let months = value
+                .checked_mul(12)
+                .and_then(|v| i32::try_from(v).ok())
+                .ok_or_else(|| Error::interval_overflow("INTERVAL YEAR", value.to_string()))?;
+            IntervalValue {
+                months,
+                days: 0,
+                nanos: 0,
+            }
+        }
+        DateTimeField::Month => {
+            let months = i32::try_from(value)
+                .map_err(|_| Error::interval_overflow("INTERVAL MONTH", value.to_string()))?;
+            IntervalValue {
+                months,
+                days: 0,
+                nanos: 0,
+            }
+        }
+        DateTimeField::Day => {
+            let days = i32::try_from(value)
+                .map_err(|_| Error::interval_overflow("INTERVAL DAY", value.to_string()))?;
+            IntervalValue {
+                months: 0,
+                days,
+                nanos: 0,
+            }
+        }
+        DateTimeField::Hour => {
+            let nanos = value
+                .checked_mul(3_600_000_000_000)
+                .ok_or_else(|| Error::interval_overflow("INTERVAL HOUR", value.to_string()))?;
+            IntervalValue {
+                months: 0,
+                days: 0,
+                nanos,
+            }
+        }
+        DateTimeField::Minute => {
+            let nanos = value
+                .checked_mul(60_000_000_000)
+                .ok_or_else(|| Error::interval_overflow("INTERVAL MINUTE", value.to_string()))?;
+            IntervalValue {
+                months: 0,
+                days: 0,
+                nanos,
+            }
+        }
+        DateTimeField::Second => {
+            let nanos = value
+                .checked_mul(1_000_000_000)
+                .ok_or_else(|| Error::interval_overflow("INTERVAL SECOND", value.to_string()))?;
+            IntervalValue {
+                months: 0,
+                days: 0,
+                nanos,
+            }
+        }
+        DateTimeField::Millisecond => {
+            let nanos = value.checked_mul(1_000_000).ok_or_else(|| {
+                Error::interval_overflow("INTERVAL MILLISECOND", value.to_string())
+            })?;
+            IntervalValue {
+                months: 0,
+                days: 0,
+                nanos,
+            }
+        }
+        DateTimeField::Microsecond => {
+            let nanos = value.checked_mul(1_000).ok_or_else(|| {
+                Error::interval_overflow("INTERVAL MICROSECOND", value.to_string())
+            })?;
+            IntervalValue {
+                months: 0,
+                days: 0,
+                nanos,
+            }
+        }
         DateTimeField::Nanosecond => IntervalValue {
             months: 0,
             days: 0,

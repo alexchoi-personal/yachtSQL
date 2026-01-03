@@ -14,6 +14,73 @@ const PY_EXECUTION_TIMEOUT_MS: u64 = 5000;
 const PY_CODE_SIZE_LIMIT: usize = 1024 * 1024;
 const PY_RECURSION_LIMIT: i32 = 100;
 
+const ALLOWED_BUILTINS: &[&str] = &[
+    "abs",
+    "all",
+    "any",
+    "bin",
+    "bool",
+    "bytearray",
+    "bytes",
+    "callable",
+    "chr",
+    "complex",
+    "dict",
+    "divmod",
+    "enumerate",
+    "filter",
+    "float",
+    "format",
+    "frozenset",
+    "hasattr",
+    "hash",
+    "hex",
+    "int",
+    "isinstance",
+    "issubclass",
+    "iter",
+    "len",
+    "list",
+    "map",
+    "max",
+    "min",
+    "next",
+    "oct",
+    "ord",
+    "pow",
+    "print",
+    "range",
+    "repr",
+    "reversed",
+    "round",
+    "set",
+    "slice",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
+    "type",
+    "zip",
+    "None",
+    "True",
+    "False",
+    "Ellipsis",
+    "NotImplemented",
+    "Exception",
+    "BaseException",
+    "ValueError",
+    "TypeError",
+    "KeyError",
+    "IndexError",
+    "AttributeError",
+    "RuntimeError",
+    "StopIteration",
+    "ZeroDivisionError",
+    "OverflowError",
+    "ArithmeticError",
+    "LookupError",
+];
+
 pub fn evaluate_py_function(
     py_code: &str,
     param_names: &[String],
@@ -63,7 +130,23 @@ fn execute_py_internal(
             .map_err(|e| format!("Failed to import sys: {}", e))?;
         sys.call_method1("setrecursionlimit", (PY_RECURSION_LIMIT,))
             .map_err(|e| format!("Failed to set recursion limit: {}", e))?;
+
+        let builtins = py
+            .import("builtins")
+            .map_err(|e| format!("Failed to import builtins: {}", e))?;
+        let restricted_builtins = PyDict::new(py);
+        for &name in ALLOWED_BUILTINS {
+            if let Ok(obj) = builtins.getattr(name) {
+                restricted_builtins
+                    .set_item(name, obj)
+                    .map_err(|e| format!("Failed to set builtin {}: {}", name, e))?;
+            }
+        }
+
         let globals = PyDict::new(py);
+        globals
+            .set_item("__builtins__", restricted_builtins)
+            .map_err(|e| format!("Failed to set __builtins__: {}", e))?;
 
         for (name, value) in param_names.iter().zip(args.iter()) {
             let py_value = value_to_py(py, value)?;

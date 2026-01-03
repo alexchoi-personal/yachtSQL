@@ -681,7 +681,7 @@ impl<'a> PlanExecutor<'a> {
                 }
             }
             Value::String(s) => {
-                let escaped = s.replace('\'', "''").replace('\0', "");
+                let escaped = escape_sql_string(s);
                 format!("'{}'", escaped)
             }
             Value::Bytes(b) => format!("X'{}'", hex::encode(b)),
@@ -710,4 +710,20 @@ fn default_value_for_type(data_type: &DataType) -> Value {
         DataType::String => Value::String(String::new()),
         _ => Value::Null,
     }
+}
+
+fn escape_sql_string(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\'' => result.push_str("''"),
+            '\\' => result.push_str("\\\\"),
+            '\0' => {}
+            '\n' => result.push_str("\\n"),
+            '\r' => result.push_str("\\r"),
+            '\t' => result.push_str("\\t"),
+            _ => result.push(c),
+        }
+    }
+    result
 }

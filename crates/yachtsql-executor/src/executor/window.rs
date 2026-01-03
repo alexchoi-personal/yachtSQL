@@ -437,38 +437,35 @@ pub fn compute_window_function(
                 }
             }
             WindowFunction::CumeDist => {
-                let mut prev_values: Option<Vec<Value>> = None;
-                let mut count_less_or_equal = 0usize;
-                for (i, &idx) in sorted_indices.iter().enumerate() {
-                    let curr_values: Vec<Value> = order_by
-                        .iter()
-                        .map(|ob| {
-                            evaluator
-                                .evaluate(&ob.expr, &rows[idx])
-                                .unwrap_or(Value::Null)
-                        })
-                        .collect();
-
-                    if i == 0 || prev_values.as_ref().is_some_and(|p| *p != curr_values) {
-                        count_less_or_equal = sorted_indices
+                let all_values: Vec<Vec<Value>> = sorted_indices
+                    .iter()
+                    .map(|&idx| {
+                        order_by
                             .iter()
-                            .enumerate()
-                            .filter(|(_j, jdx)| {
-                                let j_values: Vec<Value> = order_by
-                                    .iter()
-                                    .map(|ob| {
-                                        evaluator
-                                            .evaluate(&ob.expr, &rows[**jdx])
-                                            .unwrap_or(Value::Null)
-                                    })
-                                    .collect();
-                                j_values <= curr_values
+                            .map(|ob| {
+                                evaluator
+                                    .evaluate(&ob.expr, &rows[idx])
+                                    .unwrap_or(Value::Null)
                             })
-                            .count();
+                            .collect()
+                    })
+                    .collect();
+
+                let mut peer_end_indices = Vec::with_capacity(partition_size);
+                let mut j = 0;
+                while j < partition_size {
+                    let peer_start = j;
+                    while j < partition_size && all_values[j] == all_values[peer_start] {
+                        j += 1;
                     }
-                    let cume = count_less_or_equal as f64 / partition_size as f64;
+                    for _ in peer_start..j {
+                        peer_end_indices.push(j);
+                    }
+                }
+
+                for end_idx in peer_end_indices {
+                    let cume = end_idx as f64 / partition_size as f64;
                     results.push(Value::Float64(ordered_float::OrderedFloat(cume)));
-                    prev_values = Some(curr_values);
                 }
             }
         },

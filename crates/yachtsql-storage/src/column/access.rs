@@ -106,6 +106,13 @@ impl Column {
     }
 
     pub fn set(&mut self, index: usize, value: Value) -> Result<()> {
+        if index >= self.len() {
+            return Err(Error::invalid_query(format!(
+                "Column index {} out of bounds (len: {})",
+                index,
+                self.len()
+            )));
+        }
         match (self, value) {
             (Column::Bool { data, nulls }, Value::Null) => {
                 data[index] = false;

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write as IoWrite};
+use std::path::Path;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -966,6 +967,7 @@ impl ConcurrentPlanExecutor {
     }
 }
 
+#[allow(clippy::collapsible_if)]
 fn validate_file_path(path: &str) -> Result<String> {
     if path.contains("..") {
         return Err(Error::InvalidQuery(
@@ -973,5 +975,52 @@ fn validate_file_path(path: &str) -> Result<String> {
         ));
     }
 
-    Ok(path.to_string())
+    let path_obj = Path::new(path);
+
+    if path_obj.is_absolute() {
+        if let Ok(canonical) = path_obj.canonicalize() {
+            return Ok(canonical.to_string_lossy().to_string());
+        }
+        if let Some(parent) = path_obj.parent() {
+            if let Ok(canonical_parent) = parent.canonicalize() {
+                let file_name = path_obj
+                    .file_name()
+                    .ok_or_else(|| Error::InvalidQuery("Invalid file path".into()))?;
+                return Ok(canonical_parent
+                    .join(file_name)
+                    .to_string_lossy()
+                    .to_string());
+            }
+        }
+        return Err(Error::internal(format!(
+            "Failed to resolve path '{}': parent directory does not exist",
+            path
+        )));
+    }
+
+    let current_dir = std::env::current_dir()
+        .map_err(|e| Error::internal(format!("Failed to get current directory: {}", e)))?;
+
+    let full_path = current_dir.join(path);
+
+    if let Ok(canonical) = full_path.canonicalize() {
+        if !canonical.starts_with(&current_dir) {
+            return Err(Error::InvalidQuery(
+                "File path escapes the current working directory".into(),
+            ));
+        }
+        return Ok(canonical.to_string_lossy().to_string());
+    }
+
+    if let Some(parent) = full_path.parent() {
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            if !canonical_parent.starts_with(&current_dir) {
+                return Err(Error::InvalidQuery(
+                    "File path escapes the current working directory".into(),
+                ));
+            }
+        }
+    }
+
+    Ok(full_path.to_string_lossy().to_string())
 }

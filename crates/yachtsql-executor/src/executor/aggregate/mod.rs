@@ -5,6 +5,9 @@ mod accumulator;
 use std::collections::HashMap;
 
 use accumulator::Accumulator;
+use rustc_hash::FxHashMap;
+
+type GroupMap<V> = FxHashMap<Vec<Value>, V>;
 use ordered_float::OrderedFloat;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
@@ -85,7 +88,7 @@ pub(crate) fn compute_aggregate(
     } else if let Some(sets) = grouping_sets {
         for grouping_set in sets {
             let active_indices: Vec<usize> = grouping_set.clone();
-            let mut group_map: HashMap<Vec<Value>, (Vec<Accumulator>, Vec<usize>)> = HashMap::new();
+            let mut group_map: GroupMap<(Vec<Accumulator>, Vec<usize>)> = FxHashMap::default();
 
             for i in 0..n {
                 let record = get_record_from_columns(&columns, i);
@@ -172,67 +175,65 @@ pub(crate) fn compute_aggregate(
 
             let input_schema_ref = &input_schema;
             let columns_ref = &columns;
-            let local_results: Vec<Result<HashMap<Vec<Value>, Vec<Accumulator>>>> =
-                std::thread::scope(|s| {
-                    let handles: Vec<_> = (0..n)
-                        .collect::<Vec<_>>()
-                        .chunks(chunk_size)
-                        .map(|chunk| {
-                            let chunk_indices: Vec<usize> = chunk.to_vec();
-                            s.spawn(move || {
-                                let evaluator = ValueEvaluator::new(input_schema_ref)
-                                    .with_variables(variables)
-                                    .with_user_functions(user_function_defs);
-                                let mut local_groups: HashMap<Vec<Value>, Vec<Accumulator>> =
-                                    HashMap::new();
+            let local_results: Vec<Result<GroupMap<Vec<Accumulator>>>> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..n)
+                    .collect::<Vec<_>>()
+                    .chunks(chunk_size)
+                    .map(|chunk| {
+                        let chunk_indices: Vec<usize> = chunk.to_vec();
+                        s.spawn(move || {
+                            let evaluator = ValueEvaluator::new(input_schema_ref)
+                                .with_variables(variables)
+                                .with_user_functions(user_function_defs);
+                            let mut local_groups: GroupMap<Vec<Accumulator>> = FxHashMap::default();
 
-                                for &idx in &chunk_indices {
-                                    let record = get_record_from_columns(columns_ref, idx);
-                                    let group_key_values: Vec<Value> = group_by
-                                        .iter()
-                                        .map(|e| evaluator.evaluate(e, &record))
-                                        .collect::<Result<_>>()?;
+                            for &idx in &chunk_indices {
+                                let record = get_record_from_columns(columns_ref, idx);
+                                let group_key_values: Vec<Value> = group_by
+                                    .iter()
+                                    .map(|e| evaluator.evaluate(e, &record))
+                                    .collect::<Result<_>>()?;
 
-                                    let accumulators =
-                                        local_groups.entry(group_key_values).or_insert_with(|| {
-                                            aggregates.iter().map(Accumulator::from_expr).collect()
-                                        });
+                                let accumulators =
+                                    local_groups.entry(group_key_values).or_insert_with(|| {
+                                        aggregates.iter().map(Accumulator::from_expr).collect()
+                                    });
 
-                                    for (acc, agg_expr) in
-                                        accumulators.iter_mut().zip(aggregates.iter())
-                                    {
-                                        if matches!(
-                                            acc,
-                                            Accumulator::SumIf(_)
-                                                | Accumulator::AvgIf { .. }
-                                                | Accumulator::MinIf(_)
-                                                | Accumulator::MaxIf(_)
-                                        ) {
-                                            let (value, condition) = extract_conditional_agg_args(
-                                                &evaluator, agg_expr, &record,
-                                            )?;
-                                            acc.accumulate_conditional(&value, condition)?;
-                                        } else {
-                                            let arg_val =
-                                                extract_agg_arg(&evaluator, agg_expr, &record)?;
-                                            acc.accumulate(&arg_val)?;
-                                        }
+                                for (acc, agg_expr) in
+                                    accumulators.iter_mut().zip(aggregates.iter())
+                                {
+                                    if matches!(
+                                        acc,
+                                        Accumulator::SumIf(_)
+                                            | Accumulator::AvgIf { .. }
+                                            | Accumulator::MinIf(_)
+                                            | Accumulator::MaxIf(_)
+                                    ) {
+                                        let (value, condition) = extract_conditional_agg_args(
+                                            &evaluator, agg_expr, &record,
+                                        )?;
+                                        acc.accumulate_conditional(&value, condition)?;
+                                    } else {
+                                        let arg_val =
+                                            extract_agg_arg(&evaluator, agg_expr, &record)?;
+                                        acc.accumulate(&arg_val)?;
                                     }
                                 }
-                                Ok(local_groups)
-                            })
+                            }
+                            Ok(local_groups)
                         })
-                        .collect();
-                    handles
-                        .into_iter()
-                        .map(|h| {
-                            h.join()
-                                .map_err(|_| Error::internal("Thread join failed"))?
-                        })
-                        .collect()
-                });
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join()
+                            .map_err(|_| Error::internal("Thread join failed"))?
+                    })
+                    .collect()
+            });
 
-            let mut merged_groups: HashMap<Vec<Value>, Vec<Accumulator>> = HashMap::new();
+            let mut merged_groups: GroupMap<Vec<Accumulator>> = FxHashMap::default();
 
             for local_result in local_results {
                 let local_groups = local_result?;
@@ -254,7 +255,7 @@ pub(crate) fn compute_aggregate(
                 result.push_row(row)?;
             }
         } else {
-            let mut groups: HashMap<Vec<Value>, Vec<Accumulator>> = HashMap::new();
+            let mut groups: GroupMap<Vec<Accumulator>> = FxHashMap::default();
 
             for i in 0..n {
                 let record = get_record_from_columns(&columns, i);
@@ -533,8 +534,7 @@ impl<'a> PlanExecutor<'a> {
         } else if let Some(sets) = grouping_sets {
             for grouping_set in sets {
                 let active_indices: Vec<usize> = grouping_set.clone();
-                let mut group_map: HashMap<Vec<Value>, (Vec<Accumulator>, Vec<usize>)> =
-                    HashMap::new();
+                let mut group_map: GroupMap<(Vec<Accumulator>, Vec<usize>)> = FxHashMap::default();
 
                 for i in 0..n {
                     let record = get_record_from_columns(&columns, i);
@@ -618,7 +618,7 @@ impl<'a> PlanExecutor<'a> {
                 }
             }
         } else {
-            let mut groups: HashMap<Vec<Value>, Vec<Accumulator>> = HashMap::new();
+            let mut groups: GroupMap<Vec<Accumulator>> = FxHashMap::default();
 
             for i in 0..n {
                 let record = get_record_from_columns(&columns, i);
