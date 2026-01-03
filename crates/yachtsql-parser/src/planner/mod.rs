@@ -312,6 +312,15 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                 };
                 Ok(LogicalPlan::Return { value })
             }
+            Statement::Explain {
+                statement, analyze, ..
+            } => {
+                let input = self.plan_statement(statement)?;
+                Ok(LogicalPlan::Explain {
+                    input: Box::new(input),
+                    analyze: *analyze,
+                })
+            }
             _ => Err(Error::unsupported(format!(
                 "Unsupported statement: {:?}",
                 stmt
