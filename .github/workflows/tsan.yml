@@ -1,6 +1,9 @@
 name: ThreadSanitizer
 
-on: [push, pull_request]
+# TSan is disabled for now - requires complex setup with all deps rebuilt
+# with sanitizer flags. Re-enable when infrastructure supports it.
+on:
+  workflow_dispatch:  # Manual trigger only
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
