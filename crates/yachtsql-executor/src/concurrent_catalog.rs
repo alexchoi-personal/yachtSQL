@@ -92,27 +92,38 @@ impl TableLockSet {
     }
 
     pub fn add_read_table(&self, name: String, table: Table) {
-        if let Ok(mut guard) = self.read_tables.lock() {
-            guard.insert(name, table);
+        match self.read_tables.lock() {
+            Ok(mut guard) => {
+                guard.insert(name, table);
+            }
+            Err(poisoned) => {
+                tracing::error!("read_tables mutex poisoned, recovering");
+                poisoned.into_inner().insert(name, table);
+            }
         }
     }
 
     pub fn add_write_table(&self, name: String, table: Table) {
-        if let Ok(mut guard) = self.write_tables.lock() {
-            guard.insert(name, table);
+        match self.write_tables.lock() {
+            Ok(mut guard) => {
+                guard.insert(name, table);
+            }
+            Err(poisoned) => {
+                tracing::error!("write_tables mutex poisoned, recovering");
+                poisoned.into_inner().insert(name, table);
+            }
         }
     }
 
     pub fn get_table(&self, name: &str) -> Option<Table> {
         let upper = name.to_uppercase();
-        if let Ok(guard) = self.write_tables.lock()
-            && let Some(table) = guard.get(&upper)
-        {
+        let write_guard = self.write_tables.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(table) = write_guard.get(&upper) {
             return Some(table.clone());
         }
-        if let Ok(guard) = self.read_tables.lock()
-            && let Some(table) = guard.get(&upper)
-        {
+        drop(write_guard);
+        let read_guard = self.read_tables.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(table) = read_guard.get(&upper) {
             return Some(table.clone());
         }
         None

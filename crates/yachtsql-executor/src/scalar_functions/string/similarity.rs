@@ -55,6 +55,8 @@ pub fn fn_soundex(args: &[Value]) -> Result<Value> {
     }
 }
 
+const MAX_EDIT_DISTANCE_STRING_LEN: usize = 10_000;
+
 pub fn fn_edit_distance(args: &[Value]) -> Result<Value> {
     let (s1, s2, max_distance) = match args {
         [Value::Null, ..] | [_, Value::Null, ..] => return Ok(Value::Null),
@@ -71,6 +73,13 @@ pub fn fn_edit_distance(args: &[Value]) -> Result<Value> {
 
     let len1 = s1.chars().count();
     let len2 = s2.chars().count();
+
+    if len1 > MAX_EDIT_DISTANCE_STRING_LEN || len2 > MAX_EDIT_DISTANCE_STRING_LEN {
+        return Err(Error::InvalidQuery(format!(
+            "EDIT_DISTANCE string length exceeds maximum of {} characters",
+            MAX_EDIT_DISTANCE_STRING_LEN
+        )));
+    }
 
     if let Some(max) = max_distance
         && len1.abs_diff(len2) > max

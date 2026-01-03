@@ -667,9 +667,29 @@ impl<'a> PlanExecutor<'a> {
             Value::Null => "NULL".to_string(),
             Value::Bool(b) => b.to_string().to_uppercase(),
             Value::Int64(i) => i.to_string(),
-            Value::Float64(f) => f.to_string(),
-            Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+            Value::Float64(f) => {
+                if f.is_nan() {
+                    "CAST('NaN' AS FLOAT64)".to_string()
+                } else if f.is_infinite() {
+                    if f.is_sign_positive() {
+                        "CAST('+inf' AS FLOAT64)".to_string()
+                    } else {
+                        "CAST('-inf' AS FLOAT64)".to_string()
+                    }
+                } else {
+                    f.to_string()
+                }
+            }
+            Value::String(s) => {
+                let escaped = s.replace('\'', "''").replace('\0', "");
+                format!("'{}'", escaped)
+            }
             Value::Bytes(b) => format!("X'{}'", hex::encode(b)),
+            Value::Date(d) => format!("DATE '{}'", d),
+            Value::DateTime(dt) => format!("DATETIME '{}'", dt),
+            Value::Time(t) => format!("TIME '{}'", t),
+            Value::Timestamp(ts) => format!("TIMESTAMP '{}'", ts),
+            Value::Numeric(n) => format!("NUMERIC '{}'", n),
             _ => format!("{:?}", value),
         }
     }

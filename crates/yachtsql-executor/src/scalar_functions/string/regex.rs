@@ -1,8 +1,25 @@
 #![coverage(off)]
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
+
+const MAX_PATTERN_LENGTH: usize = 10_000;
+const REGEX_SIZE_LIMIT: usize = 10 * 1024 * 1024;
+
+fn build_regex(pattern: &str) -> Result<Regex> {
+    if pattern.len() > MAX_PATTERN_LENGTH {
+        return Err(Error::InvalidQuery(format!(
+            "Regex pattern length {} exceeds maximum of {} characters",
+            pattern.len(),
+            MAX_PATTERN_LENGTH
+        )));
+    }
+    RegexBuilder::new(pattern)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .build()
+        .map_err(|e| Error::InvalidQuery(format!("Invalid regex: {}", e)))
+}
 
 pub fn fn_regexp_contains(args: &[Value]) -> Result<Value> {
     if args.len() < 2 {
@@ -13,8 +30,7 @@ pub fn fn_regexp_contains(args: &[Value]) -> Result<Value> {
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::String(s), Value::String(pattern)) => {
-            let re = Regex::new(pattern)
-                .map_err(|e| Error::InvalidQuery(format!("Invalid regex: {}", e)))?;
+            let re = build_regex(pattern)?;
             Ok(Value::Bool(re.is_match(s)))
         }
         _ => Err(Error::InvalidQuery(
@@ -33,8 +49,7 @@ pub fn fn_regexp_extract(args: &[Value]) -> Result<Value> {
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::String(s), Value::String(pattern)) => {
-            let re = Regex::new(pattern)
-                .map_err(|e| Error::InvalidQuery(format!("Invalid regex: {}", e)))?;
+            let re = build_regex(pattern)?;
             match re.captures(s) {
                 Some(caps) => {
                     let matched = caps
@@ -61,8 +76,7 @@ pub fn fn_regexp_extract_all(args: &[Value]) -> Result<Value> {
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::String(s), Value::String(pattern)) => {
-            let re = Regex::new(pattern)
-                .map_err(|e| Error::InvalidQuery(format!("Invalid regex: {}", e)))?;
+            let re = build_regex(pattern)?;
             let matches: Vec<Value> = re
                 .captures_iter(s)
                 .filter_map(|caps| {
@@ -87,16 +101,14 @@ pub fn fn_regexp_instr(args: &[Value]) -> Result<Value> {
     }
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::String(source), Value::String(pattern)) => match Regex::new(pattern) {
-            Ok(re) => {
-                if let Some(m) = re.find(source) {
-                    Ok(Value::Int64((m.start() + 1) as i64))
-                } else {
-                    Ok(Value::Int64(0))
-                }
+        (Value::String(source), Value::String(pattern)) => {
+            let re = build_regex(pattern)?;
+            if let Some(m) = re.find(source) {
+                Ok(Value::Int64((m.start() + 1) as i64))
+            } else {
+                Ok(Value::Int64(0))
             }
-            Err(_) => Ok(Value::Int64(0)),
-        },
+        }
         _ => Err(Error::InvalidQuery(
             "REGEXP_INSTR expects string arguments".into(),
         )),
@@ -112,8 +124,7 @@ pub fn fn_regexp_replace(args: &[Value]) -> Result<Value> {
     match (&args[0], &args[1], &args[2]) {
         (Value::Null, _, _) => Ok(Value::Null),
         (Value::String(s), Value::String(pattern), Value::String(replacement)) => {
-            let re = Regex::new(pattern)
-                .map_err(|e| Error::InvalidQuery(format!("Invalid regex: {}", e)))?;
+            let re = build_regex(pattern)?;
             let rust_replacement = replacement
                 .replace("\\1", "$1")
                 .replace("\\2", "$2")
@@ -142,16 +153,14 @@ pub fn fn_regexp_substr(args: &[Value]) -> Result<Value> {
     }
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::String(source), Value::String(pattern)) => match Regex::new(pattern) {
-            Ok(re) => {
-                if let Some(m) = re.find(source) {
-                    Ok(Value::String(m.as_str().to_string()))
-                } else {
-                    Ok(Value::Null)
-                }
+        (Value::String(source), Value::String(pattern)) => {
+            let re = build_regex(pattern)?;
+            if let Some(m) = re.find(source) {
+                Ok(Value::String(m.as_str().to_string()))
+            } else {
+                Ok(Value::Null)
             }
-            Err(_) => Ok(Value::Null),
-        },
+        }
         _ => Err(Error::InvalidQuery(
             "REGEXP_SUBSTR expects string arguments".into(),
         )),

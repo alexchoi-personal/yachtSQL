@@ -433,7 +433,15 @@ pub fn bitwise_xor_values(left: &Value, right: &Value) -> Result<Value> {
 pub fn shift_left_values(left: &Value, right: &Value) -> Result<Value> {
     match (left, right) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::Int64(a), Value::Int64(b)) => Ok(Value::Int64(a << b)),
+        (Value::Int64(a), Value::Int64(b)) => {
+            if *b < 0 || *b >= 64 {
+                return Err(Error::InvalidQuery(format!(
+                    "Shift amount {} out of valid range [0, 63]",
+                    b
+                )));
+            }
+            Ok(Value::Int64(a << b))
+        }
         _ => Err(Error::InvalidQuery(
             "Shift left requires integer operands".into(),
         )),
@@ -443,7 +451,15 @@ pub fn shift_left_values(left: &Value, right: &Value) -> Result<Value> {
 pub fn shift_right_values(left: &Value, right: &Value) -> Result<Value> {
     match (left, right) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::Int64(a), Value::Int64(b)) => Ok(Value::Int64(a >> b)),
+        (Value::Int64(a), Value::Int64(b)) => {
+            if *b < 0 || *b >= 64 {
+                return Err(Error::InvalidQuery(format!(
+                    "Shift amount {} out of valid range [0, 63]",
+                    b
+                )));
+            }
+            Ok(Value::Int64(a >> b))
+        }
         _ => Err(Error::InvalidQuery(
             "Shift right requires integer operands".into(),
         )),
