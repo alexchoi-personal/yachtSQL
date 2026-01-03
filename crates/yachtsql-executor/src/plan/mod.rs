@@ -476,6 +476,13 @@ pub(crate) enum PhysicalPlan {
         input_schema: PlanSchema,
         schema: PlanSchema,
     },
+
+    Explain {
+        input: Box<PhysicalPlan>,
+        analyze: bool,
+        logical_plan_text: String,
+        physical_plan_text: String,
+    },
 }
 
 impl PhysicalPlan {
@@ -702,7 +709,8 @@ impl PhysicalPlan {
             | PhysicalPlan::TryCatch { .. }
             | PhysicalPlan::Values { .. }
             | PhysicalPlan::Empty { .. }
-            | PhysicalPlan::GapFill { .. } => {}
+            | PhysicalPlan::GapFill { .. }
+            | PhysicalPlan::Explain { .. } => {}
         }
     }
 
@@ -1040,7 +1048,8 @@ impl PhysicalPlan {
             | PhysicalPlan::Break { .. }
             | PhysicalPlan::Continue { .. }
             | PhysicalPlan::TryCatch { .. }
-            | PhysicalPlan::Assert { .. } => {}
+            | PhysicalPlan::Assert { .. }
+            | PhysicalPlan::Explain { .. } => {}
         }
     }
 }

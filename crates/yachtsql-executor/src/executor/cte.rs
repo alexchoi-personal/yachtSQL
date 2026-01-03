@@ -194,7 +194,8 @@ fn collect_union_terms(
         | LogicalPlan::Commit
         | LogicalPlan::Rollback
         | LogicalPlan::TryCatch { .. }
-        | LogicalPlan::GapFill { .. } => {
+        | LogicalPlan::GapFill { .. }
+        | LogicalPlan::Explain { .. } => {
             if references_table(plan, cte_name) {
                 recursives.push(plan.clone());
             } else {
@@ -299,5 +300,6 @@ fn references_table(plan: &LogicalPlan, table_name: &str) -> bool {
                 || catch_block.iter().any(|p| references_table(p, table_name))
         }
         LogicalPlan::GapFill { input, .. } => references_table(input, table_name),
+        LogicalPlan::Explain { input, .. } => references_table(input, table_name),
     }
 }

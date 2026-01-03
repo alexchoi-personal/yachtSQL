@@ -651,6 +651,21 @@ impl PhysicalPlan {
                 input_schema: input_schema.clone(),
                 schema: schema.clone(),
             },
+
+            OptimizedLogicalPlan::Explain {
+                input,
+                analyze,
+                logical_plan_text,
+            } => {
+                let physical_input = Self::from_physical(input);
+                let physical_plan_text = format!("{:#?}", physical_input);
+                PhysicalPlan::Explain {
+                    input: Box::new(physical_input),
+                    analyze: *analyze,
+                    logical_plan_text: logical_plan_text.clone(),
+                    physical_plan_text,
+                }
+            }
         }
     }
 }

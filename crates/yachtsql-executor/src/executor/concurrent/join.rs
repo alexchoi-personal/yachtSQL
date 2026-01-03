@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{Expr, JoinType, PlanSchema};
@@ -12,6 +13,7 @@ use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
 impl ConcurrentPlanExecutor {
+    #[instrument(skip(self, left, right, condition), fields(join_type = ?join_type))]
     pub(crate) async fn execute_nested_loop_join(
         &self,
         left: &PhysicalPlan,
@@ -222,6 +224,7 @@ impl ConcurrentPlanExecutor {
             .await
     }
 
+    #[instrument(skip(self, left, right, left_keys, right_keys))]
     pub(crate) async fn execute_hash_join(
         &self,
         left: &PhysicalPlan,

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::DataType;
 use yachtsql_ir::{AlterTableOp, ColumnDef, FunctionArg, FunctionBody, ProcedureArg};
@@ -22,6 +23,7 @@ impl ConcurrentPlanExecutor {
         Ok(Table::empty(Schema::new()))
     }
 
+    #[instrument(skip(self, columns, query), fields(table = %table_name))]
     pub(crate) async fn execute_create_table(
         &self,
         table_name: &str,
@@ -109,6 +111,7 @@ impl ConcurrentPlanExecutor {
         Ok(Table::empty(Schema::new()))
     }
 
+    #[instrument(skip(self), fields(tables = ?table_names))]
     pub(crate) fn execute_drop_tables(
         &self,
         table_names: &[String],

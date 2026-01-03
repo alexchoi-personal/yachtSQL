@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{Assignment, Expr, MergeClause};
@@ -12,6 +13,7 @@ use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
 impl ConcurrentPlanExecutor {
+    #[instrument(skip(self, columns, source), fields(table = %table_name))]
     pub(crate) async fn execute_insert(
         &self,
         table_name: &str,
@@ -206,6 +208,7 @@ impl ConcurrentPlanExecutor {
         Ok(Table::empty(Schema::new()))
     }
 
+    #[instrument(skip(self, assignments, from, filter), fields(table = %table_name))]
     pub(crate) async fn execute_update(
         &self,
         table_name: &str,
@@ -536,6 +539,7 @@ impl ConcurrentPlanExecutor {
         }
     }
 
+    #[instrument(skip(self, filter), fields(table = %table_name))]
     pub(crate) async fn execute_delete(
         &self,
         table_name: &str,

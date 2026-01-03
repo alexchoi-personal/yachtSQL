@@ -24,6 +24,7 @@ pub mod value_evaluator;
 mod async_executor;
 mod concurrent_catalog;
 mod concurrent_session;
+mod metrics;
 mod physical_planner;
 
 use std::num::NonZeroUsize;
@@ -116,7 +117,8 @@ fn is_cacheable_plan(plan: &OptimizedLogicalPlan) -> bool {
         | OptimizedLogicalPlan::Commit
         | OptimizedLogicalPlan::Rollback
         | OptimizedLogicalPlan::TryCatch { .. }
-        | OptimizedLogicalPlan::GapFill { .. } => false,
+        | OptimizedLogicalPlan::GapFill { .. }
+        | OptimizedLogicalPlan::Explain { .. } => false,
     }
 }
 
@@ -188,7 +190,8 @@ fn invalidates_cache(plan: &OptimizedLogicalPlan) -> bool {
         | OptimizedLogicalPlan::Commit
         | OptimizedLogicalPlan::Rollback
         | OptimizedLogicalPlan::TryCatch { .. }
-        | OptimizedLogicalPlan::GapFill { .. } => false,
+        | OptimizedLogicalPlan::GapFill { .. }
+        | OptimizedLogicalPlan::Explain { .. } => false,
     }
 }
 

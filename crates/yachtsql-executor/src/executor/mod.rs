@@ -26,7 +26,7 @@ use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::Expr;
 use yachtsql_optimizer::OptimizedLogicalPlan;
-use yachtsql_storage::{Field, FieldMode, Schema, Table};
+use yachtsql_storage::{Field, FieldMode, Record, Schema, Table};
 
 use crate::catalog::Catalog;
 use crate::plan::PhysicalPlan;
@@ -426,6 +426,12 @@ impl<'a> PlanExecutor<'a> {
                 input_schema,
                 schema,
             ),
+            PhysicalPlan::Explain {
+                logical_plan_text,
+                physical_plan_text,
+                analyze,
+                input,
+            } => self.execute_explain(logical_plan_text, physical_plan_text, *analyze, input),
         }
     }
 
@@ -827,6 +833,62 @@ impl<'a> PlanExecutor<'a> {
         }
 
         Ok(result)
+    }
+
+    fn execute_explain(
+        &mut self,
+        logical_plan_text: &str,
+        physical_plan_text: &str,
+        analyze: bool,
+        input: &PhysicalPlan,
+    ) -> Result<Table> {
+        use yachtsql_common::types::DataType;
+        use yachtsql_storage::Field;
+
+        let schema = Schema::from_fields(vec![
+            Field::nullable("plan_type", DataType::String),
+            Field::nullable("plan", DataType::String),
+        ]);
+
+        if analyze {
+            let start = std::time::Instant::now();
+            let result = self.execute_plan(input)?;
+            let elapsed = start.elapsed();
+
+            let records = vec![
+                Record::from_values(vec![
+                    Value::String("logical".to_string()),
+                    Value::String(logical_plan_text.to_string()),
+                ]),
+                Record::from_values(vec![
+                    Value::String("physical".to_string()),
+                    Value::String(physical_plan_text.to_string()),
+                ]),
+                Record::from_values(vec![
+                    Value::String("execution_time".to_string()),
+                    Value::String(format!("{:?}", elapsed)),
+                ]),
+                Record::from_values(vec![
+                    Value::String("rows_returned".to_string()),
+                    Value::String(result.row_count().to_string()),
+                ]),
+            ];
+
+            Table::from_records(schema, records)
+        } else {
+            let records = vec![
+                Record::from_values(vec![
+                    Value::String("logical".to_string()),
+                    Value::String(logical_plan_text.to_string()),
+                ]),
+                Record::from_values(vec![
+                    Value::String("physical".to_string()),
+                    Value::String(physical_plan_text.to_string()),
+                ]),
+            ];
+
+            Table::from_records(schema, records)
+        }
     }
 }
 

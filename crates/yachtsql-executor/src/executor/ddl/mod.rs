@@ -1019,5 +1019,9 @@ fn executor_plan_to_logical_plan(plan: &PhysicalPlan) -> yachtsql_ir::LogicalPla
             input_schema: input_schema.clone(),
             schema: schema.clone(),
         },
+        PhysicalPlan::Explain { input, analyze, .. } => LogicalPlan::Explain {
+            input: Box::new(executor_plan_to_logical_plan(input)),
+            analyze: *analyze,
+        },
     }
 }
