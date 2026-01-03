@@ -39,7 +39,7 @@ pub use columnar_evaluator::ColumnarEvaluator;
 pub use concurrent_catalog::{ConcurrentCatalog, TableLockSet};
 pub use concurrent_session::ConcurrentSession;
 pub use error::{Error, Result};
-pub use executor::{PlanExecutor, plan_schema_to_schema};
+pub use executor::plan_schema_to_schema;
 use lru::LruCache;
 pub use physical_planner::PhysicalPlanner;
 pub use session::Session;
@@ -197,13 +197,4 @@ fn invalidates_cache(plan: &OptimizedLogicalPlan) -> bool {
         | OptimizedLogicalPlan::GapFill { .. }
         | OptimizedLogicalPlan::Explain { .. } => false,
     }
-}
-
-pub fn execute(
-    catalog: &mut Catalog,
-    session: &mut Session,
-    plan: &OptimizedLogicalPlan,
-) -> yachtsql_common::error::Result<Table> {
-    let mut executor = PlanExecutor::new(catalog, session);
-    executor.execute(plan)
 }

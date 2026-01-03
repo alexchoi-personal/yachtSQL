@@ -9,8 +9,7 @@ use yachtsql_ir::{
 };
 use yachtsql_storage::{Column, Record, Schema, Table};
 
-use super::{PlanExecutor, plan_schema_to_schema};
-use crate::plan::PhysicalPlan;
+use super::plan_schema_to_schema;
 use crate::value_evaluator::ValueEvaluator;
 
 pub(crate) fn get_record_from_columns(columns: &[&Column], idx: usize) -> Record {
@@ -80,24 +79,6 @@ pub(crate) fn compute_window(
     }
 
     Ok(result)
-}
-
-impl<'a> PlanExecutor<'a> {
-    pub(crate) fn execute_window(
-        &mut self,
-        input: &PhysicalPlan,
-        window_exprs: &[Expr],
-        schema: &PlanSchema,
-    ) -> Result<Table> {
-        let input_table = self.execute_plan(input)?;
-        compute_window(
-            &input_table,
-            window_exprs,
-            schema,
-            &self.variables,
-            &self.user_function_defs,
-        )
-    }
 }
 
 fn extract_window_spec(
