@@ -258,39 +258,42 @@ impl ConcurrentPlanExecutor {
         let right_schema = right_table.schema().clone();
         let result_schema = plan_schema_to_schema(schema);
 
+        let left_n = left_table.row_count();
+        let left_cols: Vec<&Column> = left_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
+        let left_rows: Vec<Record> = (0..left_n)
+            .map(|i| Record::from_values(left_cols.iter().map(|c| c.get_value(i)).collect()))
+            .collect();
+
+        let right_n = right_table.row_count();
+        let right_cols: Vec<&Column> = right_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
+        let right_rows: Vec<Record> = (0..right_n)
+            .map(|i| Record::from_values(right_cols.iter().map(|c| c.get_value(i)).collect()))
+            .collect();
+
+        let left_width = left_schema.field_count();
+        let right_width = right_schema.field_count();
+
+        let vars = self.get_variables();
+        let sys_vars = self.get_system_variables();
+        let udf = self.get_user_functions();
+
         match join_type {
             JoinType::Inner => {
-                let left_n = left_table.row_count();
-                let left_cols: Vec<&Column> = left_table
-                    .columns()
-                    .iter()
-                    .map(|(_, c)| c.as_ref())
-                    .collect();
-                let left_rows: Vec<Record> = (0..left_n)
-                    .map(|i| {
-                        Record::from_values(left_cols.iter().map(|c| c.get_value(i)).collect())
-                    })
-                    .collect();
-
-                let right_n = right_table.row_count();
-                let right_cols: Vec<&Column> = right_table
-                    .columns()
-                    .iter()
-                    .map(|(_, c)| c.as_ref())
-                    .collect();
-                let right_rows: Vec<Record> = (0..right_n)
-                    .map(|i| {
-                        Record::from_values(right_cols.iter().map(|c| c.get_value(i)).collect())
-                    })
-                    .collect();
-
                 let build_on_right = right_rows.len() <= left_rows.len();
 
                 let (build_rows, probe_rows, build_schema, probe_schema, build_keys, probe_keys) =
                     if build_on_right {
                         (
-                            right_rows,
-                            left_rows,
+                            &right_rows,
+                            &left_rows,
                             &right_schema,
                             &left_schema,
                             right_keys,
@@ -298,8 +301,8 @@ impl ConcurrentPlanExecutor {
                         )
                     } else {
                         (
-                            left_rows,
-                            right_rows,
+                            &left_rows,
+                            &right_rows,
                             &left_schema,
                             &right_schema,
                             left_keys,
@@ -307,16 +310,13 @@ impl ConcurrentPlanExecutor {
                         )
                     };
 
-                let vars = self.get_variables();
-                let sys_vars = self.get_system_variables();
-                let udf = self.get_user_functions();
                 let build_evaluator = ValueEvaluator::new(build_schema)
                     .with_variables(&vars)
                     .with_system_variables(&sys_vars)
                     .with_user_functions(&udf);
 
-                let mut hash_table: HashMap<Vec<Value>, Vec<Record>> = HashMap::new();
-                for build_record in &build_rows {
+                let mut hash_table: HashMap<Vec<Value>, Vec<&Record>> = HashMap::new();
+                for build_record in build_rows {
                     let key_values: Vec<Value> = build_keys
                         .iter()
                         .map(|expr| build_evaluator.evaluate(expr, build_record))
@@ -326,10 +326,7 @@ impl ConcurrentPlanExecutor {
                         continue;
                     }
 
-                    hash_table
-                        .entry(key_values)
-                        .or_default()
-                        .push(build_record.clone());
+                    hash_table.entry(key_values).or_default().push(build_record);
                 }
 
                 let combine_row = |probe_rec: &Record, build_rec: &Record| -> Vec<Value> {
@@ -409,7 +406,7 @@ impl ConcurrentPlanExecutor {
                         .with_system_variables(&sys_vars)
                         .with_user_functions(&udf);
                     let mut result = Table::empty(result_schema);
-                    for probe_record in &probe_rows {
+                    for probe_record in probe_rows {
                         let key_values: Vec<Value> = probe_keys
                             .iter()
                             .map(|expr| probe_evaluator.evaluate(expr, probe_record))
@@ -428,9 +425,198 @@ impl ConcurrentPlanExecutor {
                     Ok(result)
                 }
             }
-            _ => Err(Error::unsupported(
-                "HashJoin only supports Inner join type currently",
-            )),
+            JoinType::Left => {
+                let right_evaluator = ValueEvaluator::new(&right_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut hash_table: HashMap<Vec<Value>, Vec<(usize, &Record)>> = HashMap::new();
+                for (idx, right_record) in right_rows.iter().enumerate() {
+                    let key_values: Vec<Value> = right_keys
+                        .iter()
+                        .map(|expr| right_evaluator.evaluate(expr, right_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                        continue;
+                    }
+
+                    hash_table
+                        .entry(key_values)
+                        .or_default()
+                        .push((idx, right_record));
+                }
+
+                let left_evaluator = ValueEvaluator::new(&left_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut result = Table::empty(result_schema);
+                for left_record in &left_rows {
+                    let key_values: Vec<Value> = left_keys
+                        .iter()
+                        .map(|expr| left_evaluator.evaluate(expr, left_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let has_null_key = key_values.iter().any(|v| matches!(v, Value::Null));
+                    let matching = if has_null_key {
+                        None
+                    } else {
+                        hash_table.get(&key_values)
+                    };
+
+                    match matching {
+                        Some(matches) => {
+                            for (_, right_record) in matches {
+                                let mut combined = left_record.values().to_vec();
+                                combined.extend(right_record.values().to_vec());
+                                result.push_row(combined)?;
+                            }
+                        }
+                        None => {
+                            let mut combined = left_record.values().to_vec();
+                            combined.extend(vec![Value::Null; right_width]);
+                            result.push_row(combined)?;
+                        }
+                    }
+                }
+                Ok(result)
+            }
+            JoinType::Right => {
+                let left_evaluator = ValueEvaluator::new(&left_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut hash_table: HashMap<Vec<Value>, Vec<(usize, &Record)>> = HashMap::new();
+                for (idx, left_record) in left_rows.iter().enumerate() {
+                    let key_values: Vec<Value> = left_keys
+                        .iter()
+                        .map(|expr| left_evaluator.evaluate(expr, left_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                        continue;
+                    }
+
+                    hash_table
+                        .entry(key_values)
+                        .or_default()
+                        .push((idx, left_record));
+                }
+
+                let right_evaluator = ValueEvaluator::new(&right_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut result = Table::empty(result_schema);
+                for right_record in &right_rows {
+                    let key_values: Vec<Value> = right_keys
+                        .iter()
+                        .map(|expr| right_evaluator.evaluate(expr, right_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let has_null_key = key_values.iter().any(|v| matches!(v, Value::Null));
+                    let matching = if has_null_key {
+                        None
+                    } else {
+                        hash_table.get(&key_values)
+                    };
+
+                    match matching {
+                        Some(matches) => {
+                            for (_, left_record) in matches {
+                                let mut combined = left_record.values().to_vec();
+                                combined.extend(right_record.values().to_vec());
+                                result.push_row(combined)?;
+                            }
+                        }
+                        None => {
+                            let mut combined = vec![Value::Null; left_width];
+                            combined.extend(right_record.values().to_vec());
+                            result.push_row(combined)?;
+                        }
+                    }
+                }
+                Ok(result)
+            }
+            JoinType::Full => {
+                let right_evaluator = ValueEvaluator::new(&right_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut hash_table: HashMap<Vec<Value>, Vec<(usize, &Record)>> = HashMap::new();
+                for (idx, right_record) in right_rows.iter().enumerate() {
+                    let key_values: Vec<Value> = right_keys
+                        .iter()
+                        .map(|expr| right_evaluator.evaluate(expr, right_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                        continue;
+                    }
+
+                    hash_table
+                        .entry(key_values)
+                        .or_default()
+                        .push((idx, right_record));
+                }
+
+                let left_evaluator = ValueEvaluator::new(&left_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut matched_right: HashSet<usize> = HashSet::new();
+                let mut result = Table::empty(result_schema);
+
+                for left_record in &left_rows {
+                    let key_values: Vec<Value> = left_keys
+                        .iter()
+                        .map(|expr| left_evaluator.evaluate(expr, left_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let has_null_key = key_values.iter().any(|v| matches!(v, Value::Null));
+                    let matching = if has_null_key {
+                        None
+                    } else {
+                        hash_table.get(&key_values)
+                    };
+
+                    match matching {
+                        Some(matches) => {
+                            for (right_idx, right_record) in matches {
+                                matched_right.insert(*right_idx);
+                                let mut combined = left_record.values().to_vec();
+                                combined.extend(right_record.values().to_vec());
+                                result.push_row(combined)?;
+                            }
+                        }
+                        None => {
+                            let mut combined = left_record.values().to_vec();
+                            combined.extend(vec![Value::Null; right_width]);
+                            result.push_row(combined)?;
+                        }
+                    }
+                }
+
+                for (idx, right_record) in right_rows.iter().enumerate() {
+                    if !matched_right.contains(&idx) {
+                        let mut combined = vec![Value::Null; left_width];
+                        combined.extend(right_record.values().to_vec());
+                        result.push_row(combined)?;
+                    }
+                }
+
+                Ok(result)
+            }
+            JoinType::Cross => {
+                panic!("Cross join should not be handled by HashJoin");
+            }
         }
     }
 }

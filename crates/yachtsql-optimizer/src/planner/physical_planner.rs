@@ -202,6 +202,19 @@ impl PhysicalPlanner {
                         })
                     }
                     JoinType::Left | JoinType::Right | JoinType::Full => {
+                        if let Some(cond) = condition
+                            && let Some((left_keys, right_keys)) =
+                                extract_equi_join_keys(cond, left_schema_len)
+                        {
+                            return Ok(OptimizedLogicalPlan::HashJoin {
+                                left: Box::new(optimized_left),
+                                right: Box::new(optimized_right),
+                                join_type: *join_type,
+                                left_keys,
+                                right_keys,
+                                schema: schema.clone(),
+                            });
+                        }
                         Ok(OptimizedLogicalPlan::NestedLoopJoin {
                             left: Box::new(optimized_left),
                             right: Box::new(optimized_right),

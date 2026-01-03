@@ -93,6 +93,28 @@ pub enum Error {
         pattern: String,
         reason: String,
     },
+    NotNullViolation {
+        table: String,
+        column: String,
+    },
+    UniqueViolation {
+        table: String,
+        constraint: String,
+        value: String,
+    },
+    PrimaryKeyViolation {
+        table: String,
+        value: String,
+    },
+    PrimaryKeyNullViolation {
+        table: String,
+        column: String,
+    },
+    CheckViolation {
+        table: String,
+        constraint: String,
+        expression: String,
+    },
 }
 
 impl Error {
@@ -368,6 +390,49 @@ impl fmt::Display for Error {
             }
             Error::RegexError { pattern, reason } => {
                 write!(f, "Regex error in pattern '{}': {}", pattern, reason)
+            }
+            Error::NotNullViolation { table, column } => {
+                write!(
+                    f,
+                    "NOT NULL constraint violation: column '{}' in table '{}' cannot be null",
+                    column, table
+                )
+            }
+            Error::UniqueViolation {
+                table,
+                constraint,
+                value,
+            } => {
+                write!(
+                    f,
+                    "UNIQUE constraint '{}' violation in table '{}': duplicate value {}",
+                    constraint, table, value
+                )
+            }
+            Error::PrimaryKeyViolation { table, value } => {
+                write!(
+                    f,
+                    "PRIMARY KEY violation in table '{}': duplicate value {}",
+                    table, value
+                )
+            }
+            Error::PrimaryKeyNullViolation { table, column } => {
+                write!(
+                    f,
+                    "PRIMARY KEY violation: column '{}' in table '{}' cannot be null",
+                    column, table
+                )
+            }
+            Error::CheckViolation {
+                table,
+                constraint,
+                expression,
+            } => {
+                write!(
+                    f,
+                    "CHECK constraint '{}' violation in table '{}': expression {} evaluated to false",
+                    constraint, table, expression
+                )
             }
         }
     }

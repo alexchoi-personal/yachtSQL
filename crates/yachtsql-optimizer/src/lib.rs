@@ -3,11 +3,13 @@
 
 mod optimized_logical_plan;
 mod planner;
+pub mod stats;
 #[cfg(test)]
 mod tests;
 
 pub use optimized_logical_plan::{OptimizedLogicalPlan, SampleType};
 pub use planner::PhysicalPlanner;
+pub use stats::{ColumnStats, TableStats};
 use yachtsql_common::error::Result;
 use yachtsql_ir::LogicalPlan;
 
