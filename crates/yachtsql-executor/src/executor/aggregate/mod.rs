@@ -85,8 +85,7 @@ pub(crate) fn compute_aggregate(
     } else if let Some(sets) = grouping_sets {
         for grouping_set in sets {
             let active_indices: Vec<usize> = grouping_set.clone();
-            let mut group_map: HashMap<String, (Vec<Value>, Vec<Accumulator>, Vec<usize>)> =
-                HashMap::new();
+            let mut group_map: HashMap<Vec<Value>, (Vec<Accumulator>, Vec<usize>)> = HashMap::new();
 
             for i in 0..n {
                 let record = get_record_from_columns(&columns, i);
@@ -99,9 +98,8 @@ pub(crate) fn compute_aggregate(
                         group_key_values.push(Value::Null);
                     }
                 }
-                let key = format!("{:?}", group_key_values);
 
-                let entry = group_map.entry(key).or_insert_with(|| {
+                let entry = group_map.entry(group_key_values).or_insert_with_key(|key| {
                     let mut accs: Vec<Accumulator> =
                         aggregates.iter().map(Accumulator::from_expr).collect();
                     for (acc, agg_expr) in accs.iter_mut().zip(aggregates.iter()) {
@@ -120,10 +118,10 @@ pub(crate) fn compute_aggregate(
                             _ => {}
                         }
                     }
-                    (group_key_values.clone(), accs, active_indices.clone())
+                    (accs, active_indices.clone())
                 });
 
-                for (acc, agg_expr) in entry.1.iter_mut().zip(aggregates.iter()) {
+                for (acc, agg_expr) in entry.0.iter_mut().zip(aggregates.iter()) {
                     if matches!(
                         acc,
                         Accumulator::Grouping { .. } | Accumulator::GroupingId { .. }
@@ -158,7 +156,7 @@ pub(crate) fn compute_aggregate(
                 }
             }
 
-            for (group_key, accumulators, _active) in group_map.into_values() {
+            for (group_key, (accumulators, _active)) in group_map {
                 let mut row = group_key;
                 row.extend(accumulators.iter().map(|a| a.finalize()));
                 result.push_row(row)?;
@@ -174,87 +172,73 @@ pub(crate) fn compute_aggregate(
 
             let input_schema_ref = &input_schema;
             let columns_ref = &columns;
-            let local_results: Vec<
-                Result<(
-                    HashMap<Vec<String>, Vec<Accumulator>>,
-                    HashMap<Vec<String>, Vec<Value>>,
-                )>,
-            > = std::thread::scope(|s| {
-                let handles: Vec<_> = (0..n)
-                    .collect::<Vec<_>>()
-                    .chunks(chunk_size)
-                    .map(|chunk| {
-                        let chunk_indices: Vec<usize> = chunk.to_vec();
-                        s.spawn(move || {
-                            let evaluator = ValueEvaluator::new(input_schema_ref)
-                                .with_variables(variables)
-                                .with_user_functions(user_function_defs);
-                            let mut local_groups: HashMap<Vec<String>, Vec<Accumulator>> =
-                                HashMap::new();
-                            let mut local_keys: HashMap<Vec<String>, Vec<Value>> = HashMap::new();
+            let local_results: Vec<Result<HashMap<Vec<Value>, Vec<Accumulator>>>> =
+                std::thread::scope(|s| {
+                    let handles: Vec<_> = (0..n)
+                        .collect::<Vec<_>>()
+                        .chunks(chunk_size)
+                        .map(|chunk| {
+                            let chunk_indices: Vec<usize> = chunk.to_vec();
+                            s.spawn(move || {
+                                let evaluator = ValueEvaluator::new(input_schema_ref)
+                                    .with_variables(variables)
+                                    .with_user_functions(user_function_defs);
+                                let mut local_groups: HashMap<Vec<Value>, Vec<Accumulator>> =
+                                    HashMap::new();
 
-                            for &idx in &chunk_indices {
-                                let record = get_record_from_columns(columns_ref, idx);
-                                let group_key_values: Vec<Value> = group_by
-                                    .iter()
-                                    .map(|e| evaluator.evaluate(e, &record))
-                                    .collect::<Result<_>>()?;
-                                let group_key_strings: Vec<String> = group_key_values
-                                    .iter()
-                                    .map(|v| format!("{:?}", v))
-                                    .collect();
+                                for &idx in &chunk_indices {
+                                    let record = get_record_from_columns(columns_ref, idx);
+                                    let group_key_values: Vec<Value> = group_by
+                                        .iter()
+                                        .map(|e| evaluator.evaluate(e, &record))
+                                        .collect::<Result<_>>()?;
 
-                                let accumulators = local_groups
-                                    .entry(group_key_strings.clone())
-                                    .or_insert_with(|| {
-                                        aggregates.iter().map(Accumulator::from_expr).collect()
-                                    });
-                                local_keys
-                                    .entry(group_key_strings.clone())
-                                    .or_insert(group_key_values);
+                                    let accumulators =
+                                        local_groups.entry(group_key_values).or_insert_with(|| {
+                                            aggregates.iter().map(Accumulator::from_expr).collect()
+                                        });
 
-                                for (acc, agg_expr) in
-                                    accumulators.iter_mut().zip(aggregates.iter())
-                                {
-                                    if matches!(
-                                        acc,
-                                        Accumulator::SumIf(_)
-                                            | Accumulator::AvgIf { .. }
-                                            | Accumulator::MinIf(_)
-                                            | Accumulator::MaxIf(_)
-                                    ) {
-                                        let (value, condition) = extract_conditional_agg_args(
-                                            &evaluator, agg_expr, &record,
-                                        )?;
-                                        acc.accumulate_conditional(&value, condition)?;
-                                    } else {
-                                        let arg_val =
-                                            extract_agg_arg(&evaluator, agg_expr, &record)?;
-                                        acc.accumulate(&arg_val)?;
+                                    for (acc, agg_expr) in
+                                        accumulators.iter_mut().zip(aggregates.iter())
+                                    {
+                                        if matches!(
+                                            acc,
+                                            Accumulator::SumIf(_)
+                                                | Accumulator::AvgIf { .. }
+                                                | Accumulator::MinIf(_)
+                                                | Accumulator::MaxIf(_)
+                                        ) {
+                                            let (value, condition) = extract_conditional_agg_args(
+                                                &evaluator, agg_expr, &record,
+                                            )?;
+                                            acc.accumulate_conditional(&value, condition)?;
+                                        } else {
+                                            let arg_val =
+                                                extract_agg_arg(&evaluator, agg_expr, &record)?;
+                                            acc.accumulate(&arg_val)?;
+                                        }
                                     }
                                 }
-                            }
-                            Ok((local_groups, local_keys))
+                                Ok(local_groups)
+                            })
                         })
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|h| {
-                        h.join()
-                            .map_err(|_| Error::internal("Thread join failed"))?
-                    })
-                    .collect()
-            });
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join()
+                                .map_err(|_| Error::internal("Thread join failed"))?
+                        })
+                        .collect()
+                });
 
-            let mut merged_groups: HashMap<Vec<String>, Vec<Accumulator>> = HashMap::new();
-            let mut merged_keys: HashMap<Vec<String>, Vec<Value>> = HashMap::new();
+            let mut merged_groups: HashMap<Vec<Value>, Vec<Accumulator>> = HashMap::new();
 
             for local_result in local_results {
-                let (local_groups, local_keys) = local_result?;
+                let local_groups = local_result?;
                 for (key, local_accs) in local_groups {
                     merged_groups
-                        .entry(key.clone())
+                        .entry(key)
                         .and_modify(|existing| {
                             for (e, l) in existing.iter_mut().zip(local_accs.iter()) {
                                 e.merge(l);
@@ -262,22 +246,15 @@ pub(crate) fn compute_aggregate(
                         })
                         .or_insert(local_accs);
                 }
-                for (key, vals) in local_keys {
-                    merged_keys.entry(key).or_insert(vals);
-                }
             }
 
-            for (key_strings, accumulators) in merged_groups {
-                let mut row = merged_keys
-                    .get(&key_strings)
-                    .ok_or_else(|| Error::internal("Missing group key in merged_keys"))?
-                    .clone();
+            for (group_key, accumulators) in merged_groups {
+                let mut row = group_key;
                 row.extend(accumulators.iter().map(|a| a.finalize()));
                 result.push_row(row)?;
             }
         } else {
-            let mut groups: HashMap<Vec<String>, Vec<Accumulator>> = HashMap::new();
-            let mut group_keys: HashMap<Vec<String>, Vec<Value>> = HashMap::new();
+            let mut groups: HashMap<Vec<Value>, Vec<Accumulator>> = HashMap::new();
 
             for i in 0..n {
                 let record = get_record_from_columns(&columns, i);
@@ -285,17 +262,10 @@ pub(crate) fn compute_aggregate(
                     .iter()
                     .map(|e| evaluator.evaluate(e, &record))
                     .collect::<Result<_>>()?;
-                let group_key_strings: Vec<String> = group_key_values
-                    .iter()
-                    .map(|v| format!("{:?}", v))
-                    .collect();
 
                 let accumulators = groups
-                    .entry(group_key_strings.clone())
+                    .entry(group_key_values)
                     .or_insert_with(|| aggregates.iter().map(Accumulator::from_expr).collect());
-                group_keys
-                    .entry(group_key_strings.clone())
-                    .or_insert(group_key_values);
 
                 for (acc, agg_expr) in accumulators.iter_mut().zip(aggregates.iter()) {
                     if matches!(
@@ -326,11 +296,8 @@ pub(crate) fn compute_aggregate(
                 }
             }
 
-            for (key_strings, accumulators) in groups {
-                let mut row = group_keys
-                    .get(&key_strings)
-                    .ok_or_else(|| Error::internal("Missing group key in group_keys"))?
-                    .clone();
+            for (group_key, accumulators) in groups {
+                let mut row = group_key;
                 row.extend(accumulators.iter().map(|a| a.finalize()));
                 result.push_row(row)?;
             }
@@ -566,7 +533,7 @@ impl<'a> PlanExecutor<'a> {
         } else if let Some(sets) = grouping_sets {
             for grouping_set in sets {
                 let active_indices: Vec<usize> = grouping_set.clone();
-                let mut group_map: HashMap<String, (Vec<Value>, Vec<Accumulator>, Vec<usize>)> =
+                let mut group_map: HashMap<Vec<Value>, (Vec<Accumulator>, Vec<usize>)> =
                     HashMap::new();
 
                 for i in 0..n {
@@ -580,32 +547,36 @@ impl<'a> PlanExecutor<'a> {
                             group_key_values.push(Value::Null);
                         }
                     }
-                    let key = format!("{:?}", group_key_values);
 
-                    let entry = group_map.entry(key).or_insert_with(|| {
-                        let mut accs: Vec<Accumulator> =
-                            aggregates.iter().map(Accumulator::from_expr).collect();
-                        for (acc, agg_expr) in accs.iter_mut().zip(aggregates.iter()) {
-                            match acc {
-                                Accumulator::Grouping { .. } => {
-                                    let col_idx = get_grouping_column_index(agg_expr, group_by);
-                                    let is_active = col_idx
-                                        .map(|idx| active_indices.contains(&idx))
-                                        .unwrap_or(true);
-                                    acc.set_grouping_value(if is_active { 0 } else { 1 });
+                    let entry = group_map
+                        .entry(group_key_values)
+                        .or_insert_with_key(|_key| {
+                            let mut accs: Vec<Accumulator> =
+                                aggregates.iter().map(Accumulator::from_expr).collect();
+                            for (acc, agg_expr) in accs.iter_mut().zip(aggregates.iter()) {
+                                match acc {
+                                    Accumulator::Grouping { .. } => {
+                                        let col_idx = get_grouping_column_index(agg_expr, group_by);
+                                        let is_active = col_idx
+                                            .map(|idx| active_indices.contains(&idx))
+                                            .unwrap_or(true);
+                                        acc.set_grouping_value(if is_active { 0 } else { 1 });
+                                    }
+                                    Accumulator::GroupingId { .. } => {
+                                        let gid = compute_grouping_id(
+                                            agg_expr,
+                                            group_by,
+                                            &active_indices,
+                                        );
+                                        acc.set_grouping_value(gid);
+                                    }
+                                    _ => {}
                                 }
-                                Accumulator::GroupingId { .. } => {
-                                    let gid =
-                                        compute_grouping_id(agg_expr, group_by, &active_indices);
-                                    acc.set_grouping_value(gid);
-                                }
-                                _ => {}
                             }
-                        }
-                        (group_key_values.clone(), accs, active_indices.clone())
-                    });
+                            (accs, active_indices.clone())
+                        });
 
-                    for (acc, agg_expr) in entry.1.iter_mut().zip(aggregates.iter()) {
+                    for (acc, agg_expr) in entry.0.iter_mut().zip(aggregates.iter()) {
                         if matches!(
                             acc,
                             Accumulator::Grouping { .. } | Accumulator::GroupingId { .. }
@@ -640,15 +611,14 @@ impl<'a> PlanExecutor<'a> {
                     }
                 }
 
-                for (group_key, accumulators, _active) in group_map.into_values() {
+                for (group_key, (accumulators, _active)) in group_map {
                     let mut row = group_key;
                     row.extend(accumulators.iter().map(|a| a.finalize()));
                     result.push_row(row)?;
                 }
             }
         } else {
-            let mut groups: HashMap<Vec<String>, Vec<Accumulator>> = HashMap::new();
-            let mut group_keys: HashMap<Vec<String>, Vec<Value>> = HashMap::new();
+            let mut groups: HashMap<Vec<Value>, Vec<Accumulator>> = HashMap::new();
 
             for i in 0..n {
                 let record = get_record_from_columns(&columns, i);
@@ -656,17 +626,10 @@ impl<'a> PlanExecutor<'a> {
                     .iter()
                     .map(|e| evaluator.evaluate(e, &record))
                     .collect::<Result<_>>()?;
-                let group_key_strings: Vec<String> = group_key_values
-                    .iter()
-                    .map(|v| format!("{:?}", v))
-                    .collect();
 
                 let accumulators = groups
-                    .entry(group_key_strings.clone())
+                    .entry(group_key_values)
                     .or_insert_with(|| aggregates.iter().map(Accumulator::from_expr).collect());
-                group_keys
-                    .entry(group_key_strings.clone())
-                    .or_insert(group_key_values);
 
                 for (acc, agg_expr) in accumulators.iter_mut().zip(aggregates.iter()) {
                     if matches!(
@@ -697,11 +660,8 @@ impl<'a> PlanExecutor<'a> {
                 }
             }
 
-            for (key_strings, accumulators) in groups {
-                let mut row = group_keys
-                    .get(&key_strings)
-                    .ok_or_else(|| Error::internal("Missing group key in group_keys"))?
-                    .clone();
+            for (group_key, accumulators) in groups {
+                let mut row = group_key;
                 row.extend(accumulators.iter().map(|a| a.finalize()));
                 result.push_row(row)?;
             }

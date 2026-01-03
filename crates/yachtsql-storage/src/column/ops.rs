@@ -586,8 +586,16 @@ impl Column {
                         result_data.push(0);
                         result_nulls.push(true);
                     } else {
-                        result_data.push(l[i].wrapping_add(r[i]));
-                        result_nulls.push(false);
+                        match l[i].checked_add(r[i]) {
+                            Some(v) => {
+                                result_data.push(v);
+                                result_nulls.push(false);
+                            }
+                            None => {
+                                result_data.push(0);
+                                result_nulls.push(true);
+                            }
+                        }
                     }
                 }
                 Column::Int64 {
@@ -650,8 +658,16 @@ impl Column {
                         result_data.push(0);
                         result_nulls.push(true);
                     } else {
-                        result_data.push(l[i].wrapping_sub(r[i]));
-                        result_nulls.push(false);
+                        match l[i].checked_sub(r[i]) {
+                            Some(v) => {
+                                result_data.push(v);
+                                result_nulls.push(false);
+                            }
+                            None => {
+                                result_data.push(0);
+                                result_nulls.push(true);
+                            }
+                        }
                     }
                 }
                 Column::Int64 {
@@ -714,8 +730,16 @@ impl Column {
                         result_data.push(0);
                         result_nulls.push(true);
                     } else {
-                        result_data.push(l[i].wrapping_mul(r[i]));
-                        result_nulls.push(false);
+                        match l[i].checked_mul(r[i]) {
+                            Some(v) => {
+                                result_data.push(v);
+                                result_nulls.push(false);
+                            }
+                            None => {
+                                result_data.push(0);
+                                result_nulls.push(true);
+                            }
+                        }
                     }
                 }
                 Column::Int64 {

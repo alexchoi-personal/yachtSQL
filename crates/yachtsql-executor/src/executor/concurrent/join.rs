@@ -703,7 +703,9 @@ impl ConcurrentPlanExecutor {
                 Ok(result)
             }
             JoinType::Cross => {
-                panic!("Cross join should not be handled by HashJoin");
+                return Err(Error::internal(
+                    "Cross join should not be handled by HashJoin",
+                ));
             }
         }
     }
