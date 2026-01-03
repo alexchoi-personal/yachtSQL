@@ -36,4 +36,4 @@ jobs:
           cargo +nightly test -Z build-std --target x86_64-unknown-linux-gnu \
           -p yachtsql-executor -- --test-threads=1
         env:
-          TSAN_OPTIONS: "suppressions=tsan_suppressions.txt"
+          TSAN_OPTIONS: "suppressions=${{ github.workspace }}/tsan_suppressions.txt"

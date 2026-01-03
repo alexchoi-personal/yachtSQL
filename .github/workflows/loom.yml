@@ -9,7 +9,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  RUSTFLAGS: "--cfg loom"
 
 jobs:
   loom:
@@ -32,6 +31,11 @@ jobs:
           shared-key: "loom"
 
       - name: Run Loom tests
-        run: cargo nextest run --release --features loom -E 'test(loom)'
+        run: |
+          # Run loom model tests - these test concurrent synchronization primitives
+          # Note: We use --features loom but NOT --cfg loom (which breaks tokio deps)
+          # The loom crate internally handles cfg when running loom::model tests
+          cargo nextest run --release --features loom \
+            -E 'test(loom_models)'
         env:
           LOOM_MAX_PREEMPTIONS: 2
