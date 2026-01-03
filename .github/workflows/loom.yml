@@ -32,6 +32,6 @@ jobs:
           shared-key: "loom"
 
       - name: Run Loom tests
-        run: cargo nextest run --release -p yachtsql-executor --features loom loom
+        run: cargo nextest run --release --features loom -E 'test(loom)'
         env:
           LOOM_MAX_PREEMPTIONS: 2

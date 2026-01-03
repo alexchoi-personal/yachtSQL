@@ -20,8 +20,10 @@ jobs:
       - name: Install nightly
         run: rustup install nightly
 
-      - name: Install target
-        run: rustup +nightly target add x86_64-unknown-linux-gnu
+      - name: Install target and rust-src
+        run: |
+          rustup +nightly target add x86_64-unknown-linux-gnu
+          rustup +nightly component add rust-src
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -31,7 +33,7 @@ jobs:
       - name: Run with TSan
         run: |
           RUSTFLAGS="-Z sanitizer=thread" \
-          cargo +nightly test --target x86_64-unknown-linux-gnu \
+          cargo +nightly test -Z build-std --target x86_64-unknown-linux-gnu \
           -p yachtsql-executor -- --test-threads=1
         env:
           TSAN_OPTIONS: "suppressions=tsan_suppressions.txt"

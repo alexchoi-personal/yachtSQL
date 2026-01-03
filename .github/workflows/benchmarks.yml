@@ -34,13 +34,13 @@ jobs:
         run: cargo install critcmp
 
       - name: Run benchmarks on PR branch
-        run: cargo bench -- --save-baseline pr
+        run: cargo bench --bench baseline -- --save-baseline pr
 
       - name: Checkout base branch
-        run: git checkout ${{ github.base_ref }}
+        run: git stash && git checkout ${{ github.base_ref }}
 
       - name: Run benchmarks on base branch
-        run: cargo bench -- --save-baseline base
+        run: cargo bench --bench baseline -- --save-baseline base
 
       - name: Compare benchmarks
         id: compare

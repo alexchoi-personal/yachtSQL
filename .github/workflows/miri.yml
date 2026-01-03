@@ -28,4 +28,7 @@ jobs:
           shared-key: "miri"
 
       - name: Run Miri
-        run: cargo miri test -p yachtsql-executor --lib
+        run: |
+          # Exclude js_udf and python_udf tests as Miri can't run FFI
+          cargo miri test -p yachtsql-executor --lib -- \
+            --skip js_udf --skip python_udf
