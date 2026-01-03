@@ -502,7 +502,7 @@ impl ConcurrentPlanExecutor {
             PhysicalPlan::Grant { .. } => Ok(Table::empty(Schema::new())),
             PhysicalPlan::Revoke { .. } => Ok(Table::empty(Schema::new())),
             PhysicalPlan::BeginTransaction => {
-                self.catalog.begin_transaction();
+                self.catalog.begin_transaction()?;
                 let locked_snapshots = self.tables.snapshot_write_locked_tables();
                 for (name, table_data) in locked_snapshots {
                     self.catalog.snapshot_table(&name, table_data);

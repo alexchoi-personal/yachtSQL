@@ -430,8 +430,10 @@ impl fmt::Display for Word {
             Some(s) if s == '"' || s == '[' || s == '`' => {
                 write!(f, "{}{}{}", s, self.value, Word::matching_end_quote(s))
             }
+            Some(s) => {
+                write!(f, "{}{}{}", s, self.value, s)
+            }
             None => f.write_str(&self.value),
-            _ => panic!("Unexpected quote_style!"),
         }
     }
 }
@@ -439,10 +441,10 @@ impl fmt::Display for Word {
 impl Word {
     fn matching_end_quote(ch: char) -> char {
         match ch {
-            '"' => '"', // ANSI and most dialects
-            '[' => ']', // MS SQL
-            '`' => '`', // MySQL
-            _ => panic!("unexpected quoting style!"),
+            '"' => '"',
+            '[' => ']',
+            '`' => '`',
+            other => other,
         }
     }
 }

@@ -331,8 +331,9 @@ impl<'a> ColumnarEvaluator<'a> {
             Literal::String(s) => Value::String(s.clone()),
             Literal::Bytes(b) => Value::Bytes(b.clone()),
             Literal::Date(d) => {
-                let date = chrono::NaiveDate::from_num_days_from_ce_opt(*d)
-                    .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.date_naive());
+                let date = chrono::NaiveDate::from_num_days_from_ce_opt(*d).ok_or_else(|| {
+                    Error::InvalidQuery(format!("Invalid date literal: {} days from CE", d))
+                })?;
                 Value::Date(date)
             }
             Literal::Time(t) => {
@@ -340,7 +341,9 @@ impl<'a> ColumnarEvaluator<'a> {
                 let secs = (nanos / 1_000_000_000) as u32;
                 let nsecs = (nanos % 1_000_000_000) as u32;
                 let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, nsecs)
-                    .unwrap_or(chrono::NaiveTime::MIN);
+                    .ok_or_else(|| {
+                        Error::InvalidQuery(format!("Invalid time literal: {} nanoseconds", t))
+                    })?;
                 Value::Time(time)
             }
             Literal::Timestamp(ts) => {
@@ -348,7 +351,9 @@ impl<'a> ColumnarEvaluator<'a> {
                     *ts / 1_000_000,
                     ((*ts % 1_000_000) * 1000) as u32,
                 )
-                .unwrap_or(chrono::DateTime::UNIX_EPOCH);
+                .ok_or_else(|| {
+                    Error::InvalidQuery(format!("Invalid timestamp literal: {} microseconds", ts))
+                })?;
                 Value::Timestamp(dt)
             }
             Literal::Datetime(dt) => {
@@ -357,7 +362,9 @@ impl<'a> ColumnarEvaluator<'a> {
                     ((*dt % 1_000_000) * 1000) as u32,
                 )
                 .map(|d| d.naive_utc())
-                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.naive_utc());
+                .ok_or_else(|| {
+                    Error::InvalidQuery(format!("Invalid datetime literal: {} microseconds", dt))
+                })?;
                 Value::DateTime(ndt)
             }
             Literal::Interval {

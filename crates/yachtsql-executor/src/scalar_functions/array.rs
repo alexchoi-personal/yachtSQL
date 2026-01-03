@@ -86,6 +86,8 @@ pub fn fn_array_contains(args: &[Value]) -> Result<Value> {
     }
 }
 
+const MAX_GENERATE_ARRAY_SIZE: usize = 1_000_000;
+
 pub fn fn_generate_array(args: &[Value]) -> Result<Value> {
     if args.len() < 2 {
         return Err(Error::InvalidQuery(
@@ -114,7 +116,23 @@ pub fn fn_generate_array(args: &[Value]) -> Result<Value> {
             "GENERATE_ARRAY step cannot be zero".into(),
         ));
     }
-    let mut result = Vec::new();
+
+    let estimated_size = if step > 0 && end >= start {
+        ((end - start) / step + 1) as usize
+    } else if step < 0 && start >= end {
+        ((start - end) / (-step) + 1) as usize
+    } else {
+        0
+    };
+
+    if estimated_size > MAX_GENERATE_ARRAY_SIZE {
+        return Err(Error::InvalidQuery(format!(
+            "GENERATE_ARRAY would produce {} elements, exceeding maximum of {}",
+            estimated_size, MAX_GENERATE_ARRAY_SIZE
+        )));
+    }
+
+    let mut result = Vec::with_capacity(estimated_size);
     let mut i = start;
     if step > 0 {
         while i <= end {

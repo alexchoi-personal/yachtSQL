@@ -256,31 +256,49 @@ impl ConcurrentCatalog {
         }
     }
 
-    pub fn begin_transaction(&self) {
+    pub fn begin_transaction(&self) -> Result<()> {
         let mut tables_snapshot = HashMap::new();
         for entry in self.tables.iter() {
-            if let Some(table) = entry.value().try_read() {
-                tables_snapshot.insert(entry.key().clone(), table.clone());
+            match entry.value().try_read() {
+                Some(table) => {
+                    tables_snapshot.insert(entry.key().clone(), table.clone());
+                }
+                None => {
+                    return Err(Error::InvalidQuery(format!(
+                        "Cannot begin transaction: table '{}' is currently locked by another operation",
+                        entry.key()
+                    )));
+                }
             }
         }
         *self.transaction_snapshot.write() = Some(TransactionSnapshot {
             tables: tables_snapshot,
         });
+        Ok(())
     }
 
-    pub fn begin_transaction_with_tables(&self, table_names: &[String]) {
+    pub fn begin_transaction_with_tables(&self, table_names: &[String]) -> Result<()> {
         let mut tables_snapshot = HashMap::new();
         for name in table_names {
             let key = name.to_uppercase();
-            if let Some(handle) = self.tables.get(&key)
-                && let Some(table) = handle.try_read()
-            {
-                tables_snapshot.insert(key, table.clone());
+            if let Some(handle) = self.tables.get(&key) {
+                match handle.try_read() {
+                    Some(table) => {
+                        tables_snapshot.insert(key, table.clone());
+                    }
+                    None => {
+                        return Err(Error::InvalidQuery(format!(
+                            "Cannot begin transaction: table '{}' is currently locked by another operation",
+                            name
+                        )));
+                    }
+                }
             }
         }
         *self.transaction_snapshot.write() = Some(TransactionSnapshot {
             tables: tables_snapshot,
         });
+        Ok(())
     }
 
     pub fn snapshot_table(&self, name: &str, table_data: Table) {
