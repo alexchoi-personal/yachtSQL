@@ -67,7 +67,8 @@ impl Hash for HashKey {
                 }
                 Value::Numeric(n) => {
                     11u8.hash(state);
-                    n.to_string().hash(state);
+                    n.mantissa().hash(state);
+                    n.scale().hash(state);
                 }
                 Value::Array(arr) => {
                     12u8.hash(state);
@@ -89,7 +90,8 @@ impl Hash for HashKey {
                 }
                 Value::BigNumeric(n) => {
                     17u8.hash(state);
-                    n.to_string().hash(state);
+                    n.mantissa().hash(state);
+                    n.scale().hash(state);
                 }
                 Value::Default => {
                     18u8.hash(state);
@@ -238,7 +240,7 @@ impl<'a> PlanExecutor<'a> {
             .map(|expr| right_evaluator.evaluate(expr, right))
             .collect::<Result<_>>()?;
 
-        let mut hash_table: HashMap<HashKey, Vec<usize>> = HashMap::new();
+        let mut hash_table: HashMap<HashKey, Vec<usize>> = HashMap::with_capacity(right_n);
         for i in 0..right_n {
             let key_values: Vec<Value> = right_key_cols.iter().map(|c| c.get_value(i)).collect();
             let has_null = key_values.iter().any(|v| matches!(v, Value::Null));
@@ -256,6 +258,10 @@ impl<'a> PlanExecutor<'a> {
             .map(|expr| left_evaluator.evaluate(expr, left))
             .collect::<Result<_>>()?;
 
+        let left_width = left_columns.len();
+        let right_width = right_columns.len();
+        let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
         for left_idx in 0..left_n {
             let key_values: Vec<Value> = left_key_cols
                 .iter()
@@ -269,14 +275,10 @@ impl<'a> PlanExecutor<'a> {
 
             if let Some(matching_indices) = hash_table.get(&key) {
                 for &right_idx in matching_indices {
-                    let mut combined_values: Vec<Value> =
-                        left_columns.iter().map(|c| c.get_value(left_idx)).collect();
-                    let right_values: Vec<Value> = right_columns
-                        .iter()
-                        .map(|c| c.get_value(right_idx))
-                        .collect();
-                    combined_values.extend(right_values);
-                    result.push_row(combined_values)?;
+                    combined_values.clear();
+                    combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                    combined_values.extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                    result.push_row(combined_values.clone())?;
                 }
             }
         }
@@ -297,18 +299,17 @@ impl<'a> PlanExecutor<'a> {
         let right_n = right.row_count();
         let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let left_width = left_columns.len();
+        let right_width = right_columns.len();
+
+        let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
 
         for left_idx in 0..left_n {
-            let left_values: Vec<Value> =
-                left_columns.iter().map(|c| c.get_value(left_idx)).collect();
-
             for right_idx in 0..right_n {
-                let right_values: Vec<Value> = right_columns
-                    .iter()
-                    .map(|c| c.get_value(right_idx))
-                    .collect();
-                let mut combined_values = left_values.clone();
-                combined_values.extend(right_values);
+                combined_values.clear();
+                combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                combined_values.extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
                 let combined_record = Record::from_values(combined_values.clone());
 
                 let matches = match condition {
@@ -320,7 +321,7 @@ impl<'a> PlanExecutor<'a> {
                 };
 
                 if matches {
-                    result.push_row(combined_values)?;
+                    result.push_row(combined_values.clone())?;
                 }
             }
         }
@@ -341,22 +342,22 @@ impl<'a> PlanExecutor<'a> {
         let right_n = right.row_count();
         let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let left_width = left_columns.len();
+        let right_width = right_columns.len();
         let right_null_row: Vec<Value> = (0..right.schema().field_count())
             .map(|_| Value::Null)
             .collect();
 
+        let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
         for left_idx in 0..left_n {
-            let left_values: Vec<Value> =
-                left_columns.iter().map(|c| c.get_value(left_idx)).collect();
             let mut had_match = false;
 
             for right_idx in 0..right_n {
-                let right_values: Vec<Value> = right_columns
-                    .iter()
-                    .map(|c| c.get_value(right_idx))
-                    .collect();
-                let mut combined_values = left_values.clone();
-                combined_values.extend(right_values);
+                combined_values.clear();
+                combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                combined_values.extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
                 let combined_record = Record::from_values(combined_values.clone());
 
                 let matches = match condition {
@@ -369,14 +370,15 @@ impl<'a> PlanExecutor<'a> {
 
                 if matches {
                     had_match = true;
-                    result.push_row(combined_values)?;
+                    result.push_row(combined_values.clone())?;
                 }
             }
 
             if !had_match {
-                let mut row = left_values;
-                row.extend(right_null_row.clone());
-                result.push_row(row)?;
+                combined_values.clear();
+                combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                combined_values.extend(right_null_row.iter().cloned());
+                result.push_row(combined_values.clone())?;
             }
         }
 
@@ -396,22 +398,22 @@ impl<'a> PlanExecutor<'a> {
         let right_n = right.row_count();
         let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let left_width = left_columns.len();
+        let right_width = right_columns.len();
         let left_null_row: Vec<Value> = (0..left.schema().field_count())
             .map(|_| Value::Null)
             .collect();
 
+        let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
         for right_idx in 0..right_n {
-            let right_values: Vec<Value> = right_columns
-                .iter()
-                .map(|c| c.get_value(right_idx))
-                .collect();
             let mut had_match = false;
 
             for left_idx in 0..left_n {
-                let left_values: Vec<Value> =
-                    left_columns.iter().map(|c| c.get_value(left_idx)).collect();
-                let mut combined_values = left_values;
-                combined_values.extend(right_values.clone());
+                combined_values.clear();
+                combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                combined_values.extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
                 let combined_record = Record::from_values(combined_values.clone());
 
                 let matches = match condition {
@@ -424,14 +426,15 @@ impl<'a> PlanExecutor<'a> {
 
                 if matches {
                     had_match = true;
-                    result.push_row(combined_values)?;
+                    result.push_row(combined_values.clone())?;
                 }
             }
 
             if !had_match {
-                let mut row = left_null_row.clone();
-                row.extend(right_values);
-                result.push_row(row)?;
+                combined_values.clear();
+                combined_values.extend(left_null_row.iter().cloned());
+                combined_values.extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                result.push_row(combined_values.clone())?;
             }
         }
 
@@ -451,6 +454,8 @@ impl<'a> PlanExecutor<'a> {
         let right_n = right.row_count();
         let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let left_width = left_columns.len();
+        let right_width = right_columns.len();
         let left_null_row: Vec<Value> = (0..left.schema().field_count())
             .map(|_| Value::Null)
             .collect();
@@ -459,19 +464,16 @@ impl<'a> PlanExecutor<'a> {
             .collect();
 
         let mut right_matched: Vec<bool> = vec![false; right_n];
+        let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
 
         for left_idx in 0..left_n {
-            let left_values: Vec<Value> =
-                left_columns.iter().map(|c| c.get_value(left_idx)).collect();
             let mut had_match = false;
 
             for (right_idx, matched) in right_matched.iter_mut().enumerate() {
-                let right_values: Vec<Value> = right_columns
-                    .iter()
-                    .map(|c| c.get_value(right_idx))
-                    .collect();
-                let mut combined_values = left_values.clone();
-                combined_values.extend(right_values);
+                combined_values.clear();
+                combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                combined_values.extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
                 let combined_record = Record::from_values(combined_values.clone());
 
                 let match_result = match condition {
@@ -485,26 +487,24 @@ impl<'a> PlanExecutor<'a> {
                 if match_result {
                     had_match = true;
                     *matched = true;
-                    result.push_row(combined_values)?;
+                    result.push_row(combined_values.clone())?;
                 }
             }
 
             if !had_match {
-                let mut row = left_values;
-                row.extend(right_null_row.clone());
-                result.push_row(row)?;
+                combined_values.clear();
+                combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                combined_values.extend(right_null_row.iter().cloned());
+                result.push_row(combined_values.clone())?;
             }
         }
 
         for (right_idx, &matched) in right_matched.iter().enumerate() {
             if !matched {
-                let right_values: Vec<Value> = right_columns
-                    .iter()
-                    .map(|c| c.get_value(right_idx))
-                    .collect();
-                let mut row = left_null_row.clone();
-                row.extend(right_values);
-                result.push_row(row)?;
+                combined_values.clear();
+                combined_values.extend(left_null_row.iter().cloned());
+                combined_values.extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                result.push_row(combined_values.clone())?;
             }
         }
 
@@ -516,18 +516,17 @@ impl<'a> PlanExecutor<'a> {
         let right_n = right.row_count();
         let left_columns: Vec<&Column> = left.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let right_columns: Vec<&Column> = right.columns().iter().map(|(_, c)| c.as_ref()).collect();
+        let left_width = left_columns.len();
+        let right_width = right_columns.len();
+
+        let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
 
         for left_idx in 0..left_n {
-            let left_values: Vec<Value> =
-                left_columns.iter().map(|c| c.get_value(left_idx)).collect();
             for right_idx in 0..right_n {
-                let right_values: Vec<Value> = right_columns
-                    .iter()
-                    .map(|c| c.get_value(right_idx))
-                    .collect();
-                let mut combined_values = left_values.clone();
-                combined_values.extend(right_values);
-                result.push_row(combined_values)?;
+                combined_values.clear();
+                combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                combined_values.extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                result.push_row(combined_values.clone())?;
             }
         }
         Ok(())
