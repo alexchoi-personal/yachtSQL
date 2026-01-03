@@ -141,9 +141,42 @@ impl NullBitmap {
     }
 
     pub fn extend(&mut self, other: &NullBitmap) {
-        for i in 0..other.len {
-            self.push(other.is_null(i));
+        if other.len == 0 {
+            return;
         }
+
+        let start_bit = self.len % 64;
+
+        if start_bit == 0 {
+            self.data.extend_from_slice(&other.data);
+        } else {
+            let shift = start_bit;
+            let inv_shift = 64 - shift;
+
+            for (i, &word) in other.data.iter().enumerate() {
+                let low_bits = word << shift;
+                let high_bits = word >> inv_shift;
+
+                if let Some(last) = self.data.last_mut() {
+                    *last |= low_bits;
+                } else {
+                    self.data.push(low_bits);
+                }
+
+                let other_full_words = other.len / 64;
+                let is_last_word = i == other.data.len() - 1;
+                let other_remaining = other.len % 64;
+
+                if !is_last_word || (other_remaining > inv_shift) || (i < other_full_words) {
+                    self.data.push(high_bits);
+                }
+            }
+        }
+
+        self.len += other.len;
+
+        let num_words = self.len.div_ceil(64);
+        self.data.truncate(num_words);
     }
 }
 

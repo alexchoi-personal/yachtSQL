@@ -10,6 +10,8 @@ use super::PlanExecutor;
 use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
+const MAX_LOOP_ITERATIONS: usize = 1_000_000;
+
 impl<'a> PlanExecutor<'a> {
     pub fn execute_call(&mut self, procedure_name: &str, args: &[Expr]) -> Result<Table> {
         let proc = self
@@ -339,7 +341,16 @@ impl<'a> PlanExecutor<'a> {
         body: &[PhysicalPlan],
         label: Option<&str>,
     ) -> Result<Table> {
+        let mut iteration_count = 0usize;
         'outer: loop {
+            iteration_count += 1;
+            if iteration_count > MAX_LOOP_ITERATIONS {
+                return Err(Error::InvalidQuery(format!(
+                    "WHILE loop exceeded maximum iterations ({})",
+                    MAX_LOOP_ITERATIONS
+                )));
+            }
+
             let cond_val = self.evaluate_scripting_expr(condition)?;
             if !cond_val.as_bool().unwrap_or(false) {
                 break;
@@ -383,7 +394,16 @@ impl<'a> PlanExecutor<'a> {
         body: &[PhysicalPlan],
         label: Option<&str>,
     ) -> Result<Table> {
+        let mut iteration_count = 0usize;
         'outer: loop {
+            iteration_count += 1;
+            if iteration_count > MAX_LOOP_ITERATIONS {
+                return Err(Error::InvalidQuery(format!(
+                    "LOOP exceeded maximum iterations ({})",
+                    MAX_LOOP_ITERATIONS
+                )));
+            }
+
             for plan in body {
                 match self.execute_plan(plan) {
                     Ok(_) => {}

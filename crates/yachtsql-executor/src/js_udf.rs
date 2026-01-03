@@ -2,8 +2,13 @@
 
 use std::cell::RefCell;
 use std::sync::Once;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use yachtsql_common::types::Value;
+
+const JS_EXECUTION_TIMEOUT_MS: u64 = 5000;
+const JS_HEAP_SIZE_LIMIT_MB: usize = 128;
 
 static V8_INIT: Once = Once::new();
 
@@ -17,6 +22,14 @@ fn init_v8_platform() {
 
 thread_local! {
     static V8_ISOLATE: RefCell<Option<v8::OwnedIsolate>> = const { RefCell::new(None) };
+    static EXECUTION_TIMED_OUT: AtomicBool = const { AtomicBool::new(false) };
+    static EXECUTION_START: RefCell<Option<Instant>> = const { RefCell::new(None) };
+}
+
+fn create_isolate_with_limits() -> v8::OwnedIsolate {
+    let mut params = v8::CreateParams::default();
+    params = params.heap_limits(0, JS_HEAP_SIZE_LIMIT_MB * 1024 * 1024);
+    v8::Isolate::new(params)
 }
 
 fn with_isolate<F, R>(f: F) -> Result<R, String>
@@ -28,7 +41,7 @@ where
     V8_ISOLATE.with(|cell| {
         let mut borrow = cell.borrow_mut();
         if borrow.is_none() {
-            *borrow = Some(v8::Isolate::new(v8::CreateParams::default()));
+            *borrow = Some(create_isolate_with_limits());
         }
         match borrow.as_mut() {
             Some(isolate) => f(isolate),
@@ -37,12 +50,46 @@ where
     })
 }
 
+fn check_execution_timeout() -> bool {
+    EXECUTION_START.with(|start_cell| {
+        if let Some(start) = *start_cell.borrow() {
+            if start.elapsed() > Duration::from_millis(JS_EXECUTION_TIMEOUT_MS) {
+                EXECUTION_TIMED_OUT.with(|flag| flag.store(true, Ordering::SeqCst));
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    })
+}
+
+fn reset_execution_state() {
+    EXECUTION_TIMED_OUT.with(|flag| flag.store(false, Ordering::SeqCst));
+    EXECUTION_START.with(|start_cell| {
+        *start_cell.borrow_mut() = Some(Instant::now());
+    });
+}
+
+fn is_timed_out() -> bool {
+    EXECUTION_TIMED_OUT.with(|flag| flag.load(Ordering::SeqCst))
+}
+
+extern "C" fn oom_error_handler(_: *const std::ffi::c_char, _: &v8::OomDetails) {
+    EXECUTION_TIMED_OUT.with(|flag| flag.store(true, Ordering::SeqCst));
+}
+
 pub fn evaluate_js_function(
     js_code: &str,
     param_names: &[String],
     args: &[Value],
 ) -> Result<Value, String> {
+    reset_execution_state();
+
     with_isolate(|isolate| {
+        isolate.set_oom_error_handler(oom_error_handler);
+
         let handle_scope = &mut v8::HandleScope::new(isolate);
         let context = v8::Context::new(handle_scope, Default::default());
         let scope = &mut v8::ContextScope::new(handle_scope, context);
@@ -56,22 +103,33 @@ pub fn evaluate_js_function(
                 .ok_or_else(|| format!("Failed to set parameter {}", i))?;
         }
 
-        let wrapper_code = build_wrapper_function(js_code, param_names);
+        let wrapper_code = build_wrapper_function_with_timeout(js_code, param_names);
         let code =
             v8::String::new(scope, &wrapper_code).ok_or("Failed to create JavaScript source")?;
 
         let script = v8::Script::compile(scope, code, None)
             .ok_or("Failed to compile JavaScript function")?;
 
+        if check_execution_timeout() {
+            return Err(format!(
+                "JavaScript execution timed out after {}ms",
+                JS_EXECUTION_TIMEOUT_MS
+            ));
+        }
+
         let result = script
             .run(scope)
             .ok_or("JavaScript execution returned undefined")?;
+
+        if is_timed_out() {
+            return Err("JavaScript execution exceeded memory limit".to_string());
+        }
 
         js_to_value(scope, result)
     })
 }
 
-fn build_wrapper_function(js_code: &str, param_names: &[String]) -> String {
+fn build_wrapper_function_with_timeout(js_code: &str, param_names: &[String]) -> String {
     let params = param_names.join(", ");
     let trimmed = js_code.trim();
 

@@ -56,12 +56,16 @@ pub fn substr(val: &Value, start: &Value, len: Option<&Value>) -> Result<Value> 
     match (val, start) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::String(s), Value::Int64(start_idx)) => {
-            let start = (*start_idx as usize).saturating_sub(1);
+            let start = if *start_idx < 1 {
+                0
+            } else {
+                (*start_idx as usize).saturating_sub(1)
+            };
             let chars: Vec<char> = s.chars().collect();
 
             let result = match len {
                 Some(Value::Int64(l)) => {
-                    let length = *l as usize;
+                    let length = if *l < 0 { 0 } else { *l as usize };
                     chars.into_iter().skip(start).take(length).collect()
                 }
                 Some(Value::Null) => return Ok(Value::Null),
@@ -71,11 +75,15 @@ pub fn substr(val: &Value, start: &Value, len: Option<&Value>) -> Result<Value> 
             Ok(Value::String(result))
         }
         (Value::Bytes(b), Value::Int64(start_idx)) => {
-            let start = (*start_idx as usize).saturating_sub(1);
+            let start = if *start_idx < 1 {
+                0
+            } else {
+                (*start_idx as usize).saturating_sub(1)
+            };
 
             let result = match len {
                 Some(Value::Int64(l)) => {
-                    let length = *l as usize;
+                    let length = if *l < 0 { 0 } else { *l as usize };
                     b.iter().skip(start).take(length).copied().collect()
                 }
                 Some(Value::Null) => return Ok(Value::Null),
@@ -124,7 +132,8 @@ pub fn left(val: &Value, n: &Value) -> Result<Value> {
     match (val, n) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::String(s), Value::Int64(n)) => {
-            let chars: String = s.chars().take(*n as usize).collect();
+            let count = if *n < 0 { 0 } else { *n as usize };
+            let chars: String = s.chars().take(count).collect();
             Ok(Value::String(chars))
         }
         _ => Err(Error::type_mismatch_msg("LEFT requires (string, int)")),
@@ -135,9 +144,9 @@ pub fn right(val: &Value, n: &Value) -> Result<Value> {
     match (val, n) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::String(s), Value::Int64(n)) => {
-            let n = *n as usize;
+            let count = if *n < 0 { 0 } else { *n as usize };
             let chars: Vec<char> = s.chars().collect();
-            let start = chars.len().saturating_sub(n);
+            let start = chars.len().saturating_sub(count);
             Ok(Value::String(chars[start..].iter().collect()))
         }
         _ => Err(Error::type_mismatch_msg("RIGHT requires (string, int)")),
@@ -147,7 +156,10 @@ pub fn right(val: &Value, n: &Value) -> Result<Value> {
 pub fn repeat(val: &Value, n: &Value) -> Result<Value> {
     match (val, n) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::String(s), Value::Int64(n)) => Ok(Value::String(s.repeat(*n as usize))),
+        (Value::String(s), Value::Int64(n)) => {
+            let count = if *n < 0 { 0 } else { *n as usize };
+            Ok(Value::String(s.repeat(count)))
+        }
         _ => Err(Error::type_mismatch_msg("REPEAT requires (string, int)")),
     }
 }

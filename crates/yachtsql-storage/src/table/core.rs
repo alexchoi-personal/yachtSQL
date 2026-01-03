@@ -593,7 +593,7 @@ impl Table {
         for (name, col) in &self.columns {
             let mut new_col = col.as_ref().clone();
             if let Some(other_col) = other.columns.get(name) {
-                new_col.extend(other_col.as_ref());
+                let _ = new_col.extend(other_col.as_ref());
             }
             new_columns.insert(name.clone(), Arc::new(new_col));
         }

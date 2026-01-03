@@ -18,12 +18,12 @@ pub fn eval_between(
     let low_col = evaluator.evaluate(low, table)?;
     let high_col = evaluator.evaluate(high, table)?;
 
-    let ge_low = val_col.binary_ge(&low_col);
-    let le_high = val_col.binary_le(&high_col);
-    let in_range = ge_low.binary_and(&le_high);
+    let ge_low = val_col.binary_ge(&low_col)?;
+    let le_high = val_col.binary_le(&high_col)?;
+    let in_range = ge_low.binary_and(&le_high)?;
 
     if negated {
-        Ok(in_range.unary_not())
+        in_range.unary_not()
     } else {
         Ok(in_range)
     }

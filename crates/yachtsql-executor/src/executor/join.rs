@@ -80,7 +80,7 @@ impl Hash for HashKey {
                 }
                 Value::Json(j) => {
                     14u8.hash(state);
-                    j.to_string().hash(state);
+                    hash_json_value(j, state);
                 }
                 Value::Geography(_) => {
                     15u8.hash(state);
@@ -96,6 +96,45 @@ impl Hash for HashKey {
                 Value::Default => {
                     18u8.hash(state);
                 }
+            }
+        }
+    }
+}
+
+fn hash_json_value<H: Hasher>(json: &serde_json::Value, state: &mut H) {
+    match json {
+        serde_json::Value::Null => 0u8.hash(state),
+        serde_json::Value::Bool(b) => {
+            1u8.hash(state);
+            b.hash(state);
+        }
+        serde_json::Value::Number(n) => {
+            2u8.hash(state);
+            if let Some(i) = n.as_i64() {
+                i.hash(state);
+            } else if let Some(u) = n.as_u64() {
+                u.hash(state);
+            } else if let Some(f) = n.as_f64() {
+                f.to_bits().hash(state);
+            }
+        }
+        serde_json::Value::String(s) => {
+            3u8.hash(state);
+            s.hash(state);
+        }
+        serde_json::Value::Array(arr) => {
+            4u8.hash(state);
+            arr.len().hash(state);
+            for item in arr {
+                hash_json_value(item, state);
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            5u8.hash(state);
+            obj.len().hash(state);
+            for (k, v) in obj {
+                k.hash(state);
+                hash_json_value(v, state);
             }
         }
     }

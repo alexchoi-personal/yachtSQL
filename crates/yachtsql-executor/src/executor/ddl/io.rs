@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -52,6 +53,8 @@ impl<'a> PlanExecutor<'a> {
         } else {
             options.uri.replace('*', "data")
         };
+
+        let path = validate_file_path(&path)?;
 
         match options.format {
             ExportFormat::Parquet => self.export_to_parquet(&data, &path),
@@ -940,4 +943,48 @@ impl<'a> PlanExecutor<'a> {
             _ => Ok(Value::string(s.to_string())),
         }
     }
+}
+
+#[allow(clippy::collapsible_if)]
+fn validate_file_path(path: &str) -> Result<String> {
+    if path.contains("..") {
+        return Err(Error::InvalidQuery(
+            "Path traversal sequences (..) are not allowed in file paths".into(),
+        ));
+    }
+
+    let path_obj = Path::new(path);
+
+    if path_obj.is_absolute() {
+        let canonical = path_obj
+            .canonicalize()
+            .map_err(|e| Error::internal(format!("Failed to resolve path '{}': {}", path, e)))?;
+        return Ok(canonical.to_string_lossy().to_string());
+    }
+
+    let current_dir = std::env::current_dir()
+        .map_err(|e| Error::internal(format!("Failed to get current directory: {}", e)))?;
+
+    let full_path = current_dir.join(path);
+
+    if let Ok(canonical) = full_path.canonicalize() {
+        if !canonical.starts_with(&current_dir) {
+            return Err(Error::InvalidQuery(
+                "File path escapes the current working directory".into(),
+            ));
+        }
+        return Ok(canonical.to_string_lossy().to_string());
+    }
+
+    if let Some(parent) = full_path.parent() {
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            if !canonical_parent.starts_with(&current_dir) {
+                return Err(Error::InvalidQuery(
+                    "File path escapes the current working directory".into(),
+                ));
+            }
+        }
+    }
+
+    Ok(full_path.to_string_lossy().to_string())
 }
