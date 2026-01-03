@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use yachtsql_common::error::Result;
+use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 
 use crate::{Column, Record, Schema};
@@ -553,13 +553,15 @@ impl Table {
         Ok(QueryResult::new(schema, rows))
     }
 
-    pub fn filter_by_mask(&self, mask: &Column) -> Self {
+    pub fn filter_by_mask(&self, mask: &Column) -> Result<Self> {
         let Column::Bool {
             data: mask_data,
             nulls: mask_nulls,
         } = mask
         else {
-            panic!("filter_by_mask requires a Bool column as mask");
+            return Err(Error::internal(
+                "filter_by_mask requires a Bool column as mask",
+            ));
         };
 
         let mut indices = Vec::new();
@@ -568,7 +570,7 @@ impl Table {
                 indices.push(i);
             }
         }
-        self.gather_rows(&indices)
+        Ok(self.gather_rows(&indices))
     }
 
     pub fn gather_rows(&self, indices: &[usize]) -> Self {
@@ -1197,7 +1199,7 @@ mod tests {
             data: vec![true, false, true],
             nulls: NullBitmap::new_valid(3),
         };
-        let filtered = table.filter_by_mask(&mask);
+        let filtered = table.filter_by_mask(&mask).unwrap();
         assert_eq!(filtered.row_count(), 2);
         let row0 = filtered.get_row(0).unwrap();
         assert_eq!(row0.values()[0], Value::Int64(1));
@@ -1216,16 +1218,22 @@ mod tests {
             data: vec![true, true, true],
             nulls,
         };
-        let filtered = table.filter_by_mask(&mask);
+        let filtered = table.filter_by_mask(&mask).unwrap();
         assert_eq!(filtered.row_count(), 2);
     }
 
     #[test]
-    #[should_panic(expected = "filter_by_mask requires a Bool column as mask")]
     fn test_filter_by_mask_non_bool() {
         let table = create_test_table();
         let mask = Column::new(&DataType::Int64);
-        table.filter_by_mask(&mask);
+        let result = table.filter_by_mask(&mask);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("filter_by_mask requires a Bool column as mask")
+        );
     }
 
     #[test]
@@ -1445,7 +1453,7 @@ mod tests {
             data: vec![false, false, false],
             nulls: NullBitmap::new_valid(3),
         };
-        let filtered = table.filter_by_mask(&mask);
+        let filtered = table.filter_by_mask(&mask).unwrap();
         assert_eq!(filtered.row_count(), 0);
     }
 
@@ -1456,7 +1464,7 @@ mod tests {
             data: vec![true, true, true],
             nulls: NullBitmap::new_valid(3),
         };
-        let filtered = table.filter_by_mask(&mask);
+        let filtered = table.filter_by_mask(&mask).unwrap();
         assert_eq!(filtered.row_count(), 3);
     }
 
@@ -1467,7 +1475,7 @@ mod tests {
             data: vec![true, true, true],
             nulls: NullBitmap::new_null(3),
         };
-        let filtered = table.filter_by_mask(&mask);
+        let filtered = table.filter_by_mask(&mask).unwrap();
         assert_eq!(filtered.row_count(), 0);
     }
 

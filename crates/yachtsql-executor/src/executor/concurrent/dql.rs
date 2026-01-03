@@ -164,7 +164,7 @@ impl ConcurrentPlanExecutor {
                 .with_user_functions(&udf);
 
             let mask = evaluator.evaluate(predicate, &input_table)?;
-            Ok(input_table.filter_by_mask(&mask))
+            input_table.filter_by_mask(&mask)
         }
     }
 

@@ -268,7 +268,11 @@ fn visit_children(
                 }
             }
         }
-        Data::Union(_) => unimplemented!(),
+        Data::Union(u) => syn::Error::new_spanned(
+            u.union_token,
+            "Visit/VisitMut cannot be derived for union types",
+        )
+        .to_compile_error(),
     }
 }
 

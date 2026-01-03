@@ -2164,8 +2164,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "filter_by_mask requires a Bool column as mask")]
-    fn test_filter_by_mask_non_bool_panic() {
+    fn test_filter_by_mask_non_bool_error() {
         let col = Column::Int64 {
             data: AVec::from_iter(64, vec![1, 2, 3]),
             nulls: NullBitmap::new_valid(3),
@@ -2174,7 +2173,14 @@ mod tests {
             data: AVec::from_iter(64, vec![1, 0, 1]),
             nulls: NullBitmap::new_valid(3),
         };
-        col.filter_by_mask(&bad_mask).unwrap();
+        let result = col.filter_by_mask(&bad_mask);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("filter_by_mask requires a Bool column as mask")
+        );
     }
 
     #[test]

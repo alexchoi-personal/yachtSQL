@@ -7,7 +7,7 @@ use yachtsql_common::types::Value;
 pub fn fn_abs(args: &[Value]) -> Result<Value> {
     match args.first() {
         Some(Value::Null) => Ok(Value::Null),
-        Some(Value::Int64(n)) => Ok(Value::Int64(n.abs())),
+        Some(Value::Int64(n)) => n.checked_abs().map(Value::Int64).ok_or(Error::Overflow),
         Some(Value::Float64(f)) => Ok(Value::Float64(OrderedFloat(f.0.abs()))),
         Some(Value::Numeric(d)) => Ok(Value::Numeric(d.abs())),
         _ => Err(Error::InvalidQuery("ABS requires numeric argument".into())),
