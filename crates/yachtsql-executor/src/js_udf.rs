@@ -19,9 +19,9 @@ thread_local! {
     static V8_ISOLATE: RefCell<Option<v8::OwnedIsolate>> = const { RefCell::new(None) };
 }
 
-fn with_isolate<F, R>(f: F) -> R
+fn with_isolate<F, R>(f: F) -> Result<R, String>
 where
-    F: FnOnce(&mut v8::OwnedIsolate) -> R,
+    F: FnOnce(&mut v8::OwnedIsolate) -> Result<R, String>,
 {
     init_v8_platform();
 
@@ -30,7 +30,10 @@ where
         if borrow.is_none() {
             *borrow = Some(v8::Isolate::new(v8::CreateParams::default()));
         }
-        f(borrow.as_mut().unwrap())
+        match borrow.as_mut() {
+            Some(isolate) => f(isolate),
+            None => Err("Failed to initialize V8 isolate".to_string()),
+        }
     })
 }
 

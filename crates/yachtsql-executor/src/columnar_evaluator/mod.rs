@@ -332,7 +332,7 @@ impl<'a> ColumnarEvaluator<'a> {
             Literal::Bytes(b) => Value::Bytes(b.clone()),
             Literal::Date(d) => {
                 let date = chrono::NaiveDate::from_num_days_from_ce_opt(*d)
-                    .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+                    .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.date_naive());
                 Value::Date(date)
             }
             Literal::Time(t) => {
@@ -340,7 +340,7 @@ impl<'a> ColumnarEvaluator<'a> {
                 let secs = (nanos / 1_000_000_000) as u32;
                 let nsecs = (nanos % 1_000_000_000) as u32;
                 let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, nsecs)
-                    .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+                    .unwrap_or(chrono::NaiveTime::MIN);
                 Value::Time(time)
             }
             Literal::Timestamp(ts) => {
@@ -400,7 +400,7 @@ impl<'a> ColumnarEvaluator<'a> {
             Literal::Bytes(b) => Ok(Value::Bytes(b.clone())),
             Literal::Date(d) => {
                 let date = chrono::NaiveDate::from_num_days_from_ce_opt(*d)
-                    .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
+                    .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.date_naive());
                 Ok(Value::Date(date))
             }
             Literal::Time(t) => {
@@ -408,7 +408,7 @@ impl<'a> ColumnarEvaluator<'a> {
                 let secs = (nanos / 1_000_000_000) as u32;
                 let nsecs = (nanos % 1_000_000_000) as u32;
                 let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, nsecs)
-                    .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+                    .unwrap_or(chrono::NaiveTime::MIN);
                 Ok(Value::Time(time))
             }
             Literal::Timestamp(ts) => {
@@ -425,7 +425,7 @@ impl<'a> ColumnarEvaluator<'a> {
                     ((*dt % 1_000_000) * 1000) as u32,
                 )
                 .map(|d| d.naive_utc())
-                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.naive_utc());
+                .unwrap_or(chrono::DateTime::UNIX_EPOCH.naive_utc());
                 Ok(Value::DateTime(ndt))
             }
             Literal::Interval {
@@ -471,7 +471,7 @@ impl<'a> ColumnarEvaluator<'a> {
         let upper_name = name.to_uppercase();
         for (col_name, col) in input.columns().iter() {
             if col_name.to_uppercase() == upper_name {
-                return Ok(col.clone());
+                return Ok(col.as_ref().clone());
             }
         }
 

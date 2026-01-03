@@ -94,14 +94,26 @@ geohash = "0.13"
 
 [dev-dependencies]
 proptest = "1.5"
-criterion = { version = "0.5", features = ["html_reports"] }
-tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "time"] }
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "time", "sync"] }
 pprof = { version = "0.14", features = ["flamegraph", "criterion"] }
 yachtsql-sqlparser = { path = "crates/yachtsql-sqlparser", features = ["visitor"] }
 arrow = { version = "54", default-features = false }
 parquet = { version = "54", default-features = false, features = ["arrow"] }
 tempfile = "3.14"
 yachtsql-test-utils = { version = "0.1.4", path = "crates/yachtsql-test-utils" }
+
+[features]
+default = []
+loom = ["dep:loom"]
+
+[dependencies.loom]
+version = "0.7"
+optional = true
+
+[[bench]]
+name = "baseline"
+harness = false
 
 # Linting configuration
 # Run with: cargo clippy -- -D warnings

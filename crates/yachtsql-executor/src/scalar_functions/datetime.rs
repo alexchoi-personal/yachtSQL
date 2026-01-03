@@ -271,7 +271,9 @@ fn parse_datetime_with_pattern(s: &str, pattern: &str) -> Result<NaiveDateTime> 
         && !has_time
         && let Ok(date) = NaiveDate::parse_from_str(s, &chrono_pattern)
     {
-        return Ok(date.and_hms_opt(0, 0, 0).unwrap());
+        return date.and_hms_opt(0, 0, 0).ok_or_else(|| {
+            Error::datetime_error("parse_datetime", "failed to add midnight time to date")
+        });
     }
     Err(Error::InvalidQuery(format!(
         "Failed to parse datetime '{}' with pattern '{}'",
@@ -417,7 +419,12 @@ pub fn fn_datetime(args: &[Value]) -> Result<Value> {
                 .map_err(|e| Error::InvalidQuery(format!("Invalid datetime: {}", e)))?;
             Ok(Value::DateTime(dt))
         }
-        Some(Value::Date(d)) => Ok(Value::DateTime(d.and_hms_opt(0, 0, 0).unwrap())),
+        Some(Value::Date(d)) => {
+            let dt = d.and_hms_opt(0, 0, 0).ok_or_else(|| {
+                Error::datetime_error("DATETIME", "failed to add midnight time to date")
+            })?;
+            Ok(Value::DateTime(dt))
+        }
         Some(Value::Timestamp(ts)) => Ok(Value::DateTime(ts.naive_utc())),
         _ => Err(Error::InvalidQuery(
             "DATETIME requires date/string argument".into(),
@@ -938,11 +945,11 @@ pub fn fn_timestamp_seconds(args: &[Value]) -> Result<Value> {
 }
 
 pub fn fn_unix_date(args: &[Value]) -> Result<Value> {
+    let unix_epoch = chrono::DateTime::UNIX_EPOCH.date_naive();
     match args.first() {
         Some(Value::Null) => Ok(Value::Null),
         Some(Value::Date(d)) => {
-            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-            let days = d.signed_duration_since(epoch).num_days();
+            let days = d.signed_duration_since(unix_epoch).num_days();
             Ok(Value::Int64(days))
         }
         _ => Err(Error::InvalidQuery(
@@ -991,11 +998,11 @@ pub fn fn_unix_seconds(args: &[Value]) -> Result<Value> {
 }
 
 pub fn fn_date_from_unix_date(args: &[Value]) -> Result<Value> {
+    let unix_epoch = chrono::DateTime::UNIX_EPOCH.date_naive();
     match args.first() {
         Some(Value::Null) => Ok(Value::Null),
         Some(Value::Int64(days)) => {
-            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-            let date = epoch + chrono::Duration::days(*days);
+            let date = unix_epoch + chrono::Duration::days(*days);
             Ok(Value::Date(date))
         }
         _ => Err(Error::InvalidQuery(
@@ -1012,7 +1019,10 @@ pub fn fn_last_day(args: &[Value]) -> Result<Value> {
             let month = d.month();
             let next_month = if month == 12 { 1 } else { month + 1 };
             let next_year = if month == 12 { year + 1 } else { year };
-            let first_of_next = NaiveDate::from_ymd_opt(next_year, next_month, 1).unwrap();
+            let first_of_next =
+                NaiveDate::from_ymd_opt(next_year, next_month, 1).ok_or_else(|| {
+                    Error::datetime_error("LAST_DAY", "failed to compute first day of next month")
+                })?;
             let last_day = first_of_next - chrono::Duration::days(1);
             Ok(Value::Date(last_day))
         }
@@ -1021,7 +1031,10 @@ pub fn fn_last_day(args: &[Value]) -> Result<Value> {
             let month = dt.date().month();
             let next_month = if month == 12 { 1 } else { month + 1 };
             let next_year = if month == 12 { year + 1 } else { year };
-            let first_of_next = NaiveDate::from_ymd_opt(next_year, next_month, 1).unwrap();
+            let first_of_next =
+                NaiveDate::from_ymd_opt(next_year, next_month, 1).ok_or_else(|| {
+                    Error::datetime_error("LAST_DAY", "failed to compute first day of next month")
+                })?;
             let last_day = first_of_next - chrono::Duration::days(1);
             Ok(Value::Date(last_day))
         }
@@ -1066,7 +1079,8 @@ pub fn fn_date_bucket(args: &[Value]) -> Result<Value> {
             }
         }
     } else {
-        NaiveDate::from_ymd_opt(1950, 1, 1).unwrap()
+        NaiveDate::from_ymd_opt(1950, 1, 1)
+            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.date_naive())
     };
     if interval.months != 0 {
         let date_months = date.year() * 12 + date.month() as i32 - 1;
@@ -1102,6 +1116,9 @@ pub fn fn_date_bucket(args: &[Value]) -> Result<Value> {
 }
 
 pub fn fn_datetime_bucket(args: &[Value]) -> Result<Value> {
+    let default_origin = NaiveDate::from_ymd_opt(1950, 1, 1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.naive_utc());
     if args.len() < 2 {
         return Err(Error::InvalidQuery(
             "DATETIME_BUCKET requires at least 2 arguments".into(),
@@ -1113,16 +1130,10 @@ pub fn fn_datetime_bucket(args: &[Value]) -> Result<Value> {
             let origin = if args.len() > 2 {
                 match &args[2] {
                     Value::DateTime(o) => *o,
-                    _ => NaiveDate::from_ymd_opt(1950, 1, 1)
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
+                    _ => default_origin,
                 }
             } else {
-                NaiveDate::from_ymd_opt(1950, 1, 1)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
+                default_origin
             };
             let bucket = bucket_datetime(dt, interval, &origin)?;
             Ok(Value::DateTime(bucket))
@@ -1134,6 +1145,9 @@ pub fn fn_datetime_bucket(args: &[Value]) -> Result<Value> {
 }
 
 pub fn fn_timestamp_bucket(args: &[Value]) -> Result<Value> {
+    let default_origin = NaiveDate::from_ymd_opt(1950, 1, 1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.naive_utc());
     if args.len() < 2 {
         return Err(Error::InvalidQuery(
             "TIMESTAMP_BUCKET requires at least 2 arguments".into(),
@@ -1145,16 +1159,10 @@ pub fn fn_timestamp_bucket(args: &[Value]) -> Result<Value> {
             let origin = if args.len() > 2 {
                 match &args[2] {
                     Value::Timestamp(o) => o.naive_utc(),
-                    _ => NaiveDate::from_ymd_opt(1950, 1, 1)
-                        .unwrap()
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap(),
+                    _ => default_origin,
                 }
             } else {
-                NaiveDate::from_ymd_opt(1950, 1, 1)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
+                default_origin
             };
             let bucket = bucket_datetime(&ts.naive_utc(), interval, &origin)?;
             Ok(Value::Timestamp(bucket.and_utc()))

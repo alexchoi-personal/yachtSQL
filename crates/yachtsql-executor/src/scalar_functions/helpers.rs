@@ -48,7 +48,9 @@ pub fn extract_datetime_field(val: &Value, field: DateTimeField) -> Result<Value
 }
 
 fn week_number_from_date(date: &NaiveDate, start_day: WeekStartDay) -> i64 {
-    let year_start = NaiveDate::from_ymd_opt(date.year(), 1, 1).unwrap();
+    let Some(year_start) = NaiveDate::from_ymd_opt(date.year(), 1, 1) else {
+        return 0;
+    };
     let start_weekday = match start_day {
         WeekStartDay::Sunday => chrono::Weekday::Sun,
         WeekStartDay::Monday => chrono::Weekday::Mon,
@@ -249,11 +251,17 @@ pub fn parse_timestamp_string(s: &str) -> Result<DateTime<Utc>> {
         return Ok(dt.with_timezone(&Utc));
     }
 
-    let re = regex::Regex::new(r"^(.+?)([+-])(\d{1,2})$").unwrap();
+    let Ok(re) = regex::Regex::new(r"^(.+?)([+-])(\d{1,2})$") else {
+        return Err(Error::internal("Failed to compile timestamp regex"));
+    };
     if let Some(caps) = re.captures(s_trimmed) {
-        let datetime_part = caps.get(1).unwrap().as_str();
-        let sign = caps.get(2).unwrap().as_str();
-        let hours: i32 = caps.get(3).unwrap().as_str().parse().unwrap_or(0);
+        let datetime_part = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let sign = caps.get(2).map(|m| m.as_str()).unwrap_or("+");
+        let hours: i32 = caps
+            .get(3)
+            .map(|m| m.as_str())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
         let offset_secs = hours * 3600 * if sign == "-" { -1 } else { 1 };
         if let Some(offset) = FixedOffset::east_opt(offset_secs) {
             if let Ok(ndt) = NaiveDateTime::parse_from_str(datetime_part, "%Y-%m-%d %H:%M:%S") {
@@ -288,7 +296,8 @@ pub fn parse_timestamp_string(s: &str) -> Result<DateTime<Utc>> {
         .or_else(|_| NaiveDateTime::parse_from_str(s_no_tz, "%Y-%m-%dT%H:%M:%S"))
         .or_else(|_| NaiveDateTime::parse_from_str(s_no_tz, "%Y-%m-%dT%H:%M:%S%.f"))
         .or_else(|_| {
-            NaiveDate::parse_from_str(s_no_tz, "%Y-%m-%d").map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+            NaiveDate::parse_from_str(s_no_tz, "%Y-%m-%d")
+                .map(|d| d.and_hms_opt(0, 0, 0).unwrap_or(d.and_time(NaiveTime::MIN)))
         })
         .map(|ndt| ndt.and_utc())
         .map_err(|e| Error::InvalidQuery(format!("Invalid timestamp string: {}", e)))
@@ -310,8 +319,12 @@ pub fn parse_range_string(s: &str, inner_type: &DataType) -> Result<RangeValue> 
             s
         )));
     }
-    let first_char = s.chars().next().unwrap();
-    let last_char = s.chars().last().unwrap();
+    let Some(first_char) = s.chars().next() else {
+        return Err(Error::InvalidQuery("Empty range string".into()));
+    };
+    let Some(last_char) = s.chars().last() else {
+        return Err(Error::InvalidQuery("Empty range string".into()));
+    };
     if first_char != '[' && first_char != '(' {
         return Err(Error::InvalidQuery(format!(
             "Invalid range string: must start with '[' or '(': {}",
@@ -725,7 +738,9 @@ pub fn parse_datetime_with_pattern(s: &str, pattern: &str) -> Result<NaiveDateTi
         && !has_time
         && let Ok(date) = NaiveDate::parse_from_str(s, &chrono_pattern)
     {
-        return Ok(date.and_hms_opt(0, 0, 0).unwrap());
+        return date
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| Error::internal("Failed to create midnight datetime"));
     }
     Err(Error::InvalidQuery(format!(
         "Failed to parse datetime '{}' with pattern '{}'",

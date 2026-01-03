@@ -26,7 +26,7 @@ use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::Expr;
 use yachtsql_optimizer::OptimizedLogicalPlan;
-use yachtsql_storage::{Field, FieldMode, Schema, Table};
+use yachtsql_storage::{Field, FieldMode, Record, Schema, Table};
 
 use crate::catalog::Catalog;
 use crate::plan::PhysicalPlan;
@@ -426,6 +426,12 @@ impl<'a> PlanExecutor<'a> {
                 input_schema,
                 schema,
             ),
+            PhysicalPlan::Explain {
+                logical_plan_text,
+                physical_plan_text,
+                analyze,
+                input,
+            } => self.execute_explain(logical_plan_text, physical_plan_text, *analyze, input),
         }
     }
 
@@ -554,7 +560,9 @@ impl<'a> PlanExecutor<'a> {
                 if result_table.row_count() == 0 || result_table.num_columns() == 0 {
                     return Ok(Value::Null);
                 }
-                let first_col = result_table.column(0).unwrap();
+                let first_col = result_table
+                    .column(0)
+                    .ok_or_else(|| Error::internal("Expected at least one column"))?;
                 Ok(first_col.get_value(0))
             }
             Expr::BinaryOp { left, op, right } => {
@@ -674,7 +682,11 @@ impl<'a> PlanExecutor<'a> {
         let mut partitions: BTreeMap<Vec<Value>, Vec<(i64, Vec<Value>)>> = BTreeMap::new();
 
         let n = input_table.row_count();
-        let columns: Vec<_> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<_> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         for row_idx in 0..n {
             let ts_val = columns[ts_idx].get_value(row_idx);
@@ -682,7 +694,10 @@ impl<'a> PlanExecutor<'a> {
             let ts_millis = match &ts_val {
                 Value::DateTime(d) => d.and_utc().timestamp_millis(),
                 Value::Timestamp(d) => d.timestamp_millis(),
-                Value::Date(d) => d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis(),
+                Value::Date(d) => d
+                    .and_hms_opt(0, 0, 0)
+                    .map(|dt| dt.and_utc().timestamp_millis())
+                    .unwrap_or(0),
                 _ => continue,
             };
 
@@ -712,8 +727,12 @@ impl<'a> PlanExecutor<'a> {
                 continue;
             }
 
-            let min_original_ts = entries.first().map(|(ts, _)| *ts).unwrap();
-            let max_original_ts = entries.last().map(|(ts, _)| *ts).unwrap();
+            let Some(min_original_ts) = entries.first().map(|(ts, _)| *ts) else {
+                continue;
+            };
+            let Some(max_original_ts) = entries.last().map(|(ts, _)| *ts) else {
+                continue;
+            };
 
             let min_bucket = {
                 let floored = ((min_original_ts - origin_offset) / bucket_millis) * bucket_millis
@@ -784,19 +803,23 @@ impl<'a> PlanExecutor<'a> {
                 };
 
                 let ts_value = match &input_schema.fields[ts_idx].data_type {
-                    DataType::DateTime => Value::DateTime(
-                        chrono::DateTime::from_timestamp_millis(bucket)
-                            .unwrap()
-                            .naive_utc(),
-                    ),
-                    DataType::Timestamp => {
-                        Value::Timestamp(chrono::DateTime::from_timestamp_millis(bucket).unwrap())
+                    DataType::DateTime => {
+                        let dt = chrono::DateTime::from_timestamp_millis(bucket)
+                            .map(|d| d.naive_utc())
+                            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.naive_utc());
+                        Value::DateTime(dt)
                     }
-                    _ => Value::DateTime(
-                        chrono::DateTime::from_timestamp_millis(bucket)
-                            .unwrap()
-                            .naive_utc(),
-                    ),
+                    DataType::Timestamp => {
+                        let dt = chrono::DateTime::from_timestamp_millis(bucket)
+                            .unwrap_or(chrono::DateTime::UNIX_EPOCH);
+                        Value::Timestamp(dt)
+                    }
+                    _ => {
+                        let dt = chrono::DateTime::from_timestamp_millis(bucket)
+                            .map(|d| d.naive_utc())
+                            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.naive_utc());
+                        Value::DateTime(dt)
+                    }
                 };
 
                 let mut record_values = vec![ts_value];
@@ -810,6 +833,62 @@ impl<'a> PlanExecutor<'a> {
         }
 
         Ok(result)
+    }
+
+    fn execute_explain(
+        &mut self,
+        logical_plan_text: &str,
+        physical_plan_text: &str,
+        analyze: bool,
+        input: &PhysicalPlan,
+    ) -> Result<Table> {
+        use yachtsql_common::types::DataType;
+        use yachtsql_storage::Field;
+
+        let schema = Schema::from_fields(vec![
+            Field::nullable("plan_type", DataType::String),
+            Field::nullable("plan", DataType::String),
+        ]);
+
+        if analyze {
+            let start = std::time::Instant::now();
+            let result = self.execute_plan(input)?;
+            let elapsed = start.elapsed();
+
+            let records = vec![
+                Record::from_values(vec![
+                    Value::String("logical".to_string()),
+                    Value::String(logical_plan_text.to_string()),
+                ]),
+                Record::from_values(vec![
+                    Value::String("physical".to_string()),
+                    Value::String(physical_plan_text.to_string()),
+                ]),
+                Record::from_values(vec![
+                    Value::String("execution_time".to_string()),
+                    Value::String(format!("{:?}", elapsed)),
+                ]),
+                Record::from_values(vec![
+                    Value::String("rows_returned".to_string()),
+                    Value::String(result.row_count().to_string()),
+                ]),
+            ];
+
+            Table::from_records(schema, records)
+        } else {
+            let records = vec![
+                Record::from_values(vec![
+                    Value::String("logical".to_string()),
+                    Value::String(logical_plan_text.to_string()),
+                ]),
+                Record::from_values(vec![
+                    Value::String("physical".to_string()),
+                    Value::String(physical_plan_text.to_string()),
+                ]),
+            ];
+
+            Table::from_records(schema, records)
+        }
     }
 }
 

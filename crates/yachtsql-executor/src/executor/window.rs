@@ -32,7 +32,11 @@ pub(crate) fn compute_window(
         .with_user_functions(user_function_defs);
 
     let n = input_table.row_count();
-    let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+    let columns: Vec<&Column> = input_table
+        .columns()
+        .iter()
+        .map(|(_, c)| c.as_ref())
+        .collect();
     let mut all_window_results: Vec<Vec<Value>> = vec![Vec::new(); window_exprs.len()];
 
     for (expr_idx, window_expr) in window_exprs.iter().enumerate() {

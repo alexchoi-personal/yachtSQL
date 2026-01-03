@@ -476,6 +476,13 @@ pub(crate) enum PhysicalPlan {
         input_schema: PlanSchema,
         schema: PlanSchema,
     },
+
+    Explain {
+        input: Box<PhysicalPlan>,
+        analyze: bool,
+        logical_plan_text: String,
+        physical_plan_text: String,
+    },
 }
 
 impl PhysicalPlan {
@@ -702,7 +709,8 @@ impl PhysicalPlan {
             | PhysicalPlan::TryCatch { .. }
             | PhysicalPlan::Values { .. }
             | PhysicalPlan::Empty { .. }
-            | PhysicalPlan::GapFill { .. } => {}
+            | PhysicalPlan::GapFill { .. }
+            | PhysicalPlan::Explain { .. } => {}
         }
     }
 
@@ -711,14 +719,24 @@ impl PhysicalPlan {
             PhysicalPlan::TableScan { row_count, .. } => row_count.unwrap_or(1000),
             PhysicalPlan::Values { values, .. } => values.len() as u64,
             PhysicalPlan::Empty { .. } => 0,
-            PhysicalPlan::Filter { input, .. } => input.estimate_rows() / 2,
+            PhysicalPlan::Filter { input, .. } => {
+                let input_rows = input.estimate_rows();
+                std::cmp::max(1, (input_rows as f64 * 0.33) as u64)
+            }
             PhysicalPlan::Project { input, .. } => input.estimate_rows(),
             PhysicalPlan::Sample { sample_value, .. } => *sample_value as u64,
             PhysicalPlan::NestedLoopJoin { left, right, .. } => {
                 left.estimate_rows().saturating_mul(right.estimate_rows())
             }
             PhysicalPlan::HashJoin { left, right, .. } => {
-                std::cmp::max(left.estimate_rows(), right.estimate_rows())
+                let left_rows = left.estimate_rows();
+                let right_rows = right.estimate_rows();
+                let max_rows = std::cmp::max(left_rows, right_rows);
+                if max_rows == 0 {
+                    0
+                } else {
+                    left_rows.saturating_mul(right_rows) / max_rows
+                }
             }
             PhysicalPlan::CrossJoin { left, right, .. } => {
                 left.estimate_rows().saturating_mul(right.estimate_rows())
@@ -747,7 +765,9 @@ impl PhysicalPlan {
             PhysicalPlan::Except { left, .. } => left.estimate_rows(),
             PhysicalPlan::Window { input, .. } => input.estimate_rows(),
             PhysicalPlan::Unnest { input, .. } => input.estimate_rows().saturating_mul(10),
-            PhysicalPlan::Qualify { input, .. } => std::cmp::max(1, input.estimate_rows() / 2),
+            PhysicalPlan::Qualify { input, .. } => {
+                std::cmp::max(1, (input.estimate_rows() as f64 * 0.33) as u64)
+            }
             PhysicalPlan::WithCte { body, .. } => body.estimate_rows(),
             PhysicalPlan::GapFill { input, .. } => input.estimate_rows().saturating_mul(2),
             _ => 1,
@@ -1040,7 +1060,8 @@ impl PhysicalPlan {
             | PhysicalPlan::Break { .. }
             | PhysicalPlan::Continue { .. }
             | PhysicalPlan::TryCatch { .. }
-            | PhysicalPlan::Assert { .. } => {}
+            | PhysicalPlan::Assert { .. }
+            | PhysicalPlan::Explain { .. } => {}
         }
     }
 }

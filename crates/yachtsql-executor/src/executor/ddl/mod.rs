@@ -54,7 +54,7 @@ impl<'a> PlanExecutor<'a> {
                 result.schema().clone()
             };
             let n = result.row_count();
-            let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c.as_ref()).collect();
             let values: Vec<Vec<Value>> = (0..n)
                 .map(|row_idx| columns.iter().map(|c| c.get_value(row_idx)).collect())
                 .collect();
@@ -127,7 +127,7 @@ impl<'a> PlanExecutor<'a> {
             }
             return Err(Error::TableNotFound(table_name.to_string()));
         }
-        let _table = table_opt.unwrap();
+        let _table = table_opt.ok_or_else(|| Error::table_not_found(table_name))?;
 
         match operation {
             AlterTableOp::AddColumn {
@@ -582,14 +582,15 @@ fn executor_plan_to_logical_plan(plan: &PhysicalPlan) -> yachtsql_ir::LogicalPla
         } => {
             let mut iter = inputs.iter();
             let first = iter.next().map(executor_plan_to_logical_plan);
-            iter.fold(first, |acc, p| {
-                Some(LogicalPlan::SetOperation {
-                    left: Box::new(acc.unwrap()),
+            iter.fold(first, |acc, p| match acc {
+                Some(plan) => Some(LogicalPlan::SetOperation {
+                    left: Box::new(plan),
                     right: Box::new(executor_plan_to_logical_plan(p)),
                     op: yachtsql_ir::SetOperationType::Union,
                     all: *all,
                     schema: schema.clone(),
-                })
+                }),
+                None => Some(executor_plan_to_logical_plan(p)),
             })
             .unwrap_or_else(|| LogicalPlan::Empty {
                 schema: schema.clone(),
@@ -1017,6 +1018,10 @@ fn executor_plan_to_logical_plan(plan: &PhysicalPlan) -> yachtsql_ir::LogicalPla
             origin: origin.clone(),
             input_schema: input_schema.clone(),
             schema: schema.clone(),
+        },
+        PhysicalPlan::Explain { input, analyze, .. } => LogicalPlan::Explain {
+            input: Box::new(executor_plan_to_logical_plan(input)),
+            analyze: *analyze,
         },
     }
 }

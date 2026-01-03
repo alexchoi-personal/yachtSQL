@@ -1,0 +1,145 @@
+{
+  "version": "0.1.0",
+  "timestamp": "2026-01-03T00:00:00Z",
+  "benchmarks": {
+    "concurrent_reads": {
+      "readers_2": {
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0
+      },
+      "readers_4": {
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0
+      },
+      "readers_8": {
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0
+      }
+    },
+    "concurrent_writes": {
+      "writers_2": {
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0
+      },
+      "writers_4": {
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0
+      }
+    },
+    "query_throughput": {
+      "simple_select_qps": {
+        "mean_ns": 0,
+        "std_dev_ns": 0
+      },
+      "aggregation_qps": {
+        "mean_ns": 0,
+        "std_dev_ns": 0
+      }
+    },
+    "dml_latency": {
+      "insert_1k_rows": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "update_1k_rows": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "delete_1k_rows": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      }
+    },
+    "memory_usage": {
+      "rows_100000": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "rows_1000000": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      }
+    },
+    "concurrent_mixed": {
+      "4_writers_p99": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "10_readers_1_writer_p99": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      }
+    },
+    "cache_performance": {
+      "cold_start_first_query": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "warm_cache_query": {
+        "mean_ns": 0,
+        "std_dev_ns": 0
+      }
+    },
+    "join_performance": {
+      "hash_join_1m_rows": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "nested_loop_join_10k_rows": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "multi_table_join": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      }
+    },
+    "aggregation_performance": {
+      "group_by_count": {
+        "mean_ns": 0,
+        "std_dev_ns": 0
+      },
+      "group_by_sum_avg": {
+        "mean_ns": 0,
+        "std_dev_ns": 0
+      },
+      "group_by_with_having": {
+        "mean_ns": 0,
+        "std_dev_ns": 0
+      }
+    },
+    "window_functions": {
+      "row_number": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "running_sum": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "rank_dense_rank": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      }
+    },
+    "subquery_performance": {
+      "scalar_subquery": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "in_subquery": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      },
+      "exists_subquery": {
+        "mean_ms": 0,
+        "std_dev_ms": 0
+      }
+    }
+  }
+}

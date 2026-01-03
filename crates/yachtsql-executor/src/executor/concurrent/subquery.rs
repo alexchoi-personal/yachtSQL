@@ -2,7 +2,7 @@
 
 use async_recursion::async_recursion;
 use chrono::{Datelike, Timelike};
-use yachtsql_common::error::Result;
+use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{BinaryOp, Expr, LogicalPlan, SortExpr, UnnestColumn};
 use yachtsql_optimizer::optimize;
@@ -163,7 +163,9 @@ impl ConcurrentPlanExecutor {
             return Ok(Value::Null);
         }
 
-        let first_col = result_table.column(0).unwrap();
+        let first_col = result_table
+            .column(0)
+            .ok_or_else(|| Error::internal("Expected at least one column in scalar subquery"))?;
         Ok(first_col.get_value(0))
     }
 
@@ -178,7 +180,11 @@ impl ConcurrentPlanExecutor {
 
         let schema = result_table.schema();
         let fields = schema.fields();
-        let columns: Vec<&Column> = result_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = result_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let result: Vec<(String, Value)> = fields
             .iter()
@@ -216,7 +222,11 @@ impl ConcurrentPlanExecutor {
         let result_schema = result_table.schema();
         let num_fields = result_schema.field_count();
         let n = result_table.row_count();
-        let columns: Vec<&Column> = result_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = result_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let mut array_values = Vec::with_capacity(n);
         for row_idx in 0..n {
@@ -255,7 +265,9 @@ impl ConcurrentPlanExecutor {
         if result_table.num_columns() == 0 {
             return Ok(false);
         }
-        let first_col = result_table.column(0).unwrap();
+        let first_col = result_table
+            .column(0)
+            .ok_or_else(|| Error::internal("Expected at least one column in IN subquery"))?;
         for row_idx in 0..result_table.row_count() {
             if &first_col.get_value(row_idx) == value {
                 return Ok(true);
@@ -759,7 +771,9 @@ impl ConcurrentPlanExecutor {
 
                 let mut list_exprs = Vec::new();
                 if result_table.num_columns() > 0 {
-                    let first_col = result_table.column(0).unwrap();
+                    let first_col = result_table.column(0).ok_or_else(|| {
+                        Error::internal("Expected at least one column in IN subquery resolution")
+                    })?;
                     for row_idx in 0..result_table.row_count() {
                         let literal = Self::value_to_literal(first_col.get_value(row_idx));
                         list_exprs.push(Expr::Literal(literal));
@@ -797,7 +811,9 @@ impl ConcurrentPlanExecutor {
                     return Ok(Expr::Literal(yachtsql_ir::Literal::Null));
                 }
 
-                let first_col = result_table.column(0).unwrap();
+                let first_col = result_table.column(0).ok_or_else(|| {
+                    Error::internal("Expected at least one column in scalar subquery resolution")
+                })?;
                 let literal = Self::value_to_literal(first_col.get_value(0));
                 Ok(Expr::Literal(literal))
             }
@@ -812,7 +828,9 @@ impl ConcurrentPlanExecutor {
 
                 let mut array_elements = Vec::new();
                 if result_table.num_columns() > 0 {
-                    let first_col = result_table.column(0).unwrap();
+                    let first_col = result_table.column(0).ok_or_else(|| {
+                        Error::internal("Expected at least one column in array subquery resolution")
+                    })?;
                     for row_idx in 0..result_table.row_count() {
                         array_elements.push(Self::value_to_literal(first_col.get_value(row_idx)));
                     }

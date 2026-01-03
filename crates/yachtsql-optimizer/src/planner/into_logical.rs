@@ -550,6 +550,10 @@ impl OptimizedLogicalPlan {
                 input_schema,
                 schema,
             },
+            OptimizedLogicalPlan::Explain { input, analyze, .. } => LogicalPlan::Explain {
+                input: Box::new(input.into_logical()),
+                analyze,
+            },
         }
     }
 }

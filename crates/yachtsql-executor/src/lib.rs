@@ -12,6 +12,7 @@
 
 mod catalog;
 mod columnar_evaluator;
+pub mod constraint_validator;
 mod error;
 mod executor;
 mod js_udf;
@@ -24,12 +25,16 @@ pub mod value_evaluator;
 mod async_executor;
 mod concurrent_catalog;
 mod concurrent_session;
+mod metrics;
 mod physical_planner;
 
 use std::num::NonZeroUsize;
 
 pub use async_executor::AsyncQueryExecutor;
-pub use catalog::{Catalog, ColumnDefault, UserFunction, UserProcedure, ViewDef};
+pub use catalog::{
+    Catalog, CheckConstraint, ColumnDefault, PrimaryKeyConstraint, TableConstraints,
+    UniqueConstraint, UserFunction, UserProcedure, ViewDef,
+};
 pub use columnar_evaluator::ColumnarEvaluator;
 pub use concurrent_catalog::{ConcurrentCatalog, TableLockSet};
 pub use concurrent_session::ConcurrentSession;
@@ -42,10 +47,10 @@ pub use value_evaluator::{UserFunctionDef, ValueEvaluator, cast_value};
 use yachtsql_optimizer::OptimizedLogicalPlan;
 pub use yachtsql_storage::{Record, Table};
 
-const PLAN_CACHE_SIZE: usize = 10000;
+const PLAN_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10000).unwrap();
 
 fn default_plan_cache() -> LruCache<String, OptimizedLogicalPlan> {
-    LruCache::new(NonZeroUsize::new(PLAN_CACHE_SIZE).unwrap())
+    LruCache::new(PLAN_CACHE_SIZE)
 }
 
 fn is_cacheable_plan(plan: &OptimizedLogicalPlan) -> bool {
@@ -116,7 +121,8 @@ fn is_cacheable_plan(plan: &OptimizedLogicalPlan) -> bool {
         | OptimizedLogicalPlan::Commit
         | OptimizedLogicalPlan::Rollback
         | OptimizedLogicalPlan::TryCatch { .. }
-        | OptimizedLogicalPlan::GapFill { .. } => false,
+        | OptimizedLogicalPlan::GapFill { .. }
+        | OptimizedLogicalPlan::Explain { .. } => false,
     }
 }
 
@@ -188,7 +194,8 @@ fn invalidates_cache(plan: &OptimizedLogicalPlan) -> bool {
         | OptimizedLogicalPlan::Commit
         | OptimizedLogicalPlan::Rollback
         | OptimizedLogicalPlan::TryCatch { .. }
-        | OptimizedLogicalPlan::GapFill { .. } => false,
+        | OptimizedLogicalPlan::GapFill { .. }
+        | OptimizedLogicalPlan::Explain { .. } => false,
     }
 }
 

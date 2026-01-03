@@ -254,7 +254,9 @@ pub fn fn_aead_encrypt(args: &[Value]) -> Result<Value> {
     };
 
     let key_bytes: [u8; 32] = if keyset.len() >= 32 {
-        keyset[..32].try_into().unwrap()
+        keyset[..32]
+            .try_into()
+            .map_err(|_| Error::Internal("Failed to convert keyset to 32-byte array".into()))?
     } else {
         let mut padded = [0u8; 32];
         padded[..keyset.len()].copy_from_slice(keyset);
@@ -322,7 +324,9 @@ pub fn fn_aead_decrypt_bytes(args: &[Value]) -> Result<Value> {
     }
 
     let key_bytes: [u8; 32] = if keyset.len() >= 32 {
-        keyset[..32].try_into().unwrap()
+        keyset[..32]
+            .try_into()
+            .map_err(|_| Error::Internal("Failed to convert keyset to 32-byte array".into()))?
     } else {
         let mut padded = [0u8; 32];
         padded[..keyset.len()].copy_from_slice(keyset);

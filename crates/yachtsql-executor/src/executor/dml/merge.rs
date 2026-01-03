@@ -45,8 +45,16 @@ impl<'a> PlanExecutor<'a> {
 
         let target_n = target_data.row_count();
         let source_n = source_data.row_count();
-        let target_columns: Vec<&Column> = target_data.columns().iter().map(|(_, c)| c).collect();
-        let source_columns: Vec<&Column> = source_data.columns().iter().map(|(_, c)| c).collect();
+        let target_columns: Vec<&Column> = target_data
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
+        let source_columns: Vec<&Column> = source_data
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let target_rows: Vec<Vec<Value>> = (0..target_n)
             .map(|i| target_columns.iter().map(|c| c.get_value(i)).collect())

@@ -1,17 +1,12 @@
 #![coverage(off)]
 
-use chrono::{NaiveDate, Timelike};
+use chrono::Timelike;
 
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::Literal;
 
 use super::super::PlanExecutor;
-
-const UNIX_EPOCH_DATE: NaiveDate = match NaiveDate::from_ymd_opt(1970, 1, 1) {
-    Some(d) => d,
-    None => panic!("Invalid date"),
-};
 
 impl PlanExecutor<'_> {
     pub(super) fn value_to_literal(value: Value) -> Literal {
@@ -25,7 +20,8 @@ impl PlanExecutor<'_> {
             Value::String(s) => Literal::String(s),
             Value::Bytes(b) => Literal::Bytes(b),
             Value::Date(d) => {
-                let days = d.signed_duration_since(UNIX_EPOCH_DATE).num_days() as i32;
+                let epoch = chrono::DateTime::UNIX_EPOCH.date_naive();
+                let days = d.signed_duration_since(epoch).num_days() as i32;
                 Literal::Date(days)
             }
             Value::Time(t) => {

@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use yachtsql_common::error::Result;
+use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{BinaryOp, Expr, LogicalPlan};
 use yachtsql_optimizer::optimize;
@@ -182,7 +182,9 @@ impl<'a> PlanExecutor<'a> {
         if result_table.num_columns() == 0 {
             return Ok(Vec::new());
         }
-        let first_col = result_table.column(0).unwrap();
+        let first_col = result_table
+            .column(0)
+            .ok_or_else(|| Error::internal("Empty result table"))?;
         let n = result_table.row_count();
         let values: Vec<Value> = (0..n).map(|i| first_col.get_value(i)).collect();
         Ok(values)
@@ -196,7 +198,9 @@ impl<'a> PlanExecutor<'a> {
         if result_table.row_count() == 0 || result_table.num_columns() == 0 {
             return Ok(Value::Null);
         }
-        let first_col = result_table.column(0).unwrap();
+        let first_col = result_table
+            .column(0)
+            .ok_or_else(|| Error::internal("Empty result table"))?;
         Ok(first_col.get_value(0))
     }
 
@@ -221,7 +225,9 @@ impl<'a> PlanExecutor<'a> {
         if result_table.row_count() == 0 || result_table.num_columns() == 0 {
             return Ok(Value::Null);
         }
-        let first_col = result_table.column(0).unwrap();
+        let first_col = result_table
+            .column(0)
+            .ok_or_else(|| Error::internal("Empty result table"))?;
         Ok(first_col.get_value(0))
     }
 
@@ -246,7 +252,7 @@ impl<'a> PlanExecutor<'a> {
         let result_schema = result_table.schema();
         let num_fields = result_schema.field_count();
         let n = result_table.row_count();
-        let columns: Vec<&Column> = result_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = result_table.columns().iter().map(|(_, c)| c.as_ref()).collect();
 
         let mut array_values = Vec::with_capacity(n);
         for row_idx in 0..n {

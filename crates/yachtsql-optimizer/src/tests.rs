@@ -409,7 +409,7 @@ mod optimizer_tests {
         }
 
         #[test]
-        fn left_join_uses_nested_loop() {
+        fn left_join_with_equi_condition_uses_hash_join() {
             let plan = LogicalPlan::Join {
                 left: Box::new(scan_users()),
                 right: Box::new(scan_orders()),
@@ -421,15 +421,15 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::NestedLoopJoin { join_type, .. } => {
+                OptimizedLogicalPlan::HashJoin { join_type, .. } => {
                     assert_eq!(join_type, JoinType::Left);
                 }
-                other => panic!("Expected NestedLoopJoin (left join), got {:?}", other),
+                other => panic!("Expected HashJoin (left join), got {:?}", other),
             }
         }
 
         #[test]
-        fn right_join_uses_nested_loop() {
+        fn right_join_with_equi_condition_uses_hash_join() {
             let plan = LogicalPlan::Join {
                 left: Box::new(scan_users()),
                 right: Box::new(scan_orders()),
@@ -441,15 +441,15 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::NestedLoopJoin { join_type, .. } => {
+                OptimizedLogicalPlan::HashJoin { join_type, .. } => {
                     assert_eq!(join_type, JoinType::Right);
                 }
-                other => panic!("Expected NestedLoopJoin (right join), got {:?}", other),
+                other => panic!("Expected HashJoin (right join), got {:?}", other),
             }
         }
 
         #[test]
-        fn full_join_uses_nested_loop() {
+        fn full_join_with_equi_condition_uses_hash_join() {
             let plan = LogicalPlan::Join {
                 left: Box::new(scan_users()),
                 right: Box::new(scan_orders()),
@@ -461,10 +461,79 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
+                OptimizedLogicalPlan::HashJoin { join_type, .. } => {
+                    assert_eq!(join_type, JoinType::Full);
+                }
+                other => panic!("Expected HashJoin (full join), got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn left_join_with_non_equi_condition_uses_nested_loop() {
+            let plan = LogicalPlan::Join {
+                left: Box::new(scan_users()),
+                right: Box::new(scan_orders()),
+                join_type: JoinType::Left,
+                condition: Some(gt(col_idx("id", 0), col_idx("user_id", 3))),
+                schema: joined_schema(),
+            };
+
+            let optimized = optimize(&plan);
+
+            match optimized {
+                OptimizedLogicalPlan::NestedLoopJoin { join_type, .. } => {
+                    assert_eq!(join_type, JoinType::Left);
+                }
+                other => panic!(
+                    "Expected NestedLoopJoin (left join non-equi), got {:?}",
+                    other
+                ),
+            }
+        }
+
+        #[test]
+        fn right_join_with_non_equi_condition_uses_nested_loop() {
+            let plan = LogicalPlan::Join {
+                left: Box::new(scan_users()),
+                right: Box::new(scan_orders()),
+                join_type: JoinType::Right,
+                condition: Some(gt(col_idx("id", 0), col_idx("user_id", 3))),
+                schema: joined_schema(),
+            };
+
+            let optimized = optimize(&plan);
+
+            match optimized {
+                OptimizedLogicalPlan::NestedLoopJoin { join_type, .. } => {
+                    assert_eq!(join_type, JoinType::Right);
+                }
+                other => panic!(
+                    "Expected NestedLoopJoin (right join non-equi), got {:?}",
+                    other
+                ),
+            }
+        }
+
+        #[test]
+        fn full_join_with_non_equi_condition_uses_nested_loop() {
+            let plan = LogicalPlan::Join {
+                left: Box::new(scan_users()),
+                right: Box::new(scan_orders()),
+                join_type: JoinType::Full,
+                condition: Some(gt(col_idx("id", 0), col_idx("user_id", 3))),
+                schema: joined_schema(),
+            };
+
+            let optimized = optimize(&plan);
+
+            match optimized {
                 OptimizedLogicalPlan::NestedLoopJoin { join_type, .. } => {
                     assert_eq!(join_type, JoinType::Full);
                 }
-                other => panic!("Expected NestedLoopJoin (full join), got {:?}", other),
+                other => panic!(
+                    "Expected NestedLoopJoin (full join non-equi), got {:?}",
+                    other
+                ),
             }
         }
 

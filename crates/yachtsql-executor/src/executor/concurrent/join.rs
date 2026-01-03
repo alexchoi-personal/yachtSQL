@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{Expr, JoinType, PlanSchema};
@@ -12,6 +13,7 @@ use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
 impl ConcurrentPlanExecutor {
+    #[instrument(skip(self, left, right, condition), fields(join_type = ?join_type))]
     pub(crate) async fn execute_nested_loop_join(
         &self,
         left: &PhysicalPlan,
@@ -63,25 +65,31 @@ impl ConcurrentPlanExecutor {
         let mut result = Table::empty(result_schema.clone());
         let left_n = left_table.row_count();
         let right_n = right_table.row_count();
-        let left_columns: Vec<&Column> = left_table.columns().iter().map(|(_, c)| c).collect();
-        let right_columns: Vec<&Column> = right_table.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<&Column> = left_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
+        let right_columns: Vec<&Column> = right_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         let left_width = left_schema.field_count();
         let right_width = right_schema.field_count();
 
-        let get_left_values =
-            |idx: usize| -> Vec<Value> { left_columns.iter().map(|c| c.get_value(idx)).collect() };
-        let get_right_values =
-            |idx: usize| -> Vec<Value> { right_columns.iter().map(|c| c.get_value(idx)).collect() };
-
         match join_type {
             JoinType::Inner => {
+                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
                 for left_idx in 0..left_n {
-                    let left_values = get_left_values(left_idx);
                     for right_idx in 0..right_n {
-                        let right_values = get_right_values(right_idx);
-                        let mut combined = left_values.clone();
-                        combined.extend(right_values);
-                        let combined_record = Record::from_values(combined.clone());
+                        combined_values.clear();
+                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                        combined_values
+                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                        let combined_record = Record::from_values(combined_values.clone());
 
                         let matches = condition
                             .map(|c| evaluator.evaluate(c, &combined_record))
@@ -90,20 +98,23 @@ impl ConcurrentPlanExecutor {
                             .unwrap_or(true);
 
                         if matches {
-                            result.push_row(combined)?;
+                            result.push_row(combined_values.clone())?;
                         }
                     }
                 }
             }
             JoinType::Left => {
+                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
                 for left_idx in 0..left_n {
-                    let left_values = get_left_values(left_idx);
                     let mut found_match = false;
                     for right_idx in 0..right_n {
-                        let right_values = get_right_values(right_idx);
-                        let mut combined = left_values.clone();
-                        combined.extend(right_values);
-                        let combined_record = Record::from_values(combined.clone());
+                        combined_values.clear();
+                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                        combined_values
+                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                        let combined_record = Record::from_values(combined_values.clone());
 
                         let matches = condition
                             .map(|c| evaluator.evaluate(c, &combined_record))
@@ -113,25 +124,29 @@ impl ConcurrentPlanExecutor {
 
                         if matches {
                             found_match = true;
-                            result.push_row(combined)?;
+                            result.push_row(combined_values.clone())?;
                         }
                     }
                     if !found_match {
-                        let mut combined = left_values;
-                        combined.extend(vec![Value::Null; right_width]);
-                        result.push_row(combined)?;
+                        combined_values.clear();
+                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                        combined_values.extend(std::iter::repeat_n(Value::Null, right_width));
+                        result.push_row(combined_values.clone())?;
                     }
                 }
             }
             JoinType::Right => {
+                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
                 for right_idx in 0..right_n {
-                    let right_values = get_right_values(right_idx);
                     let mut found_match = false;
                     for left_idx in 0..left_n {
-                        let left_values = get_left_values(left_idx);
-                        let mut combined = left_values;
-                        combined.extend(right_values.clone());
-                        let combined_record = Record::from_values(combined.clone());
+                        combined_values.clear();
+                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                        combined_values
+                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                        let combined_record = Record::from_values(combined_values.clone());
 
                         let matches = condition
                             .map(|c| evaluator.evaluate(c, &combined_record))
@@ -141,26 +156,31 @@ impl ConcurrentPlanExecutor {
 
                         if matches {
                             found_match = true;
-                            result.push_row(combined)?;
+                            result.push_row(combined_values.clone())?;
                         }
                     }
                     if !found_match {
-                        let mut combined = vec![Value::Null; left_width];
-                        combined.extend(right_values);
-                        result.push_row(combined)?;
+                        combined_values.clear();
+                        combined_values.extend(std::iter::repeat_n(Value::Null, left_width));
+                        combined_values
+                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                        result.push_row(combined_values.clone())?;
                     }
                 }
             }
             JoinType::Full => {
-                let mut matched_right: HashSet<usize> = HashSet::new();
+                let mut matched_right: HashSet<usize> = HashSet::with_capacity(right_n);
+                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
                 for left_idx in 0..left_n {
-                    let left_values = get_left_values(left_idx);
                     let mut found_match = false;
                     for right_idx in 0..right_n {
-                        let right_values = get_right_values(right_idx);
-                        let mut combined = left_values.clone();
-                        combined.extend(right_values);
-                        let combined_record = Record::from_values(combined.clone());
+                        combined_values.clear();
+                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                        combined_values
+                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                        let combined_record = Record::from_values(combined_values.clone());
 
                         let matches = condition
                             .map(|c| evaluator.evaluate(c, &combined_record))
@@ -171,30 +191,36 @@ impl ConcurrentPlanExecutor {
                         if matches {
                             found_match = true;
                             matched_right.insert(right_idx);
-                            result.push_row(combined)?;
+                            result.push_row(combined_values.clone())?;
                         }
                     }
                     if !found_match {
-                        let mut combined = left_values;
-                        combined.extend(vec![Value::Null; right_width]);
-                        result.push_row(combined)?;
+                        combined_values.clear();
+                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                        combined_values.extend(std::iter::repeat_n(Value::Null, right_width));
+                        result.push_row(combined_values.clone())?;
                     }
                 }
                 for right_idx in 0..right_n {
                     if !matched_right.contains(&right_idx) {
-                        let mut combined = vec![Value::Null; left_width];
-                        combined.extend(get_right_values(right_idx));
-                        result.push_row(combined)?;
+                        combined_values.clear();
+                        combined_values.extend(std::iter::repeat_n(Value::Null, left_width));
+                        combined_values
+                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                        result.push_row(combined_values.clone())?;
                     }
                 }
             }
             JoinType::Cross => {
+                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
                 for left_idx in 0..left_n {
-                    let left_values = get_left_values(left_idx);
                     for right_idx in 0..right_n {
-                        let mut combined = left_values.clone();
-                        combined.extend(get_right_values(right_idx));
-                        result.push_row(combined)?;
+                        combined_values.clear();
+                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                        combined_values
+                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                        result.push_row(combined_values.clone())?;
                     }
                 }
             }
@@ -214,6 +240,7 @@ impl ConcurrentPlanExecutor {
             .await
     }
 
+    #[instrument(skip(self, left, right, left_keys, right_keys))]
     pub(crate) async fn execute_hash_join(
         &self,
         left: &PhysicalPlan,
@@ -247,111 +274,121 @@ impl ConcurrentPlanExecutor {
         let right_schema = right_table.schema().clone();
         let result_schema = plan_schema_to_schema(schema);
 
+        let left_n = left_table.row_count();
+        let left_cols: Vec<&Column> = left_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
+
+        let right_n = right_table.row_count();
+        let right_cols: Vec<&Column> = right_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
+
+        let left_width = left_schema.field_count();
+        let right_width = right_schema.field_count();
+
+        let vars = self.get_variables();
+        let sys_vars = self.get_system_variables();
+        let udf = self.get_user_functions();
+
         match join_type {
             JoinType::Inner => {
-                let left_n = left_table.row_count();
-                let left_cols: Vec<&Column> = left_table.columns().iter().map(|(_, c)| c).collect();
-                let left_rows: Vec<Record> = (0..left_n)
-                    .map(|i| {
-                        Record::from_values(left_cols.iter().map(|c| c.get_value(i)).collect())
-                    })
-                    .collect();
+                let build_on_right = right_n <= left_n;
 
-                let right_n = right_table.row_count();
-                let right_cols: Vec<&Column> =
-                    right_table.columns().iter().map(|(_, c)| c).collect();
-                let right_rows: Vec<Record> = (0..right_n)
-                    .map(|i| {
-                        Record::from_values(right_cols.iter().map(|c| c.get_value(i)).collect())
-                    })
-                    .collect();
+                let (
+                    build_n,
+                    probe_n,
+                    build_cols,
+                    probe_cols,
+                    build_schema,
+                    probe_schema,
+                    build_keys,
+                    probe_keys,
+                ) = if build_on_right {
+                    (
+                        right_n,
+                        left_n,
+                        &right_cols,
+                        &left_cols,
+                        &right_schema,
+                        &left_schema,
+                        right_keys,
+                        left_keys,
+                    )
+                } else {
+                    (
+                        left_n,
+                        right_n,
+                        &left_cols,
+                        &right_cols,
+                        &left_schema,
+                        &right_schema,
+                        left_keys,
+                        right_keys,
+                    )
+                };
 
-                let build_on_right = right_rows.len() <= left_rows.len();
-
-                let (build_rows, probe_rows, build_schema, probe_schema, build_keys, probe_keys) =
-                    if build_on_right {
-                        (
-                            right_rows,
-                            left_rows,
-                            &right_schema,
-                            &left_schema,
-                            right_keys,
-                            left_keys,
-                        )
-                    } else {
-                        (
-                            left_rows,
-                            right_rows,
-                            &left_schema,
-                            &right_schema,
-                            left_keys,
-                            right_keys,
-                        )
-                    };
-
-                let vars = self.get_variables();
-                let sys_vars = self.get_system_variables();
-                let udf = self.get_user_functions();
                 let build_evaluator = ValueEvaluator::new(build_schema)
                     .with_variables(&vars)
                     .with_system_variables(&sys_vars)
                     .with_user_functions(&udf);
 
-                let mut hash_table: HashMap<Vec<Value>, Vec<Record>> = HashMap::new();
-                for build_record in &build_rows {
+                let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
+                    HashMap::with_capacity(build_n);
+                for build_idx in 0..build_n {
+                    let build_record = Record::from_values(
+                        build_cols.iter().map(|c| c.get_value(build_idx)).collect(),
+                    );
                     let key_values: Vec<Value> = build_keys
                         .iter()
-                        .map(|expr| build_evaluator.evaluate(expr, build_record))
+                        .map(|expr| build_evaluator.evaluate(expr, &build_record))
                         .collect::<Result<Vec<_>>>()?;
 
                     if key_values.iter().any(|v| matches!(v, Value::Null)) {
                         continue;
                     }
 
-                    hash_table
-                        .entry(key_values)
-                        .or_default()
-                        .push(build_record.clone());
+                    hash_table.entry(key_values).or_default().push(build_idx);
                 }
 
-                let combine_row = |probe_rec: &Record, build_rec: &Record| -> Vec<Value> {
-                    if build_on_right {
-                        let mut combined = probe_rec.values().to_vec();
-                        combined.extend(build_rec.values().to_vec());
-                        combined
-                    } else {
-                        let mut combined = build_rec.values().to_vec();
-                        combined.extend(probe_rec.values().to_vec());
-                        combined
-                    }
-                };
-
-                if parallel && probe_rows.len() >= 10000 {
+                if parallel && probe_n >= 10000 {
                     let num_threads = std::thread::available_parallelism()
                         .map(|n| n.get())
                         .unwrap_or(4);
-                    let chunk_size = probe_rows.len().div_ceil(num_threads);
+                    let chunk_size = probe_n.div_ceil(num_threads);
+                    let probe_indices: Vec<usize> = (0..probe_n).collect();
 
                     let chunk_results: Vec<Result<Vec<Vec<Value>>>> = std::thread::scope(|s| {
-                        let handles: Vec<_> = probe_rows
+                        let handles: Vec<_> = probe_indices
                             .chunks(chunk_size)
                             .map(|chunk| {
                                 let hash_table = &hash_table;
                                 let vars = &vars;
                                 let sys_vars = &sys_vars;
                                 let udf = &udf;
-                                let combine_row = &combine_row;
+                                let build_cols = &build_cols;
+                                let probe_cols = &probe_cols;
                                 s.spawn(move || {
                                     let probe_evaluator = ValueEvaluator::new(probe_schema)
                                         .with_variables(vars)
                                         .with_system_variables(sys_vars)
                                         .with_user_functions(udf);
                                     let mut rows = Vec::new();
-                                    for probe_record in chunk {
+                                    for &probe_idx in chunk {
+                                        let probe_record = Record::from_values(
+                                            probe_cols
+                                                .iter()
+                                                .map(|c| c.get_value(probe_idx))
+                                                .collect(),
+                                        );
                                         let key_values: Vec<Value> = probe_keys
                                             .iter()
                                             .map(|expr| {
-                                                probe_evaluator.evaluate(expr, probe_record)
+                                                probe_evaluator.evaluate(expr, &probe_record)
                                             })
                                             .collect::<Result<Vec<_>>>()?;
 
@@ -359,9 +396,35 @@ impl ConcurrentPlanExecutor {
                                             continue;
                                         }
 
-                                        if let Some(matching_rows) = hash_table.get(&key_values) {
-                                            for build_record in matching_rows {
-                                                rows.push(combine_row(probe_record, build_record));
+                                        if let Some(matching_indices) = hash_table.get(&key_values)
+                                        {
+                                            for &build_idx in matching_indices {
+                                                let mut combined: Vec<Value> =
+                                                    Vec::with_capacity(left_width + right_width);
+                                                if build_on_right {
+                                                    combined.extend(
+                                                        probe_cols
+                                                            .iter()
+                                                            .map(|c| c.get_value(probe_idx)),
+                                                    );
+                                                    combined.extend(
+                                                        build_cols
+                                                            .iter()
+                                                            .map(|c| c.get_value(build_idx)),
+                                                    );
+                                                } else {
+                                                    combined.extend(
+                                                        build_cols
+                                                            .iter()
+                                                            .map(|c| c.get_value(build_idx)),
+                                                    );
+                                                    combined.extend(
+                                                        probe_cols
+                                                            .iter()
+                                                            .map(|c| c.get_value(probe_idx)),
+                                                    );
+                                                }
+                                                rows.push(combined);
                                             }
                                         }
                                     }
@@ -369,7 +432,13 @@ impl ConcurrentPlanExecutor {
                                 })
                             })
                             .collect();
-                        handles.into_iter().map(|h| h.join().unwrap()).collect()
+                        handles
+                            .into_iter()
+                            .map(|h| {
+                                h.join()
+                                    .unwrap_or_else(|_| Err(Error::internal("Thread join failed")))
+                            })
+                            .collect()
                     });
 
                     let mut result = Table::empty(result_schema);
@@ -385,27 +454,256 @@ impl ConcurrentPlanExecutor {
                         .with_system_variables(&sys_vars)
                         .with_user_functions(&udf);
                     let mut result = Table::empty(result_schema);
-                    for probe_record in &probe_rows {
+                    for probe_idx in 0..probe_n {
+                        let probe_record = Record::from_values(
+                            probe_cols.iter().map(|c| c.get_value(probe_idx)).collect(),
+                        );
                         let key_values: Vec<Value> = probe_keys
                             .iter()
-                            .map(|expr| probe_evaluator.evaluate(expr, probe_record))
+                            .map(|expr| probe_evaluator.evaluate(expr, &probe_record))
                             .collect::<Result<Vec<_>>>()?;
 
                         if key_values.iter().any(|v| matches!(v, Value::Null)) {
                             continue;
                         }
 
-                        if let Some(matching_rows) = hash_table.get(&key_values) {
-                            for build_record in matching_rows {
-                                result.push_row(combine_row(probe_record, build_record))?;
+                        if let Some(matching_indices) = hash_table.get(&key_values) {
+                            for &build_idx in matching_indices {
+                                let mut combined: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                if build_on_right {
+                                    combined
+                                        .extend(probe_cols.iter().map(|c| c.get_value(probe_idx)));
+                                    combined
+                                        .extend(build_cols.iter().map(|c| c.get_value(build_idx)));
+                                } else {
+                                    combined
+                                        .extend(build_cols.iter().map(|c| c.get_value(build_idx)));
+                                    combined
+                                        .extend(probe_cols.iter().map(|c| c.get_value(probe_idx)));
+                                }
+                                result.push_row(combined)?;
                             }
                         }
                     }
                     Ok(result)
                 }
             }
-            _ => {
-                panic!("HashJoin only supports Inner join type currently");
+            JoinType::Left => {
+                let right_evaluator = ValueEvaluator::new(&right_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
+                    HashMap::with_capacity(right_n);
+                for right_idx in 0..right_n {
+                    let right_record = Record::from_values(
+                        right_cols.iter().map(|c| c.get_value(right_idx)).collect(),
+                    );
+                    let key_values: Vec<Value> = right_keys
+                        .iter()
+                        .map(|expr| right_evaluator.evaluate(expr, &right_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                        continue;
+                    }
+
+                    hash_table.entry(key_values).or_default().push(right_idx);
+                }
+
+                let left_evaluator = ValueEvaluator::new(&left_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut result = Table::empty(result_schema);
+                let mut combined: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
+                for left_idx in 0..left_n {
+                    let left_record = Record::from_values(
+                        left_cols.iter().map(|c| c.get_value(left_idx)).collect(),
+                    );
+                    let key_values: Vec<Value> = left_keys
+                        .iter()
+                        .map(|expr| left_evaluator.evaluate(expr, &left_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let has_null_key = key_values.iter().any(|v| matches!(v, Value::Null));
+                    let matching = if has_null_key {
+                        None
+                    } else {
+                        hash_table.get(&key_values)
+                    };
+
+                    match matching {
+                        Some(matches) => {
+                            for &right_idx in matches {
+                                combined.clear();
+                                combined.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                                combined.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                                result.push_row(combined.clone())?;
+                            }
+                        }
+                        None => {
+                            combined.clear();
+                            combined.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                            combined.extend(std::iter::repeat_n(Value::Null, right_width));
+                            result.push_row(combined.clone())?;
+                        }
+                    }
+                }
+                Ok(result)
+            }
+            JoinType::Right => {
+                let left_evaluator = ValueEvaluator::new(&left_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
+                    HashMap::with_capacity(left_n);
+                for left_idx in 0..left_n {
+                    let left_record = Record::from_values(
+                        left_cols.iter().map(|c| c.get_value(left_idx)).collect(),
+                    );
+                    let key_values: Vec<Value> = left_keys
+                        .iter()
+                        .map(|expr| left_evaluator.evaluate(expr, &left_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                        continue;
+                    }
+
+                    hash_table.entry(key_values).or_default().push(left_idx);
+                }
+
+                let right_evaluator = ValueEvaluator::new(&right_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut result = Table::empty(result_schema);
+                let mut combined: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
+                for right_idx in 0..right_n {
+                    let right_record = Record::from_values(
+                        right_cols.iter().map(|c| c.get_value(right_idx)).collect(),
+                    );
+                    let key_values: Vec<Value> = right_keys
+                        .iter()
+                        .map(|expr| right_evaluator.evaluate(expr, &right_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let has_null_key = key_values.iter().any(|v| matches!(v, Value::Null));
+                    let matching = if has_null_key {
+                        None
+                    } else {
+                        hash_table.get(&key_values)
+                    };
+
+                    match matching {
+                        Some(matches) => {
+                            for &left_idx in matches {
+                                combined.clear();
+                                combined.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                                combined.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                                result.push_row(combined.clone())?;
+                            }
+                        }
+                        None => {
+                            combined.clear();
+                            combined.extend(std::iter::repeat_n(Value::Null, left_width));
+                            combined.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                            result.push_row(combined.clone())?;
+                        }
+                    }
+                }
+                Ok(result)
+            }
+            JoinType::Full => {
+                let right_evaluator = ValueEvaluator::new(&right_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
+                    HashMap::with_capacity(right_n);
+                for right_idx in 0..right_n {
+                    let right_record = Record::from_values(
+                        right_cols.iter().map(|c| c.get_value(right_idx)).collect(),
+                    );
+                    let key_values: Vec<Value> = right_keys
+                        .iter()
+                        .map(|expr| right_evaluator.evaluate(expr, &right_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                        continue;
+                    }
+
+                    hash_table.entry(key_values).or_default().push(right_idx);
+                }
+
+                let left_evaluator = ValueEvaluator::new(&left_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut matched_right: HashSet<usize> = HashSet::with_capacity(right_n);
+                let mut result = Table::empty(result_schema);
+                let mut combined: Vec<Value> = Vec::with_capacity(left_width + right_width);
+
+                for left_idx in 0..left_n {
+                    let left_record = Record::from_values(
+                        left_cols.iter().map(|c| c.get_value(left_idx)).collect(),
+                    );
+                    let key_values: Vec<Value> = left_keys
+                        .iter()
+                        .map(|expr| left_evaluator.evaluate(expr, &left_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let has_null_key = key_values.iter().any(|v| matches!(v, Value::Null));
+                    let matching = if has_null_key {
+                        None
+                    } else {
+                        hash_table.get(&key_values)
+                    };
+
+                    match matching {
+                        Some(matches) => {
+                            for &right_idx in matches {
+                                matched_right.insert(right_idx);
+                                combined.clear();
+                                combined.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                                combined.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                                result.push_row(combined.clone())?;
+                            }
+                        }
+                        None => {
+                            combined.clear();
+                            combined.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                            combined.extend(std::iter::repeat_n(Value::Null, right_width));
+                            result.push_row(combined.clone())?;
+                        }
+                    }
+                }
+
+                for right_idx in 0..right_n {
+                    if !matched_right.contains(&right_idx) {
+                        combined.clear();
+                        combined.extend(std::iter::repeat_n(Value::Null, left_width));
+                        combined.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                        result.push_row(combined.clone())?;
+                    }
+                }
+
+                Ok(result)
+            }
+            JoinType::Cross => {
+                panic!("Cross join should not be handled by HashJoin");
             }
         }
     }

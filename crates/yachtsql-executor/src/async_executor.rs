@@ -2,10 +2,13 @@
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
+use debug_print::debug_eprintln;
 use lazy_static::lazy_static;
 use lru::LruCache;
 use regex::Regex;
+use tracing::{debug, info, instrument};
 use yachtsql_common::error::Result;
 use yachtsql_optimizer::OptimizedLogicalPlan;
 use yachtsql_storage::Table;
@@ -13,20 +16,22 @@ use yachtsql_storage::Table;
 use crate::concurrent_catalog::ConcurrentCatalog;
 use crate::concurrent_session::ConcurrentSession;
 use crate::executor::concurrent::ConcurrentPlanExecutor;
+use crate::metrics::QueryMetrics;
 use crate::physical_planner::PhysicalPlanner;
 
-const PLAN_CACHE_SIZE: usize = 10000;
+const PLAN_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10000).unwrap();
 
 fn preprocess_range_types(sql: &str) -> String {
     lazy_static! {
         static ref RANGE_TYPE_RE: Regex =
-            Regex::new(r"(?i)\bRANGE\s*<\s*(DATE|DATETIME|TIMESTAMP)\s*>").unwrap();
+            Regex::new(r"(?i)\bRANGE\s*<\s*(DATE|DATETIME|TIMESTAMP)\s*>")
+                .expect("RANGE_TYPE_RE pattern is valid");
     }
     RANGE_TYPE_RE.replace_all(sql, "RANGE_$1").to_string()
 }
 
 fn default_plan_cache() -> LruCache<String, OptimizedLogicalPlan> {
-    LruCache::new(NonZeroUsize::new(PLAN_CACHE_SIZE).unwrap())
+    LruCache::new(PLAN_CACHE_SIZE)
 }
 
 fn is_cacheable_plan(plan: &OptimizedLogicalPlan) -> bool {
@@ -82,6 +87,7 @@ pub struct AsyncQueryExecutor {
     catalog: Arc<ConcurrentCatalog>,
     session: Arc<ConcurrentSession>,
     plan_cache: Arc<RwLock<LruCache<String, OptimizedLogicalPlan>>>,
+    metrics: Arc<QueryMetrics>,
 }
 
 impl AsyncQueryExecutor {
@@ -90,6 +96,7 @@ impl AsyncQueryExecutor {
             catalog: Arc::new(ConcurrentCatalog::new()),
             session: Arc::new(ConcurrentSession::new()),
             plan_cache: Arc::new(RwLock::new(default_plan_cache())),
+            metrics: Arc::new(QueryMetrics::new()),
         }
     }
 
@@ -101,13 +108,17 @@ impl AsyncQueryExecutor {
             catalog: Arc::new(catalog),
             session: Arc::new(session),
             plan_cache: Arc::new(RwLock::new(default_plan_cache())),
+            metrics: Arc::new(QueryMetrics::new()),
         }
     }
 
+    #[instrument(skip(self), fields(sql_length = sql.len()))]
     pub async fn execute_sql(&self, sql: &str) -> Result<Table> {
         let sql = preprocess_range_types(sql);
+        debug!(sql = %sql, "Executing SQL query");
+        let start = Instant::now();
         let cached = {
-            let mut cache = self.plan_cache.write().unwrap();
+            let mut cache = self.plan_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.get(&sql).cloned()
         };
 
@@ -118,13 +129,15 @@ impl AsyncQueryExecutor {
                 let physical = yachtsql_optimizer::optimize(&logical)?;
 
                 if is_cacheable_plan(&physical) {
-                    let mut cache = self.plan_cache.write().unwrap();
+                    let mut cache = self.plan_cache.write().unwrap_or_else(|e| e.into_inner());
                     cache.put(sql.clone(), physical.clone());
                 }
 
                 physical
             }
         };
+
+        debug!("Query planned, executing");
 
         let planner = PhysicalPlanner::new(&self.catalog, &self.session);
         let executor_plan = planner.plan(&physical);
@@ -138,16 +151,32 @@ impl AsyncQueryExecutor {
             Arc::clone(&self.session),
             tables,
         );
-        let result = executor.execute_plan(&executor_plan).await?;
+        let result = executor.execute_plan(&executor_plan).await;
 
         executor.tables.commit_writes();
 
         if invalidates_cache(&physical) {
-            let mut cache = self.plan_cache.write().unwrap();
+            let mut cache = self.plan_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.clear();
         }
 
-        Ok(result)
+        let elapsed = start.elapsed();
+        let is_error = result.is_err();
+        self.metrics.record_query(elapsed, is_error);
+
+        if let Ok(ref res) = result {
+            info!(row_count = res.row_count(), "Query executed successfully");
+        }
+
+        if elapsed.as_millis() >= 1000 {
+            debug_eprintln!(
+                "[async_executor::execute_sql] Slow query detected: {:?} - SQL: {}",
+                elapsed,
+                &sql[..sql.len().min(100)]
+            );
+        }
+
+        result
     }
 
     pub async fn execute_batch(&self, queries: Vec<String>) -> Vec<Result<Table>> {
@@ -165,6 +194,15 @@ impl AsyncQueryExecutor {
     pub fn session(&self) -> &ConcurrentSession {
         &self.session
     }
+
+    pub fn metrics(&self) -> &QueryMetrics {
+        &self.metrics
+    }
+
+    pub fn with_slow_query_threshold(mut self, threshold_ms: u64) -> Self {
+        self.metrics = Arc::new(QueryMetrics::new().with_slow_query_threshold(threshold_ms));
+        self
+    }
 }
 
 impl Clone for AsyncQueryExecutor {
@@ -173,6 +211,7 @@ impl Clone for AsyncQueryExecutor {
             catalog: Arc::clone(&self.catalog),
             session: Arc::clone(&self.session),
             plan_cache: Arc::clone(&self.plan_cache),
+            metrics: Arc::clone(&self.metrics),
         }
     }
 }

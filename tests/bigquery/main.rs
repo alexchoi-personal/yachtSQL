@@ -5,6 +5,7 @@
 #[macro_use]
 mod common;
 mod catalog;
+mod constraints;
 mod data_types;
 mod ddl;
 mod dml;

@@ -22,15 +22,30 @@ impl ConcurrentPlanExecutor {
         table_name: &str,
         planned_schema: &PlanSchema,
     ) -> Result<Table> {
-        if let Some(cte_table) = self.cte_results.read().unwrap().get(table_name) {
+        if let Some(cte_table) = self
+            .cte_results
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(table_name)
+        {
             return Ok(self.apply_planned_schema(cte_table, planned_schema));
         }
         let table_name_upper = table_name.to_uppercase();
-        if let Some(cte_table) = self.cte_results.read().unwrap().get(&table_name_upper) {
+        if let Some(cte_table) = self
+            .cte_results
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&table_name_upper)
+        {
             return Ok(self.apply_planned_schema(cte_table, planned_schema));
         }
         let table_name_lower = table_name.to_lowercase();
-        if let Some(cte_table) = self.cte_results.read().unwrap().get(&table_name_lower) {
+        if let Some(cte_table) = self
+            .cte_results
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&table_name_lower)
+        {
             return Ok(self.apply_planned_schema(cte_table, planned_schema));
         }
 
@@ -96,7 +111,11 @@ impl ConcurrentPlanExecutor {
         if Self::expr_contains_subquery(predicate) {
             let mut result = Table::empty(schema.clone());
             let n = input_table.row_count();
-            let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<&Column> = input_table
+                .columns()
+                .iter()
+                .map(|(_, c)| c.as_ref())
+                .collect();
 
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
@@ -120,7 +139,11 @@ impl ConcurrentPlanExecutor {
 
             let mut result = Table::empty(schema.clone());
             let n = input_table.row_count();
-            let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<&Column> = input_table
+                .columns()
+                .iter()
+                .map(|(_, c)| c.as_ref())
+                .collect();
 
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
@@ -158,7 +181,11 @@ impl ConcurrentPlanExecutor {
         if expressions.iter().any(Self::expr_contains_subquery) {
             let mut result = Table::empty(result_schema);
             let n = input_table.row_count();
-            let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<&Column> = input_table
+                .columns()
+                .iter()
+                .map(|(_, c)| c.as_ref())
+                .collect();
 
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
@@ -184,7 +211,11 @@ impl ConcurrentPlanExecutor {
 
             let mut result = Table::empty(result_schema);
             let n = input_table.row_count();
-            let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<&Column> = input_table
+                .columns()
+                .iter()
+                .map(|(_, c)| c.as_ref())
+                .collect();
 
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
@@ -208,7 +239,11 @@ impl ConcurrentPlanExecutor {
     ) -> Result<Table> {
         let input_table = self.execute_plan(input).await?;
         let n = input_table.row_count();
-        let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let indices: Vec<usize> = match sample_type {
             SampleType::Rows => {
@@ -245,7 +280,11 @@ impl ConcurrentPlanExecutor {
             .with_user_functions(&udf);
 
         let n = input_table.row_count();
-        let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let sort_keys: Vec<Vec<Value>> = (0..n)
             .map(|idx| {
@@ -339,7 +378,11 @@ impl ConcurrentPlanExecutor {
         let mut seen: HashSet<Vec<Value>> = HashSet::new();
 
         let n = input_table.row_count();
-        let columns: Vec<&Column> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         for row_idx in 0..n {
             let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
             if seen.insert(values.clone()) {

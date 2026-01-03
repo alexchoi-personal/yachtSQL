@@ -397,6 +397,12 @@ pub enum OptimizedLogicalPlan {
         input_schema: PlanSchema,
         schema: PlanSchema,
     },
+
+    Explain {
+        input: Box<OptimizedLogicalPlan>,
+        analyze: bool,
+        logical_plan_text: String,
+    },
 }
 
 impl OptimizedLogicalPlan {
@@ -469,6 +475,7 @@ impl OptimizedLogicalPlan {
             OptimizedLogicalPlan::Rollback => &EMPTY_SCHEMA,
             OptimizedLogicalPlan::TryCatch { .. } => &EMPTY_SCHEMA,
             OptimizedLogicalPlan::GapFill { schema, .. } => schema,
+            OptimizedLogicalPlan::Explain { .. } => &EMPTY_SCHEMA,
         }
     }
 }

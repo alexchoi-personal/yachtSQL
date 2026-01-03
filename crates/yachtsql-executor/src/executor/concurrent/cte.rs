@@ -61,7 +61,10 @@ impl ConcurrentPlanExecutor {
                     if let Some(ref cols) = columns {
                         table = self.apply_cte_column_aliases(&table, cols)?;
                     }
-                    self.cte_results.write().unwrap().insert(name, table);
+                    self.cte_results
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(name, table);
                 }
             } else {
                 for (_, cte) in wave_ctes {
@@ -78,7 +81,7 @@ impl ConcurrentPlanExecutor {
 
                         self.cte_results
                             .write()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .insert(cte.name.to_uppercase(), cte_result);
                     }
                 }
@@ -154,7 +157,7 @@ impl ConcurrentPlanExecutor {
             }
         }
         let n = table.row_count();
-        let table_columns: Vec<&Column> = table.columns().iter().map(|(_, c)| c).collect();
+        let table_columns: Vec<&Column> = table.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let mut result = Table::empty(new_schema);
         for row_idx in 0..n {
             let row: Vec<Value> = table_columns.iter().map(|c| c.get_value(row_idx)).collect();
@@ -174,7 +177,7 @@ impl ConcurrentPlanExecutor {
             let anchor_plan = PhysicalPlan::from_physical(&physical);
             let result = self.execute_plan(&anchor_plan).await?;
             let n = result.row_count();
-            let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c.as_ref()).collect();
             for row_idx in 0..n {
                 let row: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
                 all_results.push(row);
@@ -190,7 +193,7 @@ impl ConcurrentPlanExecutor {
 
         self.cte_results
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(cte.name.to_uppercase(), accumulated.clone());
 
         let mut working_set = accumulated.clone();
@@ -201,7 +204,7 @@ impl ConcurrentPlanExecutor {
 
             self.cte_results
                 .write()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(cte.name.to_uppercase(), working_set);
 
             let mut new_rows = Vec::new();
@@ -210,7 +213,8 @@ impl ConcurrentPlanExecutor {
                 let rec_plan = PhysicalPlan::from_physical(&physical);
                 let result = self.execute_plan(&rec_plan).await?;
                 let n = result.row_count();
-                let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c).collect();
+                let columns: Vec<&Column> =
+                    result.columns().iter().map(|(_, c)| c.as_ref()).collect();
                 for row_idx in 0..n {
                     let row: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
                     new_rows.push(row);
@@ -237,7 +241,7 @@ impl ConcurrentPlanExecutor {
 
         self.cte_results
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(cte.name.to_uppercase(), accumulated);
         Ok(())
     }

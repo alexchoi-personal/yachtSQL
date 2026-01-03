@@ -1,7 +1,7 @@
 #![coverage(off)]
 
 use indexmap::IndexMap;
-use yachtsql_common::error::Result;
+use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{BinaryOp, Expr, LogicalPlan, PlanSchema};
 use yachtsql_optimizer::optimize;
@@ -62,7 +62,11 @@ impl<'a> PlanExecutor<'a> {
         let mut result = Table::empty(result_schema);
 
         let n = input_table.row_count();
-        let columns: Vec<_> = input_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<_> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         for row_idx in 0..n {
             let record = get_record_from_columns(&columns, row_idx);
@@ -205,7 +209,9 @@ impl<'a> PlanExecutor<'a> {
             return Ok(Value::Null);
         }
 
-        let first_col = result_table.column(0).unwrap();
+        let first_col = result_table
+            .column(0)
+            .ok_or_else(|| Error::internal("Scalar subquery result has no columns"))?;
         Ok(first_col.get_value(0))
     }
 
@@ -236,7 +242,11 @@ impl<'a> PlanExecutor<'a> {
         let result_schema = result_table.schema();
         let num_fields = result_schema.field_count();
         let n = result_table.row_count();
-        let columns: Vec<_> = result_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<_> = result_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
 
         let mut array_values = Vec::new();
         for row_idx in 0..n {
@@ -275,7 +285,9 @@ impl<'a> PlanExecutor<'a> {
         if result_table.num_columns() == 0 {
             return Ok(false);
         }
-        let first_col = result_table.column(0).unwrap();
+        let first_col = result_table
+            .column(0)
+            .ok_or_else(|| Error::internal("IN subquery result has no columns"))?;
         for row_idx in 0..result_table.row_count() {
             let val = first_col.get_value(row_idx);
             if &val == value {

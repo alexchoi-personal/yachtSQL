@@ -218,7 +218,11 @@ impl<'a> PlanExecutor<'a> {
             return Ok(vec![]);
         }
 
-        let columns: Vec<&Column> = result_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = result_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         let schema = result_table.schema();
         let fields = schema.fields();
 
@@ -245,7 +249,11 @@ impl<'a> PlanExecutor<'a> {
             return Ok(Value::Null);
         }
 
-        let columns: Vec<&Column> = result_table.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = result_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         if columns.is_empty() {
             return Ok(Value::Null);
         }
@@ -478,7 +486,7 @@ impl<'a> PlanExecutor<'a> {
         let result = self.execute_plan(query)?;
         let schema_fields = result.schema().fields().to_vec();
         let n = result.row_count();
-        let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c.as_ref()).collect();
 
         for row_idx in 0..n {
             let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
@@ -577,7 +585,8 @@ impl<'a> PlanExecutor<'a> {
         if !into_variables.is_empty() && !result.is_empty() {
             let n = result.row_count();
             if n > 0 {
-                let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c).collect();
+                let columns: Vec<&Column> =
+                    result.columns().iter().map(|(_, c)| c.as_ref()).collect();
                 for (i, var_name) in into_variables.iter().enumerate() {
                     if let Some(col) = columns.get(i) {
                         let val = col.get_value(0);

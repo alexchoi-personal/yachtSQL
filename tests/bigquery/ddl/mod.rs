@@ -3,6 +3,7 @@ mod create_table;
 mod dcl;
 mod ddl_edge_cases;
 mod drop_table;
+mod explain;
 mod functions;
 mod io_operations;
 mod partitioning;

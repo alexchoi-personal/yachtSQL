@@ -38,7 +38,7 @@ impl<'a> PlanExecutor<'a> {
                 schema_with_source.add_field(new_field);
             }
 
-            let columns: Vec<_> = table.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<_> = table.columns().iter().map(|(_, c)| c.as_ref()).collect();
             let mut keep_indices = Vec::new();
 
             for i in 0..n {
@@ -164,7 +164,7 @@ impl<'a> PlanExecutor<'a> {
             Value::BigNumeric(n) => Literal::BigNumeric(*n),
             Value::Json(j) => Literal::Json(j.clone()),
             Value::Date(d) => {
-                let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+                let epoch = chrono::DateTime::UNIX_EPOCH.date_naive();
                 Literal::Date(d.signed_duration_since(epoch).num_days() as i32)
             }
             Value::Time(t) => {

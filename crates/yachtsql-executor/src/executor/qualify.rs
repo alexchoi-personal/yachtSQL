@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use yachtsql_common::error::Result;
+use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{Expr, SortExpr, WindowFrame};
 use yachtsql_storage::{Column, Record, Schema, Table};
@@ -41,7 +41,7 @@ impl<'a> PlanExecutor<'a> {
     fn execute_qualify_with_window(&mut self, input: &Table, predicate: &Expr) -> Result<Table> {
         let schema = input.schema().clone();
         let n = input.row_count();
-        let columns: Vec<&Column> = input.columns().iter().map(|(_, c)| c).collect();
+        let columns: Vec<&Column> = input.columns().iter().map(|(_, c)| c.as_ref()).collect();
         let evaluator = ValueEvaluator::new(&schema);
 
         let window_exprs = Self::collect_window_exprs(predicate);
@@ -247,7 +247,7 @@ impl<'a> PlanExecutor<'a> {
                 frame.clone(),
                 WindowFuncType::Aggregate(*func),
             )),
-            _ => panic!("Expected window expression in qualify"),
+            _ => Err(Error::internal("Expected window expression in qualify")),
         }
     }
 }

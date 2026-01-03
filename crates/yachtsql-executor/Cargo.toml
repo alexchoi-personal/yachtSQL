@@ -118,6 +118,9 @@ parking_lot = "0.12"
 thiserror = "2.0"
 anyhow = "1.0"
 
+# Observability
+tracing = "0.1"
+
 # Geography/GIS support
 geo = "0.28"
 geo-types = "0.7"
@@ -131,6 +134,14 @@ v8 = "0.106"
 # Python UDF support (PyO3)
 pyo3 = { version = "0.27", features = ["auto-initialize"] }
 
+
+[features]
+default = []
+loom = ["dep:loom"]
+
+[dependencies.loom]
+version = "0.7"
+optional = true
 
 # Linting configuration
 [lints.clippy]

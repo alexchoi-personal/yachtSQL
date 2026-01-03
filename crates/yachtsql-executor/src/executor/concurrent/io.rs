@@ -44,7 +44,11 @@ impl ConcurrentPlanExecutor {
         }
 
         let path = if options.uri.starts_with("file://") {
-            options.uri.strip_prefix("file://").unwrap().to_string()
+            options
+                .uri
+                .strip_prefix("file://")
+                .unwrap_or(&options.uri)
+                .to_string()
         } else {
             options.uri.replace('*', "data")
         };
@@ -96,7 +100,7 @@ impl ConcurrentPlanExecutor {
         let schema = data.schema();
         let n = data.row_count();
         let columns: Vec<_> = (0..data.num_columns())
-            .map(|i| data.column(i).unwrap())
+            .filter_map(|i| data.column(i))
             .collect();
 
         let mut file = File::create(path)
@@ -121,7 +125,7 @@ impl ConcurrentPlanExecutor {
         let schema = data.schema();
         let n = data.row_count();
         let columns: Vec<_> = (0..data.num_columns())
-            .map(|i| data.column(i).unwrap())
+            .filter_map(|i| data.column(i))
             .collect();
         let delimiter = options
             .field_delimiter
@@ -330,7 +334,8 @@ impl ConcurrentPlanExecutor {
                     let mut builder = Date32Builder::with_capacity(num_rows);
                     match column {
                         Some(Column::Date { data, nulls }) => {
-                            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+                            let epoch =
+                                NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or(NaiveDate::MIN);
                             for (i, d) in data.iter().enumerate() {
                                 if nulls.is_null(i) {
                                     builder.append_null();
@@ -512,23 +517,30 @@ impl ConcurrentPlanExecutor {
             .schema()
             .clone();
 
-        if options.overwrite
-            && let Some(t) = self.tables.get_table_mut(table_name)
-        {
-            t.clear();
+        if options.overwrite {
+            self.tables.with_table_mut(table_name, |t| {
+                t.clear();
+            });
         }
 
         for uri in &options.uris {
             let (path, is_cloud_uri) = if uri.starts_with("file://") {
-                (uri.strip_prefix("file://").unwrap().to_string(), false)
+                (
+                    uri.strip_prefix("file://").unwrap_or(uri).to_string(),
+                    false,
+                )
             } else if uri.starts_with("gs://") {
                 (
-                    uri.strip_prefix("gs://").unwrap().replace('*', "data"),
+                    uri.strip_prefix("gs://")
+                        .unwrap_or(uri)
+                        .replace('*', "data"),
                     true,
                 )
             } else if uri.starts_with("s3://") {
                 (
-                    uri.strip_prefix("s3://").unwrap().replace('*', "data"),
+                    uri.strip_prefix("s3://")
+                        .unwrap_or(uri)
+                        .replace('*', "data"),
                     true,
                 )
             } else {
@@ -550,14 +562,14 @@ impl ConcurrentPlanExecutor {
                 }
             };
 
-            let table = self
-                .tables
-                .get_table_mut(table_name)
-                .ok_or_else(|| Error::TableNotFound(table_name.to_string()))?;
-
-            for row in rows {
-                table.push_row(row)?;
-            }
+            self.tables
+                .with_table_mut(table_name, |table| -> Result<()> {
+                    for row in rows {
+                        table.push_row(row)?;
+                    }
+                    Ok(())
+                })
+                .ok_or_else(|| Error::TableNotFound(table_name.to_string()))??;
         }
 
         Ok(Table::empty(Schema::new()))

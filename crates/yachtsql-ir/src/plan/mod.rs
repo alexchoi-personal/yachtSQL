@@ -379,6 +379,11 @@ pub enum LogicalPlan {
         input_schema: PlanSchema,
         schema: PlanSchema,
     },
+
+    Explain {
+        input: Box<LogicalPlan>,
+        analyze: bool,
+    },
 }
 
 impl LogicalPlan {
@@ -445,6 +450,7 @@ impl LogicalPlan {
             LogicalPlan::Rollback => &EMPTY_SCHEMA,
             LogicalPlan::TryCatch { .. } => &EMPTY_SCHEMA,
             LogicalPlan::GapFill { schema, .. } => schema,
+            LogicalPlan::Explain { .. } => &EMPTY_SCHEMA,
         }
     }
 

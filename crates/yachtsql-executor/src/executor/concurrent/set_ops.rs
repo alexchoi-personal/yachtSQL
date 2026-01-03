@@ -47,7 +47,7 @@ impl ConcurrentPlanExecutor {
 
         for table in tables {
             let n = table.row_count();
-            let columns: Vec<&Column> = table.columns().iter().map(|(_, c)| c).collect();
+            let columns: Vec<&Column> = table.columns().iter().map(|(_, c)| c.as_ref()).collect();
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
                 if all || seen.insert(values.clone()) {
@@ -91,7 +91,11 @@ impl ConcurrentPlanExecutor {
 
         let mut right_set: HashMap<Vec<Value>, usize> = HashMap::new();
         let right_n = right_table.row_count();
-        let right_columns: Vec<&Column> = right_table.columns().iter().map(|(_, c)| c).collect();
+        let right_columns: Vec<&Column> = right_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         for row_idx in 0..right_n {
             let values: Vec<Value> = right_columns.iter().map(|c| c.get_value(row_idx)).collect();
             *right_set.entry(values).or_insert(0) += 1;
@@ -99,7 +103,11 @@ impl ConcurrentPlanExecutor {
 
         let mut seen: HashSet<Vec<Value>> = HashSet::new();
         let left_n = left_table.row_count();
-        let left_columns: Vec<&Column> = left_table.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<&Column> = left_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         for row_idx in 0..left_n {
             let values: Vec<Value> = left_columns.iter().map(|c| c.get_value(row_idx)).collect();
             if let Some(count) = right_set.get_mut(&values)
@@ -148,7 +156,11 @@ impl ConcurrentPlanExecutor {
 
         let mut right_set: HashMap<Vec<Value>, usize> = HashMap::new();
         let right_n = right_table.row_count();
-        let right_columns: Vec<&Column> = right_table.columns().iter().map(|(_, c)| c).collect();
+        let right_columns: Vec<&Column> = right_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         for row_idx in 0..right_n {
             let values: Vec<Value> = right_columns.iter().map(|c| c.get_value(row_idx)).collect();
             *right_set.entry(values).or_insert(0) += 1;
@@ -156,7 +168,11 @@ impl ConcurrentPlanExecutor {
 
         let mut seen: HashSet<Vec<Value>> = HashSet::new();
         let left_n = left_table.row_count();
-        let left_columns: Vec<&Column> = left_table.columns().iter().map(|(_, c)| c).collect();
+        let left_columns: Vec<&Column> = left_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
         for row_idx in 0..left_n {
             let values: Vec<Value> = left_columns.iter().map(|c| c.get_value(row_idx)).collect();
             let in_right = right_set.get_mut(&values).map(|c| {

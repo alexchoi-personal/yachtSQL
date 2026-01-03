@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_recursion::async_recursion;
+use tracing::instrument;
 pub(crate) use utils::{coerce_value, compare_values_for_sort, default_value_for_type};
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
@@ -83,7 +84,9 @@ impl ConcurrentPlanExecutor {
     pub(crate) fn get_system_variables(
         &self,
     ) -> std::sync::RwLockReadGuard<'_, HashMap<String, Value>> {
-        self.system_variables.read().unwrap()
+        self.system_variables
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     fn refresh_user_functions(&self) {
@@ -101,17 +104,22 @@ impl ConcurrentPlanExecutor {
                 )
             })
             .collect();
-        *self.user_function_defs.write().unwrap() = new_defs;
+        *self
+            .user_function_defs
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = new_defs;
     }
 
     pub(crate) fn get_variables(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, Value>> {
-        self.variables.read().unwrap()
+        self.variables.read().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn get_user_functions(
         &self,
     ) -> std::sync::RwLockReadGuard<'_, HashMap<String, UserFunctionDef>> {
-        self.user_function_defs.read().unwrap()
+        self.user_function_defs
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     pub async fn execute(&self, plan: &OptimizedLogicalPlan) -> Result<Table> {
@@ -120,6 +128,7 @@ impl ConcurrentPlanExecutor {
     }
 
     #[async_recursion]
+    #[instrument(skip(self))]
     pub async fn execute_plan(&self, plan: &PhysicalPlan) -> Result<Table> {
         match plan {
             PhysicalPlan::TableScan {
@@ -534,6 +543,71 @@ impl ConcurrentPlanExecutor {
                 )
                 .await
             }
+            PhysicalPlan::Explain {
+                logical_plan_text,
+                physical_plan_text,
+                analyze,
+                input,
+            } => {
+                self.execute_explain(logical_plan_text, physical_plan_text, *analyze, input)
+                    .await
+            }
+        }
+    }
+
+    async fn execute_explain(
+        &self,
+        logical_plan_text: &str,
+        physical_plan_text: &str,
+        analyze: bool,
+        input: &PhysicalPlan,
+    ) -> Result<Table> {
+        use yachtsql_common::types::DataType;
+        use yachtsql_storage::Field;
+
+        let schema = Schema::from_fields(vec![
+            Field::nullable("plan_type", DataType::String),
+            Field::nullable("plan", DataType::String),
+        ]);
+
+        if analyze {
+            let start = std::time::Instant::now();
+            let result = self.execute_plan(input).await?;
+            let elapsed = start.elapsed();
+
+            let records = vec![
+                Record::from_values(vec![
+                    Value::String("logical".to_string()),
+                    Value::String(logical_plan_text.to_string()),
+                ]),
+                Record::from_values(vec![
+                    Value::String("physical".to_string()),
+                    Value::String(physical_plan_text.to_string()),
+                ]),
+                Record::from_values(vec![
+                    Value::String("execution_time".to_string()),
+                    Value::String(format!("{:?}", elapsed)),
+                ]),
+                Record::from_values(vec![
+                    Value::String("rows_returned".to_string()),
+                    Value::String(result.row_count().to_string()),
+                ]),
+            ];
+
+            Table::from_records(schema, records)
+        } else {
+            let records = vec![
+                Record::from_values(vec![
+                    Value::String("logical".to_string()),
+                    Value::String(logical_plan_text.to_string()),
+                ]),
+                Record::from_values(vec![
+                    Value::String("physical".to_string()),
+                    Value::String(physical_plan_text.to_string()),
+                ]),
+            ];
+
+            Table::from_records(schema, records)
         }
     }
 
