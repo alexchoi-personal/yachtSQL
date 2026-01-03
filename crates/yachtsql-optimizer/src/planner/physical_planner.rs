@@ -5,7 +5,8 @@ use yachtsql_ir::{JoinType, LogicalPlan, SetOperationType};
 
 use super::equi_join::extract_equi_join_keys;
 use super::predicate::{
-    PredicateSide, adjust_predicate_indices, classify_predicate_side, combine_predicates,
+    build_aggregate_output_to_input_map, can_push_through_aggregate, can_push_through_window,
+    classify_predicates_for_join, combine_predicates, remap_predicate_indices,
     split_and_predicates,
 };
 use crate::optimized_logical_plan::{OptimizedLogicalPlan, SampleType};
@@ -54,23 +55,16 @@ impl PhysicalPlanner {
                     join_type,
                     condition,
                     schema,
-                } if *join_type == JoinType::Inner => {
+                } if matches!(
+                    join_type,
+                    JoinType::Inner | JoinType::Left | JoinType::Right
+                ) =>
+                {
                     let left_schema_len = left.schema().fields.len();
                     let predicates = split_and_predicates(predicate);
 
-                    let mut left_preds = Vec::new();
-                    let mut right_preds = Vec::new();
-                    let mut post_join_preds = Vec::new();
-
-                    for pred in predicates {
-                        match classify_predicate_side(&pred, left_schema_len) {
-                            Some(PredicateSide::Left) => left_preds.push(pred),
-                            Some(PredicateSide::Right) => {
-                                right_preds.push(adjust_predicate_indices(&pred, left_schema_len))
-                            }
-                            Some(PredicateSide::Both) | None => post_join_preds.push(pred),
-                        }
-                    }
+                    let (left_preds, right_preds, post_join_preds) =
+                        classify_predicates_for_join(*join_type, &predicates, left_schema_len);
 
                     let optimized_left = if let Some(left_filter) = combine_predicates(left_preds) {
                         let base_left = self.plan(left)?;
@@ -124,6 +118,107 @@ impl PhysicalPlanner {
                         Ok(join_plan)
                     }
                 }
+
+                LogicalPlan::Distinct {
+                    input: distinct_input,
+                } => {
+                    let optimized_input = self.plan(distinct_input)?;
+                    let filtered = OptimizedLogicalPlan::Filter {
+                        input: Box::new(optimized_input),
+                        predicate: predicate.clone(),
+                    };
+                    Ok(OptimizedLogicalPlan::Distinct {
+                        input: Box::new(filtered),
+                    })
+                }
+
+                LogicalPlan::Aggregate {
+                    input: agg_input,
+                    group_by,
+                    aggregates,
+                    schema,
+                    grouping_sets,
+                } => {
+                    let predicates = split_and_predicates(predicate);
+                    let num_group_by_cols = group_by.len();
+                    let output_to_input = build_aggregate_output_to_input_map(group_by);
+
+                    let (pushable, post_agg): (Vec<_>, Vec<_>) = predicates
+                        .into_iter()
+                        .partition(|p| can_push_through_aggregate(p, num_group_by_cols));
+
+                    let remapped_pushable: Vec<_> = pushable
+                        .iter()
+                        .filter_map(|p| remap_predicate_indices(p, &output_to_input))
+                        .collect();
+
+                    let optimized_input =
+                        if let Some(push_filter) = combine_predicates(remapped_pushable) {
+                            let base_input = self.plan(agg_input)?;
+                            OptimizedLogicalPlan::Filter {
+                                input: Box::new(base_input),
+                                predicate: push_filter,
+                            }
+                        } else {
+                            self.plan(agg_input)?
+                        };
+
+                    let agg_plan = OptimizedLogicalPlan::HashAggregate {
+                        input: Box::new(optimized_input),
+                        group_by: group_by.clone(),
+                        aggregates: aggregates.clone(),
+                        schema: schema.clone(),
+                        grouping_sets: grouping_sets.clone(),
+                    };
+
+                    if let Some(post_filter) = combine_predicates(post_agg) {
+                        Ok(OptimizedLogicalPlan::Filter {
+                            input: Box::new(agg_plan),
+                            predicate: post_filter,
+                        })
+                    } else {
+                        Ok(agg_plan)
+                    }
+                }
+
+                LogicalPlan::Window {
+                    input: window_input,
+                    window_exprs,
+                    schema,
+                } => {
+                    let input_schema_len = window_input.schema().fields.len();
+                    let predicates = split_and_predicates(predicate);
+
+                    let (pushable, post_window): (Vec<_>, Vec<_>) = predicates
+                        .into_iter()
+                        .partition(|p| can_push_through_window(p, input_schema_len));
+
+                    let optimized_input = if let Some(push_filter) = combine_predicates(pushable) {
+                        let base_input = self.plan(window_input)?;
+                        OptimizedLogicalPlan::Filter {
+                            input: Box::new(base_input),
+                            predicate: push_filter,
+                        }
+                    } else {
+                        self.plan(window_input)?
+                    };
+
+                    let window_plan = OptimizedLogicalPlan::Window {
+                        input: Box::new(optimized_input),
+                        window_exprs: window_exprs.clone(),
+                        schema: schema.clone(),
+                    };
+
+                    if let Some(post_filter) = combine_predicates(post_window) {
+                        Ok(OptimizedLogicalPlan::Filter {
+                            input: Box::new(window_plan),
+                            predicate: post_filter,
+                        })
+                    } else {
+                        Ok(window_plan)
+                    }
+                }
+
                 _ => {
                     let optimized_input = self.plan(input)?;
                     Ok(OptimizedLogicalPlan::Filter {
