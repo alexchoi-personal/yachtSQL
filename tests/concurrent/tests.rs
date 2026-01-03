@@ -10,14 +10,14 @@ async fn test_concurrent_selects_same_table() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "test_select", 10).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..4)
         .map(|_| "SELECT * FROM test_select".to_string())
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert_eq!(metrics.successful_tasks, 4);
@@ -29,7 +29,7 @@ async fn test_concurrent_inserts_same_table() {
     let executor = create_test_executor();
     setup_test_table(&executor, "test_insert").await;
 
-    let harness = ConcurrentTestHarness::new(executor, 2);
+    let harness = ConcurrentTestHarness::from_executor(executor, 2);
 
     let queries: Vec<String> = (0..4)
         .map(|i| {
@@ -41,7 +41,7 @@ async fn test_concurrent_inserts_same_table() {
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
@@ -55,7 +55,7 @@ async fn test_concurrent_updates_same_table() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "test_update", 3).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 2);
+    let harness = ConcurrentTestHarness::from_executor(executor, 2);
 
     let queries: Vec<String> = (0..3)
         .map(|i| {
@@ -67,7 +67,7 @@ async fn test_concurrent_updates_same_table() {
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 3);
     assert!(!metrics.data_race_detected);
@@ -78,14 +78,14 @@ async fn test_concurrent_deletes_same_table() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "test_delete", 5).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 2);
+    let harness = ConcurrentTestHarness::from_executor(executor, 2);
 
     let queries: Vec<String> = (0..3)
         .map(|i| format!("DELETE FROM test_delete WHERE id = {}", i))
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 3);
     assert!(!metrics.data_race_detected);
@@ -96,10 +96,10 @@ async fn test_read_write_contention() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "test_rw", 5).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 8);
+    let harness = ConcurrentTestHarness::from_executor(executor, 8);
 
     let results = harness.run_read_write_contention("test_rw", 5, 3).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 8);
     assert!(!metrics.data_race_detected);
@@ -110,10 +110,10 @@ async fn test_write_write_contention() {
     let executor = create_test_executor();
     setup_test_table(&executor, "test_ww").await;
 
-    let harness = ConcurrentTestHarness::new(executor, 10);
+    let harness = ConcurrentTestHarness::from_executor(executor, 10);
 
     let results = harness.run_write_write_contention("test_ww", 10).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 10);
     assert!(!metrics.data_race_detected);
@@ -122,7 +122,7 @@ async fn test_write_write_contention() {
 #[tokio::test]
 async fn test_concurrent_create_tables() {
     let executor = create_test_executor();
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..4)
         .map(|i| {
@@ -134,7 +134,7 @@ async fn test_concurrent_create_tables() {
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
@@ -151,14 +151,14 @@ async fn test_concurrent_drop_tables() {
             .ok();
     }
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..4)
         .map(|i| format!("DROP TABLE IF EXISTS drop_table_{}", i))
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
@@ -172,7 +172,7 @@ async fn test_concurrent_mixed_ddl_dml() {
         .await
         .ok();
 
-    let harness = ConcurrentTestHarness::new(executor, 6);
+    let harness = ConcurrentTestHarness::from_executor(executor, 6);
 
     let queries = vec![
         "SELECT * FROM mixed_ops".to_string(),
@@ -184,7 +184,7 @@ async fn test_concurrent_mixed_ddl_dml() {
     ];
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 6);
     assert!(!metrics.data_race_detected);
@@ -195,7 +195,7 @@ async fn test_concurrent_aggregations() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "test_agg", 100).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries = vec![
         "SELECT COUNT(*) FROM test_agg".to_string(),
@@ -205,7 +205,7 @@ async fn test_concurrent_aggregations() {
     ];
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert_eq!(metrics.successful_tasks, 4);
@@ -218,7 +218,7 @@ async fn test_concurrent_joins() {
     setup_test_table_with_data(&executor, "join_left", 10).await;
     setup_test_table_with_data(&executor, "join_right", 10).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..4)
         .map(|_| {
@@ -227,7 +227,7 @@ async fn test_concurrent_joins() {
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
@@ -239,7 +239,7 @@ async fn test_concurrent_subqueries() {
     setup_test_table_with_data(&executor, "outer_table", 10).await;
     setup_test_table_with_data(&executor, "inner_table", 10).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..4)
         .map(|_| {
@@ -249,7 +249,7 @@ async fn test_concurrent_subqueries() {
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
@@ -260,14 +260,14 @@ async fn test_concurrent_group_by() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "group_table", 20).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..4)
         .map(|_| "SELECT name, COUNT(*) FROM group_table GROUP BY name".to_string())
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
@@ -278,7 +278,7 @@ async fn test_concurrent_order_by() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "order_table", 50).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries = vec![
         "SELECT * FROM order_table ORDER BY id ASC".to_string(),
@@ -288,7 +288,7 @@ async fn test_concurrent_order_by() {
     ];
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert_eq!(metrics.successful_tasks, 4);
@@ -300,7 +300,7 @@ async fn test_concurrent_limit_offset() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "limit_table", 100).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries = vec![
         "SELECT * FROM limit_table LIMIT 10".to_string(),
@@ -310,7 +310,7 @@ async fn test_concurrent_limit_offset() {
     ];
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert_eq!(metrics.successful_tasks, 4);
@@ -322,7 +322,7 @@ async fn test_high_concurrency_stress() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "stress_table", 10).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..12)
         .map(|i| {
@@ -342,7 +342,7 @@ async fn test_high_concurrency_stress() {
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 12);
     assert!(!metrics.data_race_detected);
@@ -353,14 +353,14 @@ async fn test_concurrent_distinct() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "distinct_table", 20).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..4)
         .map(|_| "SELECT DISTINCT name FROM distinct_table".to_string())
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
@@ -372,14 +372,14 @@ async fn test_concurrent_union() {
     setup_test_table_with_data(&executor, "union_a", 10).await;
     setup_test_table_with_data(&executor, "union_b", 10).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..4)
         .map(|_| "SELECT id, name FROM union_a UNION ALL SELECT id, name FROM union_b".to_string())
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
@@ -390,7 +390,7 @@ async fn test_concurrent_with_closures() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "closure_table", 10).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let tasks: Vec<_> = (0..4)
         .map(|i| {
@@ -401,8 +401,8 @@ async fn test_concurrent_with_closures() {
         })
         .collect();
 
-    let results = harness.run_concurrent(tasks).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let results = harness.run_concurrent_with_executor(tasks).await;
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
@@ -413,7 +413,7 @@ async fn test_reset_metrics() {
     let executor = create_test_executor();
     setup_test_table(&executor, "reset_test").await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..4).map(|_| "SELECT 1".to_string()).collect();
     let _results = harness.run_concurrent_queries(queries).await;
@@ -422,7 +422,7 @@ async fn test_reset_metrics() {
 
     let queries2: Vec<String> = (0..2).map(|_| "SELECT 2".to_string()).collect();
     let results2 = harness.run_concurrent_queries(queries2).await;
-    let metrics = harness.assert_no_data_races(&results2);
+    let metrics = harness.assert_no_data_races_task_result(&results2);
 
     assert_eq!(metrics.total_tasks, 2);
 }
@@ -430,7 +430,7 @@ async fn test_reset_metrics() {
 #[tokio::test]
 async fn test_task_result_types() {
     let executor = create_test_executor();
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries = vec![
         "SELECT 1".to_string(),
@@ -448,7 +448,7 @@ async fn test_verify_table_consistency() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "consistency_test", 10).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let result = harness.verify_table_consistency("consistency_test").await;
     assert!(result.is_ok());
@@ -460,7 +460,7 @@ async fn test_concurrent_case_expressions() {
     let executor = create_test_executor();
     setup_test_table_with_data(&executor, "case_table", 20).await;
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries: Vec<String> = (0..4)
         .map(|_| {
@@ -470,7 +470,7 @@ async fn test_concurrent_case_expressions() {
         .collect();
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);
@@ -496,7 +496,7 @@ async fn test_concurrent_null_handling() {
         .await
         .ok();
 
-    let harness = ConcurrentTestHarness::new(executor, 4);
+    let harness = ConcurrentTestHarness::from_executor(executor, 4);
 
     let queries = vec![
         "SELECT * FROM null_table WHERE name IS NULL".to_string(),
@@ -506,7 +506,7 @@ async fn test_concurrent_null_handling() {
     ];
 
     let results = harness.run_concurrent_queries(queries).await;
-    let metrics = harness.assert_no_data_races(&results);
+    let metrics = harness.assert_no_data_races_task_result(&results);
 
     assert_eq!(metrics.total_tasks, 4);
     assert!(!metrics.data_race_detected);

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use tokio::sync::Semaphore;
+use yachtsql::{Error, YachtSQLSession};
 use yachtsql_executor::AsyncQueryExecutor;
 use yachtsql_storage::Table;
 
@@ -21,7 +22,11 @@ pub struct ConcurrencyMetrics {
     pub data_race_detected: bool,
 }
 
+pub type Session = YachtSQLSession;
+
 pub struct ConcurrentTestHarness {
+    session: Arc<Session>,
+    barrier: Arc<std::sync::Barrier>,
     executor: Arc<AsyncQueryExecutor>,
     semaphore: Arc<Semaphore>,
     concurrency: usize,
@@ -31,8 +36,12 @@ pub struct ConcurrentTestHarness {
 }
 
 impl ConcurrentTestHarness {
-    pub fn new(executor: AsyncQueryExecutor, concurrency: usize) -> Self {
+    pub fn new(concurrency: usize) -> Self {
+        let session = Session::new();
+        let executor = AsyncQueryExecutor::new();
         Self {
+            session: Arc::new(session),
+            barrier: Arc::new(std::sync::Barrier::new(concurrency)),
             executor: Arc::new(executor),
             semaphore: Arc::new(Semaphore::new(concurrency)),
             concurrency,
@@ -40,6 +49,28 @@ impl ConcurrentTestHarness {
             max_concurrent_observed: Arc::new(AtomicU64::new(0)),
             data_race_detected: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn from_executor(executor: AsyncQueryExecutor, concurrency: usize) -> Self {
+        let session = Session::new();
+        Self {
+            session: Arc::new(session),
+            barrier: Arc::new(std::sync::Barrier::new(concurrency)),
+            executor: Arc::new(executor),
+            semaphore: Arc::new(Semaphore::new(concurrency)),
+            concurrency,
+            current_concurrent: Arc::new(AtomicU64::new(0)),
+            max_concurrent_observed: Arc::new(AtomicU64::new(0)),
+            data_race_detected: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn session(&self) -> Arc<Session> {
+        Arc::clone(&self.session)
+    }
+
+    pub fn barrier(&self) -> Arc<std::sync::Barrier> {
+        Arc::clone(&self.barrier)
     }
 
     pub fn executor(&self) -> &AsyncQueryExecutor {
@@ -50,7 +81,63 @@ impl ConcurrentTestHarness {
         self.concurrency
     }
 
-    pub async fn run_concurrent<F, Fut>(&self, tasks: Vec<F>) -> Vec<TaskResult>
+    pub async fn run_concurrent<F, Fut>(&self, tasks: Vec<F>) -> Vec<Result<(), Error>>
+    where
+        F: Fn(Arc<Session>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), Error>> + Send,
+    {
+        let task_count = tasks.len();
+        let task_barrier = Arc::new(std::sync::Barrier::new(task_count));
+        let mut handles = Vec::with_capacity(task_count);
+
+        for task in tasks {
+            let session = Arc::clone(&self.session);
+            let semaphore = Arc::clone(&self.semaphore);
+            let current_concurrent = Arc::clone(&self.current_concurrent);
+            let max_concurrent_observed = Arc::clone(&self.max_concurrent_observed);
+            let barrier = Arc::clone(&task_barrier);
+
+            let handle = tokio::spawn(async move {
+                let _permit = semaphore.acquire().await.unwrap();
+
+                barrier.wait();
+
+                let concurrent = current_concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                loop {
+                    let max = max_concurrent_observed.load(Ordering::SeqCst);
+                    if concurrent <= max {
+                        break;
+                    }
+                    if max_concurrent_observed
+                        .compare_exchange(max, concurrent, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        break;
+                    }
+                }
+
+                let result = task(session).await;
+
+                current_concurrent.fetch_sub(1, Ordering::SeqCst);
+
+                result
+            });
+
+            handles.push(handle);
+        }
+
+        let mut results = Vec::with_capacity(task_count);
+        for handle in handles {
+            match handle.await {
+                Ok(result) => results.push(result),
+                Err(e) => results.push(Err(Error::internal(format!("Join error: {}", e)))),
+            }
+        }
+
+        results
+    }
+
+    pub async fn run_concurrent_with_executor<F, Fut>(&self, tasks: Vec<F>) -> Vec<TaskResult>
     where
         F: FnOnce(Arc<AsyncQueryExecutor>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<Table, yachtsql_common::error::Error>> + Send + 'static,
@@ -158,7 +245,24 @@ impl ConcurrentTestHarness {
         results
     }
 
-    pub fn assert_no_data_races(&self, results: &[TaskResult]) -> ConcurrencyMetrics {
+    pub fn assert_no_data_races(&self, results: &[Result<(), Error>]) {
+        let has_errors = results.iter().any(|r| r.is_err());
+        let data_race_detected = self.data_race_detected.load(Ordering::SeqCst);
+
+        if has_errors {
+            for (i, result) in results.iter().enumerate() {
+                if let Err(e) = result {
+                    panic!("Task {} failed with error: {}", i, e);
+                }
+            }
+        }
+
+        if data_race_detected {
+            panic!("Data race detected during concurrent execution");
+        }
+    }
+
+    pub fn assert_no_data_races_task_result(&self, results: &[TaskResult]) -> ConcurrencyMetrics {
         let total_tasks = results.len() as u64;
         let successful_tasks = results
             .iter()
