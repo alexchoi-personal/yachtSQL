@@ -16,4 +16,11 @@ yachtsql-ir = { version = "0.1.4", path = "../yachtsql-ir" }
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
+yachtsql-parser = { version = "0.1.4", path = "../yachtsql-parser" }
+yachtsql-storage = { version = "0.1.4", path = "../yachtsql-storage" }
+
+[[bench]]
+name = "optimizer_bench"
+harness = false
