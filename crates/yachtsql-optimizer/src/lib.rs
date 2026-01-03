@@ -6,6 +6,8 @@ mod optimized_logical_plan;
 mod planner;
 pub mod stats;
 #[cfg(test)]
+mod test_utils;
+#[cfg(test)]
 mod tests;
 
 pub use join_order::{

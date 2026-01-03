@@ -4590,3 +4590,327 @@ mod predicate_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod sql_optimizer_tests {
+    use yachtsql_ir::JoinType;
+
+    use crate::OptimizedLogicalPlan;
+    use crate::test_utils::{assert_plan, optimize_sql_default};
+
+    mod filter_pushdown {
+        use super::*;
+
+        #[test]
+        fn filter_on_right_table_pushed_below_join() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 JOIN customers c ON o.customer_id = c.id
+                 WHERE c.country = 'USA'",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (TableScan {
+                            table_name: "orders"
+                        }),
+                        right: (Filter {
+                            input: (TableScan {
+                                table_name: "customers"
+                            }),
+                            predicate: _
+                        }),
+                        join_type: JoinType::Inner
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn filter_on_left_table_pushed_below_join() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 JOIN customers c ON o.customer_id = c.id
+                 WHERE o.amount > 100",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (Filter {
+                            input: (TableScan {
+                                table_name: "orders"
+                            }),
+                            predicate: _
+                        }),
+                        right: (TableScan {
+                            table_name: "customers"
+                        }),
+                        join_type: JoinType::Inner
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn filters_on_both_tables_pushed_below_join() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 JOIN customers c ON o.customer_id = c.id
+                 WHERE o.amount > 100 AND c.country = 'USA'",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (Filter {
+                            input: (TableScan {
+                                table_name: "orders"
+                            }),
+                            predicate: _
+                        }),
+                        right: (Filter {
+                            input: (TableScan {
+                                table_name: "customers"
+                            }),
+                            predicate: _
+                        }),
+                        join_type: JoinType::Inner
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn filter_referencing_both_tables_not_pushed() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 JOIN customers c ON o.customer_id = c.id
+                 WHERE o.amount > c.id",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (Filter {
+                        input: (HashJoin {
+                            left: (TableScan {
+                                table_name: "orders"
+                            }),
+                            right: (TableScan {
+                                table_name: "customers"
+                            }),
+                            join_type: JoinType::Inner
+                        }),
+                        predicate: _
+                    })
+                }
+            );
+        }
+    }
+
+    mod join_selection {
+        use super::*;
+
+        #[test]
+        fn equi_join_uses_hash_join() {
+            let plan = optimize_sql_default(
+                "SELECT * FROM orders o JOIN customers c ON o.customer_id = c.id",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (TableScan {
+                            table_name: "orders"
+                        }),
+                        right: (TableScan {
+                            table_name: "customers"
+                        }),
+                        join_type: JoinType::Inner
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn non_equi_join_uses_nested_loop() {
+            let plan =
+                optimize_sql_default("SELECT * FROM orders o JOIN customers c ON o.amount > c.id");
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (NestedLoopJoin {
+                        left: (TableScan {
+                            table_name: "orders"
+                        }),
+                        right: (TableScan {
+                            table_name: "customers"
+                        }),
+                        join_type: JoinType::Inner
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn cross_join_produces_cross_join_node() {
+            let plan = optimize_sql_default("SELECT * FROM orders o CROSS JOIN customers c");
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (CrossJoin {
+                        left: (TableScan {
+                            table_name: "orders"
+                        }),
+                        right: (TableScan {
+                            table_name: "customers"
+                        })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn left_join_preserves_join_type() {
+            let plan = optimize_sql_default(
+                "SELECT * FROM orders o LEFT JOIN customers c ON o.customer_id = c.id",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (TableScan {
+                            table_name: "orders"
+                        }),
+                        right: (TableScan {
+                            table_name: "customers"
+                        }),
+                        join_type: JoinType::Left
+                    })
+                }
+            );
+        }
+    }
+
+    mod projection_pushdown {
+        use super::*;
+
+        #[test]
+        fn unused_columns_pruned_from_scan() {
+            let plan = optimize_sql_default("SELECT id, amount FROM orders");
+
+            match &plan {
+                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
+                    OptimizedLogicalPlan::TableScan { projection, .. } => {
+                        let proj = projection.as_ref().expect("projection should exist");
+                        assert!(proj.contains(&0), "id (index 0) should be projected");
+                        assert!(proj.contains(&2), "amount (index 2) should be projected");
+                        assert!(!proj.contains(&1), "customer_id should not be projected");
+                        assert!(!proj.contains(&3), "status should not be projected");
+                    }
+                    other => panic!("Expected TableScan, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn join_keys_included_in_projection() {
+            let plan = optimize_sql_default(
+                "SELECT o.id FROM orders o JOIN customers c ON o.customer_id = c.id",
+            );
+
+            match &plan {
+                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
+                    OptimizedLogicalPlan::HashJoin { left, right, .. } => {
+                        match left.as_ref() {
+                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                                let proj = projection.as_ref().expect("projection should exist");
+                                assert!(proj.contains(&0), "id should be projected");
+                                assert!(proj.contains(&1), "customer_id needed for join");
+                            }
+                            other => panic!("Expected TableScan on left, got {:?}", other),
+                        }
+                        match right.as_ref() {
+                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                                let proj = projection.as_ref().expect("projection should exist");
+                                assert!(proj.contains(&0), "id needed for join");
+                            }
+                            other => panic!("Expected TableScan on right, got {:?}", other),
+                        }
+                    }
+                    other => panic!("Expected HashJoin, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+    }
+
+    mod sort_limit_optimization {
+        use super::*;
+
+        #[test]
+        fn sort_with_limit() {
+            let plan =
+                optimize_sql_default("SELECT id, amount FROM orders ORDER BY amount DESC LIMIT 10");
+
+            assert_plan!(
+                plan,
+                Limit {
+                    input: (Project {
+                        input: (Sort {
+                            input: (TableScan {
+                                table_name: "orders"
+                            })
+                        })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn sort_without_limit() {
+            let plan = optimize_sql_default("SELECT id, amount FROM orders ORDER BY amount DESC");
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (Sort {
+                        input: (TableScan {
+                            table_name: "orders"
+                        })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn limit_without_sort() {
+            let plan = optimize_sql_default("SELECT id, amount FROM orders LIMIT 10");
+
+            assert_plan!(
+                plan,
+                Limit {
+                    input: (Project {
+                        input: (TableScan {
+                            table_name: "orders"
+                        })
+                    })
+                }
+            );
+        }
+    }
+}
