@@ -53,6 +53,8 @@ impl ConcurrentPlanExecutor {
             options.uri.replace('*', "data")
         };
 
+        let path = validate_file_path(&path)?;
+
         match options.format {
             ExportFormat::Parquet => self.export_to_parquet(&data, &path),
             ExportFormat::Json => self.export_to_json(&data, &path),
@@ -962,4 +964,14 @@ impl ConcurrentPlanExecutor {
             _ => Ok(Value::string(s.to_string())),
         }
     }
+}
+
+fn validate_file_path(path: &str) -> Result<String> {
+    if path.contains("..") {
+        return Err(Error::InvalidQuery(
+            "Path traversal sequences (..) are not allowed in file paths".into(),
+        ));
+    }
+
+    Ok(path.to_string())
 }

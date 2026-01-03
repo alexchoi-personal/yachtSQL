@@ -8,7 +8,10 @@ use yachtsql_common::types::{IntervalValue, Value};
 pub fn add_values(left: &Value, right: &Value) -> Result<Value> {
     match (left, right) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::Int64(a), Value::Int64(b)) => Ok(Value::Int64(a + b)),
+        (Value::Int64(a), Value::Int64(b)) => a
+            .checked_add(*b)
+            .map(Value::Int64)
+            .ok_or_else(|| Error::InvalidQuery("Integer overflow in addition".into())),
         (Value::Float64(a), Value::Float64(b)) => Ok(Value::Float64(OrderedFloat(a.0 + b.0))),
         (Value::Int64(a), Value::Float64(b)) => Ok(Value::Float64(OrderedFloat(*a as f64 + b.0))),
         (Value::Float64(a), Value::Int64(b)) => Ok(Value::Float64(OrderedFloat(a.0 + *b as f64))),
@@ -38,11 +41,25 @@ pub fn add_values(left: &Value, right: &Value) -> Result<Value> {
             let new_dt = add_interval_to_datetime(&ts.naive_utc(), interval)?;
             Ok(Value::Timestamp(new_dt.and_utc()))
         }
-        (Value::Interval(a), Value::Interval(b)) => Ok(Value::Interval(IntervalValue {
-            months: a.months + b.months,
-            days: a.days + b.days,
-            nanos: a.nanos + b.nanos,
-        })),
+        (Value::Interval(a), Value::Interval(b)) => {
+            let months = a
+                .months
+                .checked_add(b.months)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in months".into()))?;
+            let days = a
+                .days
+                .checked_add(b.days)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in days".into()))?;
+            let nanos = a
+                .nanos
+                .checked_add(b.nanos)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in nanos".into()))?;
+            Ok(Value::Interval(IntervalValue {
+                months,
+                days,
+                nanos,
+            }))
+        }
         _ => Err(Error::InvalidQuery(format!(
             "Cannot add {:?} and {:?}",
             left, right
@@ -53,31 +70,48 @@ pub fn add_values(left: &Value, right: &Value) -> Result<Value> {
 pub fn sub_values(left: &Value, right: &Value) -> Result<Value> {
     match (left, right) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::Int64(a), Value::Int64(b)) => Ok(Value::Int64(a - b)),
+        (Value::Int64(a), Value::Int64(b)) => a
+            .checked_sub(*b)
+            .map(Value::Int64)
+            .ok_or_else(|| Error::InvalidQuery("Integer overflow in subtraction".into())),
         (Value::Float64(a), Value::Float64(b)) => Ok(Value::Float64(OrderedFloat(a.0 - b.0))),
         (Value::Int64(a), Value::Float64(b)) => Ok(Value::Float64(OrderedFloat(*a as f64 - b.0))),
         (Value::Float64(a), Value::Int64(b)) => Ok(Value::Float64(OrderedFloat(a.0 - *b as f64))),
         (Value::Numeric(a), Value::Numeric(b)) => Ok(Value::Numeric(*a - *b)),
         (Value::Date(d), Value::Interval(interval)) => {
-            let neg_interval = negate_interval(interval);
+            let neg_interval = negate_interval(interval)?;
             let new_date = add_interval_to_date(d, &neg_interval)?;
             Ok(Value::Date(new_date))
         }
         (Value::DateTime(dt), Value::Interval(interval)) => {
-            let neg_interval = negate_interval(interval);
+            let neg_interval = negate_interval(interval)?;
             let new_dt = add_interval_to_datetime(dt, &neg_interval)?;
             Ok(Value::DateTime(new_dt))
         }
         (Value::Timestamp(ts), Value::Interval(interval)) => {
-            let neg_interval = negate_interval(interval);
+            let neg_interval = negate_interval(interval)?;
             let new_dt = add_interval_to_datetime(&ts.naive_utc(), &neg_interval)?;
             Ok(Value::Timestamp(new_dt.and_utc()))
         }
-        (Value::Interval(a), Value::Interval(b)) => Ok(Value::Interval(IntervalValue {
-            months: a.months - b.months,
-            days: a.days - b.days,
-            nanos: a.nanos - b.nanos,
-        })),
+        (Value::Interval(a), Value::Interval(b)) => {
+            let months = a
+                .months
+                .checked_sub(b.months)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in months".into()))?;
+            let days = a
+                .days
+                .checked_sub(b.days)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in days".into()))?;
+            let nanos = a
+                .nanos
+                .checked_sub(b.nanos)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in nanos".into()))?;
+            Ok(Value::Interval(IntervalValue {
+                months,
+                days,
+                nanos,
+            }))
+        }
         (Value::Float64(a), Value::String(s)) => {
             if let Ok(b) = s.parse::<f64>() {
                 Ok(Value::Float64(OrderedFloat(a.0 - b)))
@@ -100,7 +134,9 @@ pub fn sub_values(left: &Value, right: &Value) -> Result<Value> {
         }
         (Value::Int64(a), Value::String(s)) => {
             if let Ok(b) = s.parse::<i64>() {
-                Ok(Value::Int64(a - b))
+                a.checked_sub(b)
+                    .map(Value::Int64)
+                    .ok_or_else(|| Error::InvalidQuery("Integer overflow in subtraction".into()))
             } else if let Ok(b) = s.parse::<f64>() {
                 Ok(Value::Float64(OrderedFloat(*a as f64 - b)))
             } else {
@@ -112,7 +148,9 @@ pub fn sub_values(left: &Value, right: &Value) -> Result<Value> {
         }
         (Value::String(s), Value::Int64(b)) => {
             if let Ok(a) = s.parse::<i64>() {
-                Ok(Value::Int64(a - b))
+                a.checked_sub(*b)
+                    .map(Value::Int64)
+                    .ok_or_else(|| Error::InvalidQuery("Integer overflow in subtraction".into()))
             } else if let Ok(a) = s.parse::<f64>() {
                 Ok(Value::Float64(OrderedFloat(a - *b as f64)))
             } else {
@@ -142,21 +180,56 @@ pub fn sub_values(left: &Value, right: &Value) -> Result<Value> {
 pub fn mul_values(left: &Value, right: &Value) -> Result<Value> {
     match (left, right) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::Int64(a), Value::Int64(b)) => Ok(Value::Int64(a * b)),
+        (Value::Int64(a), Value::Int64(b)) => a
+            .checked_mul(*b)
+            .map(Value::Int64)
+            .ok_or_else(|| Error::InvalidQuery("Integer overflow in multiplication".into())),
         (Value::Float64(a), Value::Float64(b)) => Ok(Value::Float64(OrderedFloat(a.0 * b.0))),
         (Value::Int64(a), Value::Float64(b)) => Ok(Value::Float64(OrderedFloat(*a as f64 * b.0))),
         (Value::Float64(a), Value::Int64(b)) => Ok(Value::Float64(OrderedFloat(a.0 * *b as f64))),
         (Value::Numeric(a), Value::Numeric(b)) => Ok(Value::Numeric(*a * *b)),
-        (Value::Interval(iv), Value::Int64(n)) => Ok(Value::Interval(IntervalValue {
-            months: iv.months * (*n as i32),
-            days: iv.days * (*n as i32),
-            nanos: iv.nanos * *n,
-        })),
-        (Value::Int64(n), Value::Interval(iv)) => Ok(Value::Interval(IntervalValue {
-            months: iv.months * (*n as i32),
-            days: iv.days * (*n as i32),
-            nanos: iv.nanos * *n,
-        })),
+        (Value::Interval(iv), Value::Int64(n)) => {
+            let n_i32 = i32::try_from(*n)
+                .map_err(|_| Error::InvalidQuery("Multiplier too large for interval".into()))?;
+            let months = iv
+                .months
+                .checked_mul(n_i32)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in months".into()))?;
+            let days = iv
+                .days
+                .checked_mul(n_i32)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in days".into()))?;
+            let nanos = iv
+                .nanos
+                .checked_mul(*n)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in nanos".into()))?;
+            Ok(Value::Interval(IntervalValue {
+                months,
+                days,
+                nanos,
+            }))
+        }
+        (Value::Int64(n), Value::Interval(iv)) => {
+            let n_i32 = i32::try_from(*n)
+                .map_err(|_| Error::InvalidQuery("Multiplier too large for interval".into()))?;
+            let months = iv
+                .months
+                .checked_mul(n_i32)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in months".into()))?;
+            let days = iv
+                .days
+                .checked_mul(n_i32)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in days".into()))?;
+            let nanos = iv
+                .nanos
+                .checked_mul(*n)
+                .ok_or_else(|| Error::InvalidQuery("Interval overflow in nanos".into()))?;
+            Ok(Value::Interval(IntervalValue {
+                months,
+                days,
+                nanos,
+            }))
+        }
         (Value::String(s1), Value::String(s2)) => {
             if let (Ok(a), Ok(b)) = (s1.parse::<f64>(), s2.parse::<f64>()) {
                 Ok(Value::Float64(OrderedFloat(a * b)))
@@ -467,10 +540,22 @@ fn add_interval_to_datetime(dt: &NaiveDateTime, interval: &IntervalValue) -> Res
     Ok(result)
 }
 
-fn negate_interval(interval: &IntervalValue) -> IntervalValue {
-    IntervalValue {
-        months: -interval.months,
-        days: -interval.days,
-        nanos: -interval.nanos,
-    }
+fn negate_interval(interval: &IntervalValue) -> Result<IntervalValue> {
+    let months = interval
+        .months
+        .checked_neg()
+        .ok_or_else(|| Error::InvalidQuery("Interval overflow in months negation".into()))?;
+    let days = interval
+        .days
+        .checked_neg()
+        .ok_or_else(|| Error::InvalidQuery("Interval overflow in days negation".into()))?;
+    let nanos = interval
+        .nanos
+        .checked_neg()
+        .ok_or_else(|| Error::InvalidQuery("Interval overflow in nanos negation".into()))?;
+    Ok(IntervalValue {
+        months,
+        days,
+        nanos,
+    })
 }
