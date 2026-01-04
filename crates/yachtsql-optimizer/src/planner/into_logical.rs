@@ -89,10 +89,18 @@ impl OptimizedLogicalPlan {
                 };
                 let condition = if left_keys.len() == 1 {
                     Some(Expr::BinaryOp {
-                        left: Box::new(left_keys.into_iter().next().unwrap()),
+                        left: Box::new(
+                            left_keys
+                                .into_iter()
+                                .next()
+                                .expect("invariant: left_keys.len() == 1"),
+                        ),
                         op: BinaryOp::Eq,
                         right: Box::new(restore_right_index(
-                            right_keys.into_iter().next().unwrap(),
+                            right_keys
+                                .into_iter()
+                                .next()
+                                .expect("invariant: right_keys.len() == left_keys.len()"),
                         )),
                     })
                 } else {
@@ -166,7 +174,10 @@ impl OptimizedLogicalPlan {
                 schema,
             } => {
                 let mut iter = inputs.into_iter();
-                let first = iter.next().unwrap().into_logical();
+                let first = iter
+                    .next()
+                    .expect("invariant: UNION must have at least one input")
+                    .into_logical();
                 iter.fold(first, |acc, plan| LogicalPlan::SetOperation {
                     left: Box::new(acc),
                     right: Box::new(plan.into_logical()),

@@ -1,6 +1,10 @@
 #![coverage(off)]
 
-use regex::RegexBuilder;
+use std::cell::RefCell;
+use std::num::NonZeroUsize;
+
+use lru::LruCache;
+use regex::{Regex, RegexBuilder};
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::Expr;
@@ -10,6 +14,36 @@ use crate::columnar_evaluator::ColumnarEvaluator;
 
 const MAX_PATTERN_LENGTH: usize = 10_000;
 const REGEX_SIZE_LIMIT: usize = 10 * 1024 * 1024;
+
+thread_local! {
+    static LIKE_REGEX_CACHE: RefCell<LruCache<(String, bool), Regex>> =
+        RefCell::new(LruCache::new(NonZeroUsize::new(256).expect("256 > 0")));
+}
+
+fn get_or_compile_regex(pattern: &str, case_insensitive: bool) -> Result<Regex> {
+    if pattern.len() > MAX_PATTERN_LENGTH {
+        return Err(Error::InvalidQuery(format!(
+            "LIKE pattern length {} exceeds maximum of {} characters",
+            pattern.len(),
+            MAX_PATTERN_LENGTH
+        )));
+    }
+
+    LIKE_REGEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let key = (pattern.to_string(), case_insensitive);
+        if let Some(re) = cache.get(&key) {
+            return Ok(re.clone());
+        }
+        let regex_pattern = like_to_regex(pattern, case_insensitive);
+        let re = RegexBuilder::new(&regex_pattern)
+            .size_limit(REGEX_SIZE_LIMIT)
+            .build()
+            .map_err(|e| Error::InvalidQuery(format!("Invalid pattern: {}", e)))?;
+        cache.put(key, re.clone());
+        Ok(re)
+    })
+}
 
 pub fn eval_like(
     evaluator: &ColumnarEvaluator,
@@ -32,18 +66,7 @@ pub fn eval_like(
         match (&s, &p) {
             (Value::Null, _) | (_, Value::Null) => results.push(Value::Null),
             (Value::String(s), Value::String(p)) => {
-                if p.len() > MAX_PATTERN_LENGTH {
-                    return Err(Error::InvalidQuery(format!(
-                        "LIKE pattern length {} exceeds maximum of {} characters",
-                        p.len(),
-                        MAX_PATTERN_LENGTH
-                    )));
-                }
-                let regex_pattern = like_to_regex(p, case_insensitive);
-                let re = RegexBuilder::new(&regex_pattern)
-                    .size_limit(REGEX_SIZE_LIMIT)
-                    .build()
-                    .map_err(|e| Error::InvalidQuery(format!("Invalid pattern: {}", e)))?;
+                let re = get_or_compile_regex(p, case_insensitive)?;
                 let matches = re.is_match(s);
                 results.push(Value::Bool(if negated { !matches } else { matches }));
             }
