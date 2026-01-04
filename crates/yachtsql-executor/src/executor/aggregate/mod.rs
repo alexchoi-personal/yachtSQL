@@ -815,7 +815,7 @@ fn exprs_match(a: &Expr, b: &Expr) -> bool {
         }
         (Expr::Alias { expr: e1, .. }, e2) => exprs_match(e1, e2),
         (e1, Expr::Alias { expr: e2, .. }) => exprs_match(e1, e2),
-        _ => format!("{:?}", a) == format!("{:?}", b),
+        _ => a == b,
     }
 }
 

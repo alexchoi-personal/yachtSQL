@@ -1,22 +1,21 @@
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use yachtsql_common::types::Value;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Session {
-    variables: HashMap<String, Value>,
-    system_variables: HashMap<String, Value>,
+    variables: FxHashMap<String, Value>,
+    system_variables: FxHashMap<String, Value>,
     current_schema: Option<String>,
 }
 
 impl Session {
     pub fn new() -> Self {
-        let mut system_variables = HashMap::new();
+        let mut system_variables = FxHashMap::default();
         system_variables.insert("@@TIME_ZONE".to_string(), Value::String("UTC".to_string()));
 
         Self {
-            variables: HashMap::new(),
+            variables: FxHashMap::default(),
             system_variables,
             current_schema: None,
         }
@@ -50,11 +49,11 @@ impl Session {
         self.variables.clear();
     }
 
-    pub fn variables(&self) -> &HashMap<String, Value> {
+    pub fn variables(&self) -> &FxHashMap<String, Value> {
         &self.variables
     }
 
-    pub fn system_variables(&self) -> &HashMap<String, Value> {
+    pub fn system_variables(&self) -> &FxHashMap<String, Value> {
         &self.system_variables
     }
 }

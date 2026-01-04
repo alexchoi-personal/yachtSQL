@@ -108,7 +108,7 @@ fn maybe_reorder_joins(
 
     let original_schema = join_subtree.schema().clone();
     let reorderer = GreedyJoinReorderer::new(cost_model);
-    let reordered_joins = reorderer.reorder(&graph, &original_schema);
+    let reordered_joins = reorderer.reorder(&graph, &original_schema).ok()?;
 
     Some(wrap_with_outer_nodes(plan, reordered_joins))
 }

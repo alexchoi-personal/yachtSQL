@@ -831,8 +831,9 @@ pub(crate) fn compute_window_function_columnar(
                 }
             }
             WindowFunction::Ntile => {
-                let first_record = get_record_from_columns(columns, sorted_indices[0]);
-                let n_val = extract_window_arg(expr, 0, evaluator, &first_record)?
+                let mut record = Record::with_capacity(columns.len());
+                fill_record_from_columns(&mut record, columns, sorted_indices[0]);
+                let n_val = extract_window_arg(expr, 0, evaluator, &record)?
                     .as_i64()
                     .unwrap_or(1) as usize;
                 let n_val = n_val.max(1);
@@ -855,18 +856,19 @@ pub(crate) fn compute_window_function_columnar(
                 }
             }
             WindowFunction::Lag => {
-                let first_record = get_record_from_columns(columns, sorted_indices[0]);
-                let offset = extract_window_arg(expr, 1, evaluator, &first_record)?
+                let mut record = Record::with_capacity(columns.len());
+                fill_record_from_columns(&mut record, columns, sorted_indices[0]);
+                let offset = extract_window_arg(expr, 1, evaluator, &record)?
                     .as_i64()
                     .unwrap_or(1) as usize;
                 let default =
-                    extract_window_arg(expr, 2, evaluator, &first_record).unwrap_or(Value::Null);
+                    extract_window_arg(expr, 2, evaluator, &record).unwrap_or(Value::Null);
 
                 for i in 0..partition_size {
                     if i >= offset {
                         let lag_idx = sorted_indices[i - offset];
-                        let lag_record = get_record_from_columns(columns, lag_idx);
-                        let val = extract_window_arg(expr, 0, evaluator, &lag_record)?;
+                        fill_record_from_columns(&mut record, columns, lag_idx);
+                        let val = extract_window_arg(expr, 0, evaluator, &record)?;
                         results.push(val);
                     } else {
                         results.push(default.clone());
@@ -874,18 +876,19 @@ pub(crate) fn compute_window_function_columnar(
                 }
             }
             WindowFunction::Lead => {
-                let first_record = get_record_from_columns(columns, sorted_indices[0]);
-                let offset = extract_window_arg(expr, 1, evaluator, &first_record)?
+                let mut record = Record::with_capacity(columns.len());
+                fill_record_from_columns(&mut record, columns, sorted_indices[0]);
+                let offset = extract_window_arg(expr, 1, evaluator, &record)?
                     .as_i64()
                     .unwrap_or(1) as usize;
                 let default =
-                    extract_window_arg(expr, 2, evaluator, &first_record).unwrap_or(Value::Null);
+                    extract_window_arg(expr, 2, evaluator, &record).unwrap_or(Value::Null);
 
                 for i in 0..partition_size {
                     if i + offset < partition_size {
                         let lead_idx = sorted_indices[i + offset];
-                        let lead_record = get_record_from_columns(columns, lead_idx);
-                        let val = extract_window_arg(expr, 0, evaluator, &lead_record)?;
+                        fill_record_from_columns(&mut record, columns, lead_idx);
+                        let val = extract_window_arg(expr, 0, evaluator, &record)?;
                         results.push(val);
                     } else {
                         results.push(default.clone());
@@ -893,37 +896,42 @@ pub(crate) fn compute_window_function_columnar(
                 }
             }
             WindowFunction::FirstValue => {
-                let first_idx = sorted_indices[0];
-                let first_record = get_record_from_columns(columns, first_idx);
-                let first_val = extract_window_arg(expr, 0, evaluator, &first_record)?;
+                let mut record = Record::with_capacity(columns.len());
+                fill_record_from_columns(&mut record, columns, sorted_indices[0]);
+                let first_val = extract_window_arg(expr, 0, evaluator, &record)?;
                 results = vec![first_val; partition_size];
             }
             WindowFunction::LastValue => {
+                let mut record = Record::with_capacity(columns.len());
                 if let Some(frame) = frame {
                     for curr_pos in 0..partition_size {
                         let end_bound = frame.end.as_ref().unwrap_or(&WindowFrameBound::CurrentRow);
                         let end_idx = compute_frame_end(end_bound, curr_pos, partition_size);
                         let actual_idx = sorted_indices[end_idx.min(partition_size - 1)];
-                        let record = get_record_from_columns(columns, actual_idx);
+                        fill_record_from_columns(&mut record, columns, actual_idx);
                         let val = extract_window_arg(expr, 0, evaluator, &record)?;
                         results.push(val);
                     }
                 } else {
-                    let last_idx = sorted_indices[partition_size - 1];
-                    let last_record = get_record_from_columns(columns, last_idx);
-                    let last_val = extract_window_arg(expr, 0, evaluator, &last_record)?;
+                    fill_record_from_columns(
+                        &mut record,
+                        columns,
+                        sorted_indices[partition_size - 1],
+                    );
+                    let last_val = extract_window_arg(expr, 0, evaluator, &record)?;
                     results = vec![last_val; partition_size];
                 }
             }
             WindowFunction::NthValue => {
-                let first_record = get_record_from_columns(columns, sorted_indices[0]);
-                let n_val = extract_window_arg(expr, 1, evaluator, &first_record)?
+                let mut record = Record::with_capacity(columns.len());
+                fill_record_from_columns(&mut record, columns, sorted_indices[0]);
+                let n_val = extract_window_arg(expr, 1, evaluator, &record)?
                     .as_i64()
                     .unwrap_or(1) as usize;
                 let nth_val = if n_val > 0 && n_val <= partition_size {
                     let nth_idx = sorted_indices[n_val - 1];
-                    let nth_record = get_record_from_columns(columns, nth_idx);
-                    extract_window_arg(expr, 0, evaluator, &nth_record)?
+                    fill_record_from_columns(&mut record, columns, nth_idx);
+                    extract_window_arg(expr, 0, evaluator, &record)?
                 } else {
                     Value::Null
                 };

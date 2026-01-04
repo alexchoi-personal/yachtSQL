@@ -371,7 +371,7 @@ mod join_order_tests {
             let cost_model = CostModel::new();
             let reorderer = GreedyJoinReorderer::new(cost_model);
 
-            let plan = reorderer.reorder(&graph, &schema);
+            let plan = reorderer.reorder(&graph, &schema).unwrap();
 
             match plan {
                 LogicalPlan::Project { input, .. } => match *input {
@@ -461,7 +461,7 @@ mod join_order_tests {
             let cost_model = CostModel::new();
             let reorderer = GreedyJoinReorderer::new(cost_model);
 
-            let plan = reorderer.reorder(&graph, &combined_schema);
+            let plan = reorderer.reorder(&graph, &combined_schema).unwrap();
 
             fn extract_scan_names(plan: &LogicalPlan) -> Vec<String> {
                 match plan {
@@ -507,7 +507,7 @@ mod join_order_tests {
             let cost_model = CostModel::new();
             let reorderer = GreedyJoinReorderer::new(cost_model);
 
-            let plan = reorderer.reorder(&graph, &combined_schema);
+            let plan = reorderer.reorder(&graph, &combined_schema).unwrap();
 
             match &plan {
                 LogicalPlan::Join { .. } => {}
@@ -522,7 +522,7 @@ mod join_order_tests {
             let cost_model = CostModel::new();
             let reorderer = GreedyJoinReorderer::new(cost_model);
 
-            let plan = reorderer.reorder(&graph, &schema);
+            let plan = reorderer.reorder(&graph, &schema).unwrap();
 
             match &plan {
                 LogicalPlan::Project {

@@ -415,12 +415,12 @@ impl ConcurrentPlanExecutor {
                         .map(|n| n.get())
                         .unwrap_or(4);
                     let chunk_size = probe_n.div_ceil(num_threads);
-                    let probe_indices: Vec<usize> = (0..probe_n).collect();
 
                     let chunk_results: Vec<Result<Vec<Vec<Value>>>> = std::thread::scope(|s| {
-                        let handles: Vec<_> = probe_indices
-                            .chunks(chunk_size)
-                            .map(|chunk| {
+                        let handles: Vec<_> = (0..probe_n)
+                            .step_by(chunk_size)
+                            .map(|chunk_start| {
+                                let chunk_end = (chunk_start + chunk_size).min(probe_n);
                                 let hash_table = &hash_table;
                                 let vars = &vars;
                                 let sys_vars = &sys_vars;
@@ -431,7 +431,7 @@ impl ConcurrentPlanExecutor {
                                 s.spawn(move || {
                                     let mut rows = Vec::new();
                                     if let Some(indices) = probe_key_indices {
-                                        for &probe_idx in chunk {
+                                        for probe_idx in chunk_start..chunk_end {
                                             let key_values = extract_key_values_direct(
                                                 probe_cols, probe_idx, indices,
                                             );
@@ -482,7 +482,7 @@ impl ConcurrentPlanExecutor {
                                             Record::with_capacity(probe_cols.len());
                                         let mut probe_values: Vec<Value> =
                                             Vec::with_capacity(probe_cols.len());
-                                        for &probe_idx in chunk {
+                                        for probe_idx in chunk_start..chunk_end {
                                             probe_values.clear();
                                             probe_values.extend(
                                                 probe_cols.iter().map(|c| c.get_value(probe_idx)),

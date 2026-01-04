@@ -1,3 +1,8 @@
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::num::NonZeroUsize;
+
+use lru::LruCache;
 use rustc_hash::FxHashMap;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::{DataType, Value};
@@ -1421,22 +1426,33 @@ pub fn cast_value(val: Value, target_type: &DataType, safe: bool) -> Result<Valu
     }
 }
 
+thread_local! {
+    static LIKE_REGEX_CACHE: RefCell<LruCache<(String, bool), regex::Regex>> =
+        RefCell::new(LruCache::new(NonZeroUsize::new(256).unwrap()));
+}
+
 fn like_match(s: &str, pattern: &str, case_insensitive: bool) -> bool {
-    let s = if case_insensitive {
-        s.to_lowercase()
+    let s_cow: Cow<str> = if case_insensitive {
+        Cow::Owned(s.to_lowercase())
     } else {
-        s.to_string()
+        Cow::Borrowed(s)
     };
-    let pattern = if case_insensitive {
+
+    let pattern_key = if case_insensitive {
         pattern.to_lowercase()
     } else {
         pattern.to_string()
     };
 
-    let regex_pattern = pattern.replace('%', ".*").replace('_', ".");
-    regex::Regex::new(&format!("^{}$", regex_pattern))
-        .map(|re| re.is_match(&s))
-        .unwrap_or(false)
+    LIKE_REGEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let re = cache.get_or_insert((pattern_key.clone(), case_insensitive), || {
+            let regex_pattern = pattern_key.replace('%', ".*").replace('_', ".");
+            regex::Regex::new(&format!("^{}$", regex_pattern))
+                .unwrap_or_else(|_| regex::Regex::new("^$").unwrap())
+        });
+        re.is_match(&s_cow)
+    })
 }
 
 fn parse_timestamp(s: &str) -> Result<Value> {

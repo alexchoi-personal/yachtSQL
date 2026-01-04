@@ -1,6 +1,7 @@
 #![coverage(off)]
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use yachtsql_common::error::{Error, Result};
 use yachtsql_ir::{Expr, JoinType, LogicalPlan, PlanSchema};
 
 use super::cost_model::{CostModel, JoinCost};
@@ -57,15 +58,15 @@ impl GreedyJoinReorderer {
         Self { cost_model }
     }
 
-    pub fn reorder(&self, graph: &JoinGraph, original_schema: &PlanSchema) -> LogicalPlan {
+    pub fn reorder(&self, graph: &JoinGraph, original_schema: &PlanSchema) -> Result<LogicalPlan> {
         let mut available: FxHashSet<RelationId> = (0..graph.relations().len()).collect();
 
-        let first_id = self.find_smallest_relation(graph, &available);
+        let first_id = self.find_smallest_relation(graph, &available)?;
         available.remove(&first_id);
 
-        let first_rel = graph
-            .get_relation(first_id)
-            .expect("invariant: relation id must exist in graph");
+        let first_rel = graph.get_relation(first_id).ok_or_else(|| {
+            Error::internal("invariant violation: relation id must exist in graph")
+        })?;
         let mut current_relations: Vec<RelationId> = vec![first_id];
         let mut current_plan = first_rel.plan.clone();
         let mut current_row_count = first_rel.row_count_estimate;
@@ -78,11 +79,11 @@ impl GreedyJoinReorderer {
 
         while !available.is_empty() {
             let (next_id, join_cost, predicates) =
-                self.find_best_next(graph, &current_relations, current_row_count, &available);
+                self.find_best_next(graph, &current_relations, current_row_count, &available)?;
 
-            let next_rel = graph
-                .get_relation(next_id)
-                .expect("invariant: relation id must exist in graph");
+            let next_rel = graph.get_relation(next_id).ok_or_else(|| {
+                Error::internal("invariant violation: relation id must exist in graph")
+            })?;
             Self::add_relation_offsets(
                 next_rel,
                 &mut table_offsets,
@@ -148,7 +149,7 @@ impl GreedyJoinReorderer {
         join_order: &[RelationId],
         plan: LogicalPlan,
         original_schema: &PlanSchema,
-    ) -> LogicalPlan {
+    ) -> Result<LogicalPlan> {
         let is_original_order = join_order.iter().enumerate().all(|(idx, &rel_id)| {
             graph
                 .get_relation(rel_id)
@@ -157,16 +158,16 @@ impl GreedyJoinReorderer {
         });
 
         if is_original_order {
-            return plan;
+            return Ok(plan);
         }
 
         let mut reordered_to_original: Vec<(usize, usize)> = Vec::new();
         let mut reordered_offset = 0;
 
         for &rel_id in join_order {
-            let rel = graph
-                .get_relation(rel_id)
-                .expect("invariant: relation id must exist in graph");
+            let rel = graph.get_relation(rel_id).ok_or_else(|| {
+                Error::internal("invariant violation: relation id must exist in graph")
+            })?;
             let original_offset = self.compute_original_offset(graph, rel.original_position);
 
             for col_idx in 0..rel.schema.fields.len() {
@@ -189,11 +190,11 @@ impl GreedyJoinReorderer {
             })
             .collect();
 
-        LogicalPlan::Project {
+        Ok(LogicalPlan::Project {
             input: Box::new(plan),
             expressions,
             schema: original_schema.clone(),
-        }
+        })
     }
 
     fn compute_original_offset(&self, graph: &JoinGraph, position: usize) -> usize {
@@ -209,13 +210,13 @@ impl GreedyJoinReorderer {
         current_relations: &[RelationId],
         current_row_count: usize,
         available: &FxHashSet<RelationId>,
-    ) -> (RelationId, JoinCost, Vec<Expr>) {
+    ) -> Result<(RelationId, JoinCost, Vec<Expr>)> {
         let mut best: Option<(RelationId, JoinCost, usize, Vec<Expr>)> = None;
 
         for &candidate_id in available {
-            let candidate = graph
-                .get_relation(candidate_id)
-                .expect("invariant: relation id must exist in graph");
+            let candidate = graph.get_relation(candidate_id).ok_or_else(|| {
+                Error::internal("invariant violation: relation id must exist in graph")
+            })?;
 
             let mut applicable_edges = Vec::new();
             for &rel_id in current_relations {
@@ -247,16 +248,19 @@ impl GreedyJoinReorderer {
             }
         }
 
-        let (id, cost, _, predicates) =
-            best.expect("invariant: available set is non-empty, must find a candidate");
-        (id, cost, predicates)
+        let (id, cost, _, predicates) = best.ok_or_else(|| {
+            Error::internal(
+                "invariant violation: available set is non-empty, must find a candidate",
+            )
+        })?;
+        Ok((id, cost, predicates))
     }
 
     fn find_smallest_relation(
         &self,
         graph: &JoinGraph,
         available: &FxHashSet<RelationId>,
-    ) -> RelationId {
+    ) -> Result<RelationId> {
         available
             .iter()
             .min_by_key(|&&id| {
@@ -266,6 +270,6 @@ impl GreedyJoinReorderer {
                     .unwrap_or((usize::MAX, usize::MAX))
             })
             .copied()
-            .expect("invariant: available set must be non-empty")
+            .ok_or_else(|| Error::internal("invariant violation: available set must be non-empty"))
     }
 }

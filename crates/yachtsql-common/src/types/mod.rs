@@ -677,6 +677,44 @@ impl fmt::Display for Value {
 
 impl Eq for Value {}
 
+fn hash_json_value<H: std::hash::Hasher>(value: &serde_json::Value, state: &mut H) {
+    use std::hash::Hash;
+    match value {
+        serde_json::Value::Null => 0u8.hash(state),
+        serde_json::Value::Bool(b) => {
+            1u8.hash(state);
+            b.hash(state);
+        }
+        serde_json::Value::Number(n) => {
+            2u8.hash(state);
+            if let Some(i) = n.as_i64() {
+                i.hash(state);
+            } else if let Some(u) = n.as_u64() {
+                u.hash(state);
+            } else if let Some(f) = n.as_f64() {
+                f.to_bits().hash(state);
+            }
+        }
+        serde_json::Value::String(s) => {
+            3u8.hash(state);
+            s.hash(state);
+        }
+        serde_json::Value::Array(arr) => {
+            4u8.hash(state);
+            for item in arr {
+                hash_json_value(item, state);
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            5u8.hash(state);
+            for (k, v) in obj {
+                k.hash(state);
+                hash_json_value(v, state);
+            }
+        }
+    }
+}
+
 impl std::hash::Hash for Value {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         std::mem::discriminant(self).hash(state);
@@ -693,7 +731,7 @@ impl std::hash::Hash for Value {
             Value::Time(v) => v.hash(state),
             Value::DateTime(v) => v.hash(state),
             Value::Timestamp(v) => v.hash(state),
-            Value::Json(v) => v.to_string().hash(state),
+            Value::Json(v) => hash_json_value(v, state),
             Value::Array(v) => {
                 for elem in v {
                     elem.hash(state);
