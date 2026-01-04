@@ -308,7 +308,15 @@ fn js_to_value(
     }
 
     if js_val.is_number() {
-        let n = js_val.number_value(scope).unwrap_or(0.0);
+        let n = js_val
+            .number_value(scope)
+            .ok_or("Failed to extract number value")?;
+        if n.is_nan() {
+            return Err("JavaScript returned NaN".to_string());
+        }
+        if n.is_infinite() {
+            return Err("JavaScript returned Infinity".to_string());
+        }
         if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
             return Ok(Value::Int64(n as i64));
         }

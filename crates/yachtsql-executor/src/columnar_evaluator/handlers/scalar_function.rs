@@ -126,7 +126,7 @@ fn eval_custom_scalar_function(
             {
                 match &func_def.body {
                     FunctionBody::Sql(expr) => {
-                        let mut local_vars = std::collections::HashMap::new();
+                        let mut local_vars = rustc_hash::FxHashMap::default();
                         for (i, param) in func_def.parameters.iter().enumerate() {
                             let val = args.get(i).cloned().unwrap_or(Value::Null);
                             local_vars.insert(param.to_uppercase(), val);

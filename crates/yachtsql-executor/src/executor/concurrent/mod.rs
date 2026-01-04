@@ -13,10 +13,10 @@ mod subquery;
 mod unnest;
 mod utils;
 
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_recursion::async_recursion;
+use rustc_hash::FxHashMap;
 use tracing::instrument;
 pub(crate) use utils::{coerce_value, compare_values_for_sort, default_value_for_type};
 use yachtsql_common::error::{Error, Result};
@@ -36,10 +36,10 @@ pub struct ConcurrentPlanExecutor {
     pub(crate) catalog: Arc<ConcurrentCatalog>,
     pub(crate) session: Arc<ConcurrentSession>,
     pub(crate) tables: Arc<TableLockSet>,
-    pub(crate) variables: Arc<RwLock<HashMap<String, Value>>>,
-    pub(crate) system_variables: Arc<RwLock<HashMap<String, Value>>>,
-    pub(crate) cte_results: Arc<RwLock<HashMap<String, Table>>>,
-    pub(crate) user_function_defs: Arc<RwLock<HashMap<String, UserFunctionDef>>>,
+    pub(crate) variables: Arc<RwLock<FxHashMap<String, Value>>>,
+    pub(crate) system_variables: Arc<RwLock<FxHashMap<String, Value>>>,
+    pub(crate) cte_results: Arc<RwLock<FxHashMap<String, Table>>>,
+    pub(crate) user_function_defs: Arc<RwLock<FxHashMap<String, UserFunctionDef>>>,
 }
 
 impl ConcurrentPlanExecutor {
@@ -62,7 +62,7 @@ impl ConcurrentPlanExecutor {
             })
             .collect();
 
-        let variables: HashMap<String, Value> = session
+        let variables: FxHashMap<String, Value> = session
             .variables()
             .iter()
             .map(|r| (r.key().clone(), r.value().clone()))
@@ -76,21 +76,21 @@ impl ConcurrentPlanExecutor {
             tables: Arc::new(tables),
             variables: Arc::new(RwLock::new(variables)),
             system_variables: Arc::new(RwLock::new(system_variables)),
-            cte_results: Arc::new(RwLock::new(HashMap::new())),
+            cte_results: Arc::new(RwLock::new(FxHashMap::default())),
             user_function_defs: Arc::new(RwLock::new(user_function_defs)),
         }
     }
 
     pub(crate) fn get_system_variables(
         &self,
-    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, Value>> {
+    ) -> std::sync::RwLockReadGuard<'_, FxHashMap<String, Value>> {
         self.system_variables
             .read()
             .unwrap_or_else(|e| e.into_inner())
     }
 
     fn refresh_user_functions(&self) {
-        let new_defs: HashMap<String, UserFunctionDef> = self
+        let new_defs: FxHashMap<String, UserFunctionDef> = self
             .catalog
             .get_functions()
             .iter()
@@ -110,13 +110,13 @@ impl ConcurrentPlanExecutor {
             .unwrap_or_else(|e| e.into_inner()) = new_defs;
     }
 
-    pub(crate) fn get_variables(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, Value>> {
+    pub(crate) fn get_variables(&self) -> std::sync::RwLockReadGuard<'_, FxHashMap<String, Value>> {
         self.variables.read().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn get_user_functions(
         &self,
-    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, UserFunctionDef>> {
+    ) -> std::sync::RwLockReadGuard<'_, FxHashMap<String, UserFunctionDef>> {
         self.user_function_defs
             .read()
             .unwrap_or_else(|e| e.into_inner())

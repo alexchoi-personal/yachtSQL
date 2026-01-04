@@ -1,7 +1,6 @@
 #![coverage(off)]
 
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{
@@ -25,8 +24,8 @@ pub(crate) fn compute_window(
     input_table: &Table,
     window_exprs: &[Expr],
     schema: &PlanSchema,
-    variables: &HashMap<String, Value>,
-    user_function_defs: &HashMap<String, crate::value_evaluator::UserFunctionDef>,
+    variables: &FxHashMap<String, Value>,
+    user_function_defs: &FxHashMap<String, crate::value_evaluator::UserFunctionDef>,
 ) -> Result<Table> {
     let input_schema = input_table.schema().clone();
     let result_schema = plan_schema_to_schema(schema);
@@ -171,8 +170,8 @@ pub fn partition_rows(
     rows: &[Record],
     partition_by: &[Expr],
     evaluator: &ValueEvaluator,
-) -> Result<HashMap<Vec<Value>, Vec<usize>>> {
-    let mut partitions: HashMap<Vec<Value>, Vec<usize>> = HashMap::new();
+) -> Result<FxHashMap<Vec<Value>, Vec<usize>>> {
+    let mut partitions: FxHashMap<Vec<Value>, Vec<usize>> = FxHashMap::default();
 
     if partition_by.is_empty() {
         partitions.insert(vec![], (0..rows.len()).collect());
@@ -659,8 +658,8 @@ pub(crate) fn partition_rows_columnar(
     columns: &[&Column],
     partition_by: &[Expr],
     evaluator: &ValueEvaluator,
-) -> Result<HashMap<Vec<Value>, Vec<usize>>> {
-    let mut partitions: HashMap<Vec<Value>, Vec<usize>> = HashMap::new();
+) -> Result<FxHashMap<Vec<Value>, Vec<usize>>> {
+    let mut partitions: FxHashMap<Vec<Value>, Vec<usize>> = FxHashMap::default();
 
     if partition_by.is_empty() {
         partitions.insert(vec![], (0..n).collect());

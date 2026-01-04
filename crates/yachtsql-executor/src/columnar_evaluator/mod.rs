@@ -2,8 +2,6 @@
 
 pub mod handlers;
 
-use std::collections::HashMap;
-
 pub use handlers::extract_field;
 use handlers::{
     eval_alias, eval_array, eval_array_access, eval_at_time_zone, eval_between, eval_binary_op_ext,
@@ -12,6 +10,7 @@ use handlers::{
     eval_struct_access, eval_substring, eval_trim, eval_typed_string, eval_unary_op_ext,
     eval_variable,
 };
+use rustc_hash::FxHashMap;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{BinaryOp, Expr, Literal, UnaryOp};
@@ -21,9 +20,9 @@ use crate::value_evaluator::UserFunctionDef;
 
 pub struct ColumnarEvaluator<'a> {
     schema: &'a Schema,
-    variables: Option<&'a HashMap<String, Value>>,
-    system_variables: Option<&'a HashMap<String, Value>>,
-    user_functions: Option<&'a HashMap<String, UserFunctionDef>>,
+    variables: Option<&'a FxHashMap<String, Value>>,
+    system_variables: Option<&'a FxHashMap<String, Value>>,
+    user_functions: Option<&'a FxHashMap<String, UserFunctionDef>>,
 }
 
 impl<'a> ColumnarEvaluator<'a> {
@@ -36,33 +35,33 @@ impl<'a> ColumnarEvaluator<'a> {
         }
     }
 
-    pub fn with_variables(mut self, variables: &'a HashMap<String, Value>) -> Self {
+    pub fn with_variables(mut self, variables: &'a FxHashMap<String, Value>) -> Self {
         self.variables = Some(variables);
         self
     }
 
-    pub fn with_system_variables(mut self, system_variables: &'a HashMap<String, Value>) -> Self {
+    pub fn with_system_variables(mut self, system_variables: &'a FxHashMap<String, Value>) -> Self {
         self.system_variables = Some(system_variables);
         self
     }
 
     pub fn with_user_functions(
         mut self,
-        user_functions: &'a HashMap<String, UserFunctionDef>,
+        user_functions: &'a FxHashMap<String, UserFunctionDef>,
     ) -> Self {
         self.user_functions = Some(user_functions);
         self
     }
 
-    pub fn variables(&self) -> Option<&'a HashMap<String, Value>> {
+    pub fn variables(&self) -> Option<&'a FxHashMap<String, Value>> {
         self.variables
     }
 
-    pub fn system_variables(&self) -> Option<&'a HashMap<String, Value>> {
+    pub fn system_variables(&self) -> Option<&'a FxHashMap<String, Value>> {
         self.system_variables
     }
 
-    pub fn user_functions(&self) -> Option<&'a HashMap<String, UserFunctionDef>> {
+    pub fn user_functions(&self) -> Option<&'a FxHashMap<String, UserFunctionDef>> {
         self.user_functions
     }
 

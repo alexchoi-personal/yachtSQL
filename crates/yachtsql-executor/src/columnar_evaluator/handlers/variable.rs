@@ -1,14 +1,13 @@
 #![coverage(off)]
 
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use yachtsql_common::error::Result;
 use yachtsql_common::types::Value;
 use yachtsql_storage::Column;
 
 pub fn eval_variable(
-    variables: Option<&HashMap<String, Value>>,
-    system_variables: Option<&HashMap<String, Value>>,
+    variables: Option<&FxHashMap<String, Value>>,
+    system_variables: Option<&FxHashMap<String, Value>>,
     name: &str,
     row_count: usize,
 ) -> Result<Column> {

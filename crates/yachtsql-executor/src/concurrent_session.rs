@@ -1,21 +1,21 @@
 #![coverage(off)]
 
-use std::collections::HashMap;
 use std::sync::RwLock;
 
 use dashmap::DashMap;
+use rustc_hash::FxHashMap;
 use yachtsql_common::types::Value;
 
 #[derive(Debug)]
 pub struct ConcurrentSession {
     variables: DashMap<String, Value>,
-    system_variables: RwLock<HashMap<String, Value>>,
+    system_variables: RwLock<FxHashMap<String, Value>>,
     current_schema: RwLock<Option<String>>,
 }
 
 impl ConcurrentSession {
     pub fn new() -> Self {
-        let mut system_variables = HashMap::new();
+        let mut system_variables = FxHashMap::default();
         system_variables.insert("@@TIME_ZONE".to_string(), Value::String("UTC".to_string()));
 
         Self {
@@ -48,7 +48,7 @@ impl ConcurrentSession {
             .insert(name.to_uppercase(), value);
     }
 
-    pub fn system_variables(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, Value>> {
+    pub fn system_variables(&self) -> std::sync::RwLockReadGuard<'_, FxHashMap<String, Value>> {
         self.system_variables
             .read()
             .unwrap_or_else(|e| e.into_inner())

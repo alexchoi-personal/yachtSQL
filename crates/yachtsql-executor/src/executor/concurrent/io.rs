@@ -680,8 +680,8 @@ impl ConcurrentPlanExecutor {
             ArrowDataType::Date32 => {
                 let arr = array.as_primitive::<arrow::datatypes::Date32Type>();
                 let days = arr.value(row_idx);
-                let date =
-                    chrono::NaiveDate::from_num_days_from_ce_opt(days + 719163).unwrap_or_default();
+                let date = chrono::NaiveDate::from_num_days_from_ce_opt(days + 719163)
+                    .ok_or_else(|| Error::internal(format!("Invalid date value: {} days", days)))?;
                 Value::date(date)
             }
             ArrowDataType::Date64 => {
@@ -689,7 +689,9 @@ impl ConcurrentPlanExecutor {
                 let millis = arr.value(row_idx);
                 let date = chrono::DateTime::from_timestamp_millis(millis)
                     .map(|dt| dt.naive_utc().date())
-                    .unwrap_or_default();
+                    .ok_or_else(|| {
+                        Error::internal(format!("Invalid date value: {} milliseconds", millis))
+                    })?;
                 Value::date(date)
             }
             ArrowDataType::Timestamp(_, _) => {
@@ -699,12 +701,22 @@ impl ConcurrentPlanExecutor {
                     DataType::DateTime => {
                         let dt = chrono::DateTime::from_timestamp_micros(micros)
                             .map(|dt| dt.naive_utc())
-                            .unwrap_or_default();
+                            .ok_or_else(|| {
+                                Error::internal(format!(
+                                    "Invalid datetime value: {} microseconds",
+                                    micros
+                                ))
+                            })?;
                         Value::datetime(dt)
                     }
                     _ => {
                         let ts =
-                            chrono::DateTime::from_timestamp_micros(micros).unwrap_or_default();
+                            chrono::DateTime::from_timestamp_micros(micros).ok_or_else(|| {
+                                Error::internal(format!(
+                                    "Invalid timestamp value: {} microseconds",
+                                    micros
+                                ))
+                            })?;
                         Value::timestamp(ts)
                     }
                 }

@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::{DataType, Value};
 use yachtsql_ir::{BinaryOp, Expr, FunctionBody, Literal, ScalarFunction, UnaryOp, WhenClause};
@@ -27,9 +26,9 @@ pub struct UserFunctionDef {
 
 pub struct ValueEvaluator<'a> {
     schema: &'a Schema,
-    variables: Option<&'a HashMap<String, Value>>,
-    system_variables: Option<&'a HashMap<String, Value>>,
-    user_functions: Option<&'a HashMap<String, UserFunctionDef>>,
+    variables: Option<&'a FxHashMap<String, Value>>,
+    system_variables: Option<&'a FxHashMap<String, Value>>,
+    user_functions: Option<&'a FxHashMap<String, UserFunctionDef>>,
 }
 
 impl<'a> ValueEvaluator<'a> {
@@ -42,19 +41,19 @@ impl<'a> ValueEvaluator<'a> {
         }
     }
 
-    pub fn with_variables(mut self, variables: &'a HashMap<String, Value>) -> Self {
+    pub fn with_variables(mut self, variables: &'a FxHashMap<String, Value>) -> Self {
         self.variables = Some(variables);
         self
     }
 
-    pub fn with_system_variables(mut self, system_variables: &'a HashMap<String, Value>) -> Self {
+    pub fn with_system_variables(mut self, system_variables: &'a FxHashMap<String, Value>) -> Self {
         self.system_variables = Some(system_variables);
         self
     }
 
     pub fn with_user_functions(
         mut self,
-        user_functions: &'a HashMap<String, UserFunctionDef>,
+        user_functions: &'a FxHashMap<String, UserFunctionDef>,
     ) -> Self {
         self.user_functions = Some(user_functions);
         self
@@ -950,7 +949,7 @@ impl<'a> ValueEvaluator<'a> {
             if let Some(func_def) = funcs.get(&upper) {
                 match &func_def.body {
                     FunctionBody::Sql(expr) => {
-                        let mut local_vars = HashMap::new();
+                        let mut local_vars = FxHashMap::default();
                         for (i, param) in func_def.parameters.iter().enumerate() {
                             let val = args.get(i).cloned().unwrap_or(Value::Null);
                             local_vars.insert(param.to_uppercase(), val);
@@ -995,7 +994,7 @@ impl<'a> ValueEvaluator<'a> {
         Ok(None)
     }
 
-    pub fn user_functions(&self) -> Option<&HashMap<String, UserFunctionDef>> {
+    pub fn user_functions(&self) -> Option<&FxHashMap<String, UserFunctionDef>> {
         self.user_functions
     }
 
@@ -1313,9 +1312,11 @@ pub fn cast_value(val: Value, target_type: &DataType, safe: bool) -> Result<Valu
                 .map_err(|_| Error::invalid_query(format!("Cannot cast '{}' to FLOAT64", s))),
             Value::Numeric(d) => {
                 use rust_decimal::prelude::ToPrimitive;
-                Ok(Value::Float64(ordered_float::OrderedFloat(
-                    d.to_f64().unwrap_or(0.0),
-                )))
+                d.to_f64()
+                    .map(|f| Value::Float64(ordered_float::OrderedFloat(f)))
+                    .ok_or_else(|| {
+                        Error::invalid_query(format!("Cannot cast NUMERIC {} to FLOAT64", d))
+                    })
             }
             _ => Err(Error::invalid_query(format!(
                 "Cannot cast {:?} to FLOAT64",
@@ -1366,9 +1367,9 @@ pub fn cast_value(val: Value, target_type: &DataType, safe: bool) -> Result<Valu
         DataType::Numeric(_) => match &val {
             Value::Numeric(_) => Ok(val),
             Value::Int64(n) => Ok(Value::Numeric(rust_decimal::Decimal::from(*n))),
-            Value::Float64(f) => Ok(Value::Numeric(
-                rust_decimal::Decimal::try_from(f.0).unwrap_or_default(),
-            )),
+            Value::Float64(f) => rust_decimal::Decimal::try_from(f.0)
+                .map(Value::Numeric)
+                .map_err(|_| Error::invalid_query(format!("Cannot cast FLOAT64 {} to NUMERIC", f))),
             Value::String(s) => s
                 .parse::<rust_decimal::Decimal>()
                 .map(Value::Numeric)
@@ -1382,9 +1383,11 @@ pub fn cast_value(val: Value, target_type: &DataType, safe: bool) -> Result<Valu
             Value::BigNumeric(_) => Ok(val),
             Value::Numeric(d) => Ok(Value::BigNumeric(*d)),
             Value::Int64(n) => Ok(Value::BigNumeric(rust_decimal::Decimal::from(*n))),
-            Value::Float64(f) => Ok(Value::BigNumeric(
-                rust_decimal::Decimal::try_from(f.0).unwrap_or_default(),
-            )),
+            Value::Float64(f) => rust_decimal::Decimal::try_from(f.0)
+                .map(Value::BigNumeric)
+                .map_err(|_| {
+                    Error::invalid_query(format!("Cannot cast FLOAT64 {} to BIGNUMERIC", f))
+                }),
             Value::String(s) => s
                 .parse::<rust_decimal::Decimal>()
                 .map(Value::BigNumeric)

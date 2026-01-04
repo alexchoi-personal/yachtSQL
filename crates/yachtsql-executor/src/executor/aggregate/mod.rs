@@ -2,8 +2,6 @@
 
 mod accumulator;
 
-use std::collections::HashMap;
-
 use accumulator::Accumulator;
 use rustc_hash::FxHashMap;
 
@@ -25,8 +23,8 @@ pub(crate) fn compute_aggregate(
     aggregates: &[Expr],
     schema: &PlanSchema,
     grouping_sets: Option<&Vec<Vec<usize>>>,
-    variables: &HashMap<String, Value>,
-    user_function_defs: &HashMap<String, crate::value_evaluator::UserFunctionDef>,
+    variables: &FxHashMap<String, Value>,
+    user_function_defs: &FxHashMap<String, crate::value_evaluator::UserFunctionDef>,
     parallel: bool,
 ) -> Result<Table> {
     if can_use_columnar_aggregate(aggregates, group_by, grouping_sets) {
