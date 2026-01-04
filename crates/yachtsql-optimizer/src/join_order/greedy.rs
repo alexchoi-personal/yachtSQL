@@ -1,7 +1,6 @@
 #![coverage(off)]
 
-use std::collections::{HashMap, HashSet};
-
+use rustc_hash::{FxHashMap, FxHashSet};
 use yachtsql_ir::{Expr, JoinType, LogicalPlan, PlanSchema};
 
 use super::cost_model::{CostModel, JoinCost};
@@ -10,8 +9,8 @@ use crate::planner::predicate::combine_predicates;
 
 fn remap_column_indices(
     expr: &Expr,
-    table_offsets: &HashMap<String, usize>,
-    local_offsets: &HashMap<String, HashMap<String, usize>>,
+    table_offsets: &FxHashMap<String, usize>,
+    local_offsets: &FxHashMap<String, FxHashMap<String, usize>>,
 ) -> Expr {
     match expr {
         Expr::Column {
@@ -59,7 +58,7 @@ impl GreedyJoinReorderer {
     }
 
     pub fn reorder(&self, graph: &JoinGraph, original_schema: &PlanSchema) -> LogicalPlan {
-        let mut available: HashSet<RelationId> = (0..graph.relations().len()).collect();
+        let mut available: FxHashSet<RelationId> = (0..graph.relations().len()).collect();
 
         let first_id = self.find_smallest_relation(graph, &available);
         available.remove(&first_id);
@@ -71,8 +70,8 @@ impl GreedyJoinReorderer {
         let mut current_plan = first_rel.plan.clone();
         let mut current_row_count = first_rel.row_count_estimate;
 
-        let mut table_offsets: HashMap<String, usize> = HashMap::new();
-        let mut local_offsets: HashMap<String, HashMap<String, usize>> = HashMap::new();
+        let mut table_offsets: FxHashMap<String, usize> = FxHashMap::default();
+        let mut local_offsets: FxHashMap<String, FxHashMap<String, usize>> = FxHashMap::default();
 
         Self::add_relation_offsets(first_rel, &mut table_offsets, &mut local_offsets, 0);
         let mut current_offset = first_rel.schema.fields.len();
@@ -122,8 +121,8 @@ impl GreedyJoinReorderer {
 
     fn add_relation_offsets(
         rel: &super::join_graph::JoinRelation,
-        table_offsets: &mut HashMap<String, usize>,
-        local_offsets: &mut HashMap<String, HashMap<String, usize>>,
+        table_offsets: &mut FxHashMap<String, usize>,
+        local_offsets: &mut FxHashMap<String, FxHashMap<String, usize>>,
         base_offset: usize,
     ) {
         for (idx, field) in rel.schema.fields.iter().enumerate() {
@@ -209,7 +208,7 @@ impl GreedyJoinReorderer {
         graph: &JoinGraph,
         current_relations: &[RelationId],
         current_row_count: usize,
-        available: &HashSet<RelationId>,
+        available: &FxHashSet<RelationId>,
     ) -> (RelationId, JoinCost, Vec<Expr>) {
         let mut best: Option<(RelationId, JoinCost, usize, Vec<Expr>)> = None;
 
@@ -256,7 +255,7 @@ impl GreedyJoinReorderer {
     fn find_smallest_relation(
         &self,
         graph: &JoinGraph,
-        available: &HashSet<RelationId>,
+        available: &FxHashSet<RelationId>,
     ) -> RelationId {
         available
             .iter()

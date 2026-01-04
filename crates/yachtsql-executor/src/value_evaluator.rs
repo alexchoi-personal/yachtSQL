@@ -533,23 +533,24 @@ impl<'a> ValueEvaluator<'a> {
             return Ok(record.get(idx).cloned().unwrap_or(Value::Null));
         }
 
-        let upper_name = name.to_uppercase();
         for (i, field) in self.schema.fields().iter().enumerate() {
-            if field.name.to_uppercase() == upper_name {
+            if field.name.eq_ignore_ascii_case(name) {
                 return Ok(record.get(i).cloned().unwrap_or(Value::Null));
             }
         }
 
+        let upper_name = name.to_uppercase();
         if let Some(vars) = self.variables
             && let Some(val) = vars.get(&upper_name)
         {
             return Ok(val.clone());
         }
 
-        if let Some(tbl) = table {
+        if let Some(tbl) = table
+            && let Some(vars) = self.variables
+        {
             let tbl_upper = tbl.to_uppercase();
-            if let Some(vars) = self.variables
-                && let Some(val) = vars.get(&tbl_upper)
+            if let Some(val) = vars.get(&tbl_upper)
                 && let Value::Struct(fields) = val
             {
                 for (field_name, field_val) in fields {

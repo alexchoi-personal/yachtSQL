@@ -686,14 +686,14 @@ impl ConcurrentPlanExecutor {
                                 combined.clear();
                                 combined.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
                                 combined.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
-                                result.push_row(combined.clone())?;
+                                result.push_row(std::mem::take(&mut combined))?;
                             }
                         }
                         None => {
                             combined.clear();
                             combined.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
                             combined.extend(std::iter::repeat_n(Value::Null, right_width));
-                            result.push_row(combined.clone())?;
+                            result.push_row(std::mem::take(&mut combined))?;
                         }
                     }
                 }
@@ -757,14 +757,14 @@ impl ConcurrentPlanExecutor {
                                 combined.clear();
                                 combined.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
                                 combined.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
-                                result.push_row(combined.clone())?;
+                                result.push_row(std::mem::take(&mut combined))?;
                             }
                         }
                         None => {
                             combined.clear();
                             combined.extend(std::iter::repeat_n(Value::Null, left_width));
                             combined.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
-                            result.push_row(combined.clone())?;
+                            result.push_row(std::mem::take(&mut combined))?;
                         }
                     }
                 }
@@ -831,14 +831,14 @@ impl ConcurrentPlanExecutor {
                                 combined.clear();
                                 combined.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
                                 combined.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
-                                result.push_row(combined.clone())?;
+                                result.push_row(std::mem::take(&mut combined))?;
                             }
                         }
                         None => {
                             combined.clear();
                             combined.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
                             combined.extend(std::iter::repeat_n(Value::Null, right_width));
-                            result.push_row(combined.clone())?;
+                            result.push_row(std::mem::take(&mut combined))?;
                         }
                     }
                 }
@@ -848,7 +848,7 @@ impl ConcurrentPlanExecutor {
                         combined.clear();
                         combined.extend(std::iter::repeat_n(Value::Null, left_width));
                         combined.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
-                        result.push_row(combined.clone())?;
+                        result.push_row(std::mem::take(&mut combined))?;
                     }
                 }
 

@@ -74,12 +74,23 @@ impl AggregateState for SumState {
                 self.has_value = true;
             }
             Value::Float64(f) => {
+                if f.0.is_nan() || f.0.is_infinite() {
+                    return Err(Error::invalid_query(format!(
+                        "Cannot aggregate non-finite float value: {}",
+                        f.0
+                    )));
+                }
                 if !self.is_float && !self.is_decimal {
                     self.sum_float = self.sum_int as f64;
                     self.is_float = true;
                 }
                 if self.is_decimal {
-                    self.sum_decimal += Decimal::try_from(f.0).unwrap_or_default();
+                    self.sum_decimal += Decimal::try_from(f.0).map_err(|_| {
+                        Error::invalid_query(format!(
+                            "Cannot convert float {} to decimal for aggregation",
+                            f.0
+                        ))
+                    })?;
                 } else {
                     self.sum_float += f.0;
                 }
@@ -88,7 +99,12 @@ impl AggregateState for SumState {
             Value::Numeric(d) => {
                 if !self.is_decimal {
                     if self.is_float {
-                        self.sum_decimal = Decimal::try_from(self.sum_float).unwrap_or_default();
+                        self.sum_decimal = Decimal::try_from(self.sum_float).map_err(|_| {
+                            Error::invalid_query(format!(
+                                "Cannot convert float {} to decimal for aggregation",
+                                self.sum_float
+                            ))
+                        })?;
                     } else {
                         self.sum_decimal = Decimal::from(self.sum_int);
                     }
@@ -107,7 +123,12 @@ impl AggregateState for SumState {
         if other.is_decimal || self.is_decimal {
             if !self.is_decimal {
                 if self.is_float {
-                    self.sum_decimal = Decimal::try_from(self.sum_float).unwrap_or_default();
+                    self.sum_decimal = Decimal::try_from(self.sum_float).map_err(|_| {
+                        Error::invalid_query(format!(
+                            "Cannot convert float {} to decimal for aggregation",
+                            self.sum_float
+                        ))
+                    })?;
                 } else {
                     self.sum_decimal = Decimal::from(self.sum_int);
                 }
@@ -116,7 +137,12 @@ impl AggregateState for SumState {
             let other_decimal = if other.is_decimal {
                 other.sum_decimal
             } else if other.is_float {
-                Decimal::try_from(other.sum_float).unwrap_or_default()
+                Decimal::try_from(other.sum_float).map_err(|_| {
+                    Error::invalid_query(format!(
+                        "Cannot convert float {} to decimal for aggregation",
+                        other.sum_float
+                    ))
+                })?
             } else {
                 Decimal::from(other.sum_int)
             };
