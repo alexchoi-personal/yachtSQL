@@ -1,6 +1,5 @@
 #![coverage(off)]
 
-use async_recursion::async_recursion;
 use chrono::{Datelike, Timelike};
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
@@ -13,8 +12,7 @@ use crate::plan::PhysicalPlan;
 use crate::value_evaluator::{ValueEvaluator, cast_value};
 
 impl ConcurrentPlanExecutor {
-    #[async_recursion]
-    pub(crate) async fn eval_expr_with_subqueries(
+    pub(crate) fn eval_expr_with_subqueries(
         &self,
         expr: &Expr,
         schema: &Schema,
@@ -22,24 +20,20 @@ impl ConcurrentPlanExecutor {
     ) -> Result<Value> {
         match expr {
             Expr::Subquery(plan) | Expr::ScalarSubquery(plan) => {
-                self.eval_scalar_subquery(plan, schema, record).await
+                self.eval_scalar_subquery(plan, schema, record)
             }
             Expr::Exists { subquery, negated } => {
-                let has_rows = self.eval_exists_subquery(subquery, schema, record).await?;
+                let has_rows = self.eval_exists_subquery(subquery, schema, record)?;
                 Ok(Value::Bool(if *negated { !has_rows } else { has_rows }))
             }
-            Expr::ArraySubquery(plan) => self.eval_array_subquery(plan, schema, record).await,
+            Expr::ArraySubquery(plan) => self.eval_array_subquery(plan, schema, record),
             Expr::InSubquery {
                 expr: inner_expr,
                 subquery,
                 negated,
             } => {
-                let val = self
-                    .eval_expr_with_subqueries(inner_expr, schema, record)
-                    .await?;
-                let in_result = self
-                    .eval_value_in_subquery(&val, subquery, schema, record)
-                    .await?;
+                let val = self.eval_expr_with_subqueries(inner_expr, schema, record)?;
+                let in_result = self.eval_value_in_subquery(&val, subquery, schema, record)?;
                 Ok(Value::Bool(if *negated { !in_result } else { in_result }))
             }
             Expr::InUnnest {
@@ -47,12 +41,8 @@ impl ConcurrentPlanExecutor {
                 array_expr,
                 negated,
             } => {
-                let val = self
-                    .eval_expr_with_subqueries(inner_expr, schema, record)
-                    .await?;
-                let array_val = self
-                    .eval_expr_with_subqueries(array_expr, schema, record)
-                    .await?;
+                let val = self.eval_expr_with_subqueries(inner_expr, schema, record)?;
+                let array_val = self.eval_expr_with_subqueries(array_expr, schema, record)?;
                 let in_result = if let Value::Array(arr) = array_val {
                     arr.contains(&val)
                 } else {
@@ -61,22 +51,18 @@ impl ConcurrentPlanExecutor {
                 Ok(Value::Bool(if *negated { !in_result } else { in_result }))
             }
             Expr::BinaryOp { left, op, right } => {
-                let left_val = self.eval_expr_with_subqueries(left, schema, record).await?;
-                let right_val = self
-                    .eval_expr_with_subqueries(right, schema, record)
-                    .await?;
+                let left_val = self.eval_expr_with_subqueries(left, schema, record)?;
+                let right_val = self.eval_expr_with_subqueries(right, schema, record)?;
                 self.eval_binary_op_values(left_val, *op, right_val)
             }
             Expr::UnaryOp { op, expr: inner } => {
-                let val = self
-                    .eval_expr_with_subqueries(inner, schema, record)
-                    .await?;
+                let val = self.eval_expr_with_subqueries(inner, schema, record)?;
                 self.eval_unary_op_value(*op, val)
             }
             Expr::ScalarFunction { name, args } => {
                 let mut arg_vals: Vec<Value> = Vec::with_capacity(args.len());
                 for a in args {
-                    arg_vals.push(self.eval_expr_with_subqueries(a, schema, record).await?);
+                    arg_vals.push(self.eval_expr_with_subqueries(a, schema, record)?);
                 }
                 let vars = self.get_variables();
                 let sys_vars = self.get_system_variables();
@@ -92,9 +78,7 @@ impl ConcurrentPlanExecutor {
                 data_type,
                 safe,
             } => {
-                let val = self
-                    .eval_expr_with_subqueries(inner, schema, record)
-                    .await?;
+                let val = self.eval_expr_with_subqueries(inner, schema, record)?;
                 cast_value(val, data_type, *safe)
             }
             Expr::Case {
@@ -103,37 +87,32 @@ impl ConcurrentPlanExecutor {
                 else_result,
             } => {
                 let operand_val = match operand.as_ref() {
-                    Some(e) => Some(self.eval_expr_with_subqueries(e, schema, record).await?),
+                    Some(e) => Some(self.eval_expr_with_subqueries(e, schema, record)?),
                     None => None,
                 };
 
                 for clause in when_clauses {
                     let condition_val = if let Some(op_val) = &operand_val {
-                        let cond_val = self
-                            .eval_expr_with_subqueries(&clause.condition, schema, record)
-                            .await?;
+                        let cond_val =
+                            self.eval_expr_with_subqueries(&clause.condition, schema, record)?;
                         Value::Bool(op_val == &cond_val)
                     } else {
-                        self.eval_expr_with_subqueries(&clause.condition, schema, record)
-                            .await?
+                        self.eval_expr_with_subqueries(&clause.condition, schema, record)?
                     };
 
                     if matches!(condition_val, Value::Bool(true)) {
-                        return self
-                            .eval_expr_with_subqueries(&clause.result, schema, record)
-                            .await;
+                        return self.eval_expr_with_subqueries(&clause.result, schema, record);
                     }
                 }
 
                 if let Some(else_expr) = else_result {
                     self.eval_expr_with_subqueries(else_expr, schema, record)
-                        .await
                 } else {
                     Ok(Value::Null)
                 }
             }
             Expr::Alias { expr: inner, .. } => {
-                self.eval_expr_with_subqueries(inner, schema, record).await
+                self.eval_expr_with_subqueries(inner, schema, record)
             }
             _ => {
                 let vars = self.get_variables();
@@ -148,7 +127,7 @@ impl ConcurrentPlanExecutor {
         }
     }
 
-    pub(crate) async fn eval_scalar_subquery(
+    pub(crate) fn eval_scalar_subquery(
         &self,
         plan: &LogicalPlan,
         outer_schema: &Schema,
@@ -157,7 +136,7 @@ impl ConcurrentPlanExecutor {
         let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
         let physical = optimize(&substituted)?;
         let executor_plan = PhysicalPlan::from_physical(&physical);
-        let result_table = self.execute_plan(&executor_plan).await?;
+        let result_table = self.execute_plan(&executor_plan)?;
 
         if result_table.row_count() == 0 || result_table.num_columns() == 0 {
             return Ok(Value::Null);
@@ -169,10 +148,10 @@ impl ConcurrentPlanExecutor {
         Ok(first_col.get_value(0))
     }
 
-    pub(crate) async fn eval_scalar_subquery_as_row(&self, plan: &LogicalPlan) -> Result<Value> {
+    pub(crate) fn eval_scalar_subquery_as_row(&self, plan: &LogicalPlan) -> Result<Value> {
         let physical = optimize(plan)?;
         let executor_plan = PhysicalPlan::from_physical(&physical);
-        let result_table = self.execute_plan(&executor_plan).await?;
+        let result_table = self.execute_plan(&executor_plan)?;
 
         if result_table.row_count() == 0 {
             return Ok(Value::Struct(vec![]));
@@ -195,7 +174,7 @@ impl ConcurrentPlanExecutor {
         Ok(Value::Struct(result))
     }
 
-    pub(crate) async fn eval_exists_subquery(
+    pub(crate) fn eval_exists_subquery(
         &self,
         plan: &LogicalPlan,
         outer_schema: &Schema,
@@ -204,11 +183,11 @@ impl ConcurrentPlanExecutor {
         let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
         let physical = optimize(&substituted)?;
         let executor_plan = PhysicalPlan::from_physical(&physical);
-        let result_table = self.execute_plan(&executor_plan).await?;
+        let result_table = self.execute_plan(&executor_plan)?;
         Ok(!result_table.is_empty())
     }
 
-    pub(crate) async fn eval_array_subquery(
+    pub(crate) fn eval_array_subquery(
         &self,
         plan: &LogicalPlan,
         outer_schema: &Schema,
@@ -217,7 +196,7 @@ impl ConcurrentPlanExecutor {
         let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
         let physical = optimize(&substituted)?;
         let executor_plan = PhysicalPlan::from_physical(&physical);
-        let result_table = self.execute_plan(&executor_plan).await?;
+        let result_table = self.execute_plan(&executor_plan)?;
 
         let result_schema = result_table.schema();
         let num_fields = result_schema.field_count();
@@ -246,7 +225,7 @@ impl ConcurrentPlanExecutor {
         Ok(Value::Array(array_values))
     }
 
-    pub(crate) async fn eval_value_in_subquery(
+    pub(crate) fn eval_value_in_subquery(
         &self,
         value: &Value,
         plan: &LogicalPlan,
@@ -260,7 +239,7 @@ impl ConcurrentPlanExecutor {
         let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
         let physical = optimize(&substituted)?;
         let executor_plan = PhysicalPlan::from_physical(&physical);
-        let result_table = self.execute_plan(&executor_plan).await?;
+        let result_table = self.execute_plan(&executor_plan)?;
 
         if result_table.num_columns() == 0 {
             return Ok(false);
@@ -752,22 +731,21 @@ impl ConcurrentPlanExecutor {
         }
     }
 
-    #[async_recursion]
-    pub(crate) async fn resolve_subqueries_in_expr(&self, expr: &Expr) -> Result<Expr> {
+    pub(crate) fn resolve_subqueries_in_expr(&self, expr: &Expr) -> Result<Expr> {
         match expr {
             Expr::InSubquery {
                 expr: inner_expr,
                 subquery,
                 negated,
             } => {
-                let resolved_inner = self.resolve_subqueries_in_expr(inner_expr).await?;
+                let resolved_inner = self.resolve_subqueries_in_expr(inner_expr)?;
                 let empty_schema = Schema::new();
                 let empty_record = Record::new();
                 let substituted =
                     self.substitute_outer_refs_in_plan(subquery, &empty_schema, &empty_record)?;
                 let physical = optimize(&substituted)?;
                 let executor_plan = PhysicalPlan::from_physical(&physical);
-                let result_table = self.execute_plan(&executor_plan).await?;
+                let result_table = self.execute_plan(&executor_plan)?;
 
                 let mut list_exprs = Vec::new();
                 if result_table.num_columns() > 0 {
@@ -793,7 +771,7 @@ impl ConcurrentPlanExecutor {
                     self.substitute_outer_refs_in_plan(subquery, &empty_schema, &empty_record)?;
                 let physical = optimize(&substituted)?;
                 let executor_plan = PhysicalPlan::from_physical(&physical);
-                let result_table = self.execute_plan(&executor_plan).await?;
+                let result_table = self.execute_plan(&executor_plan)?;
                 let has_rows = !result_table.is_empty();
                 let result = if *negated { !has_rows } else { has_rows };
                 Ok(Expr::Literal(yachtsql_ir::Literal::Bool(result)))
@@ -805,7 +783,7 @@ impl ConcurrentPlanExecutor {
                     self.substitute_outer_refs_in_plan(plan, &empty_schema, &empty_record)?;
                 let physical = optimize(&substituted)?;
                 let executor_plan = PhysicalPlan::from_physical(&physical);
-                let result_table = self.execute_plan(&executor_plan).await?;
+                let result_table = self.execute_plan(&executor_plan)?;
 
                 if result_table.row_count() == 0 || result_table.num_columns() == 0 {
                     return Ok(Expr::Literal(yachtsql_ir::Literal::Null));
@@ -824,7 +802,7 @@ impl ConcurrentPlanExecutor {
                     self.substitute_outer_refs_in_plan(plan, &empty_schema, &empty_record)?;
                 let physical = optimize(&substituted)?;
                 let executor_plan = PhysicalPlan::from_physical(&physical);
-                let result_table = self.execute_plan(&executor_plan).await?;
+                let result_table = self.execute_plan(&executor_plan)?;
 
                 let mut array_elements = Vec::new();
                 if result_table.num_columns() > 0 {
@@ -838,8 +816,8 @@ impl ConcurrentPlanExecutor {
                 Ok(Expr::Literal(yachtsql_ir::Literal::Array(array_elements)))
             }
             Expr::BinaryOp { left, op, right } => {
-                let resolved_left = self.resolve_subqueries_in_expr(left).await?;
-                let resolved_right = self.resolve_subqueries_in_expr(right).await?;
+                let resolved_left = self.resolve_subqueries_in_expr(left)?;
+                let resolved_right = self.resolve_subqueries_in_expr(right)?;
                 Ok(Expr::BinaryOp {
                     left: Box::new(resolved_left),
                     op: *op,
@@ -847,7 +825,7 @@ impl ConcurrentPlanExecutor {
                 })
             }
             Expr::UnaryOp { op, expr: inner } => {
-                let resolved_inner = self.resolve_subqueries_in_expr(inner).await?;
+                let resolved_inner = self.resolve_subqueries_in_expr(inner)?;
                 Ok(Expr::UnaryOp {
                     op: *op,
                     expr: Box::new(resolved_inner),
@@ -858,7 +836,7 @@ impl ConcurrentPlanExecutor {
                 data_type,
                 safe,
             } => {
-                let resolved_inner = self.resolve_subqueries_in_expr(inner).await?;
+                let resolved_inner = self.resolve_subqueries_in_expr(inner)?;
                 Ok(Expr::Cast {
                     expr: Box::new(resolved_inner),
                     data_type: data_type.clone(),
@@ -871,20 +849,20 @@ impl ConcurrentPlanExecutor {
                 else_result,
             } => {
                 let resolved_operand = match operand.as_ref() {
-                    Some(e) => Some(Box::new(self.resolve_subqueries_in_expr(e).await?)),
+                    Some(e) => Some(Box::new(self.resolve_subqueries_in_expr(e)?)),
                     None => None,
                 };
 
                 let mut resolved_clauses = Vec::new();
                 for clause in when_clauses {
                     resolved_clauses.push(yachtsql_ir::WhenClause {
-                        condition: self.resolve_subqueries_in_expr(&clause.condition).await?,
-                        result: self.resolve_subqueries_in_expr(&clause.result).await?,
+                        condition: self.resolve_subqueries_in_expr(&clause.condition)?,
+                        result: self.resolve_subqueries_in_expr(&clause.result)?,
                     });
                 }
 
                 let resolved_else = match else_result.as_ref() {
-                    Some(e) => Some(Box::new(self.resolve_subqueries_in_expr(e).await?)),
+                    Some(e) => Some(Box::new(self.resolve_subqueries_in_expr(e)?)),
                     None => None,
                 };
 
@@ -897,7 +875,7 @@ impl ConcurrentPlanExecutor {
             Expr::ScalarFunction { name, args } => {
                 let mut resolved_args = Vec::with_capacity(args.len());
                 for a in args {
-                    resolved_args.push(self.resolve_subqueries_in_expr(a).await?);
+                    resolved_args.push(self.resolve_subqueries_in_expr(a)?);
                 }
                 Ok(Expr::ScalarFunction {
                     name: name.clone(),
@@ -905,7 +883,7 @@ impl ConcurrentPlanExecutor {
                 })
             }
             Expr::Alias { expr: inner, name } => {
-                let resolved_inner = self.resolve_subqueries_in_expr(inner).await?;
+                let resolved_inner = self.resolve_subqueries_in_expr(inner)?;
                 Ok(Expr::Alias {
                     expr: Box::new(resolved_inner),
                     name: name.clone(),
@@ -915,7 +893,7 @@ impl ConcurrentPlanExecutor {
                 expr: inner,
                 negated,
             } => {
-                let resolved_inner = self.resolve_subqueries_in_expr(inner).await?;
+                let resolved_inner = self.resolve_subqueries_in_expr(inner)?;
                 Ok(Expr::IsNull {
                     expr: Box::new(resolved_inner),
                     negated: *negated,
@@ -926,10 +904,10 @@ impl ConcurrentPlanExecutor {
                 list,
                 negated,
             } => {
-                let resolved_inner = self.resolve_subqueries_in_expr(inner).await?;
+                let resolved_inner = self.resolve_subqueries_in_expr(inner)?;
                 let mut resolved_list = Vec::with_capacity(list.len());
                 for e in list {
-                    resolved_list.push(self.resolve_subqueries_in_expr(e).await?);
+                    resolved_list.push(self.resolve_subqueries_in_expr(e)?);
                 }
                 Ok(Expr::InList {
                     expr: Box::new(resolved_inner),
@@ -943,9 +921,9 @@ impl ConcurrentPlanExecutor {
                 high,
                 negated,
             } => {
-                let resolved_inner = self.resolve_subqueries_in_expr(inner).await?;
-                let resolved_low = self.resolve_subqueries_in_expr(low).await?;
-                let resolved_high = self.resolve_subqueries_in_expr(high).await?;
+                let resolved_inner = self.resolve_subqueries_in_expr(inner)?;
+                let resolved_low = self.resolve_subqueries_in_expr(low)?;
+                let resolved_high = self.resolve_subqueries_in_expr(high)?;
                 Ok(Expr::Between {
                     expr: Box::new(resolved_inner),
                     low: Box::new(resolved_low),

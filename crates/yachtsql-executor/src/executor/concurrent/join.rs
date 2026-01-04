@@ -131,7 +131,7 @@ fn hash_key_values(key_values: &[Value]) -> u64 {
 
 impl ConcurrentPlanExecutor {
     #[instrument(skip(self, left, right, condition), fields(join_type = ?join_type))]
-    pub(crate) async fn execute_nested_loop_join(
+    pub(crate) fn execute_nested_loop_join(
         &self,
         left: &PhysicalPlan,
         right: &PhysicalPlan,
@@ -141,23 +141,10 @@ impl ConcurrentPlanExecutor {
         parallel: bool,
     ) -> Result<Table> {
         let (left_table, right_table) = if parallel {
-            let executor_l = self.clone();
-            let executor_r = self.clone();
-            let left_plan = left.clone();
-            let right_plan = right.clone();
-            let (l, r) = tokio::join!(
-                tokio::spawn(async move { executor_l.execute_plan(&left_plan).await }),
-                tokio::spawn(async move { executor_r.execute_plan(&right_plan).await })
-            );
-            (
-                l.map_err(|e| Error::Internal(e.to_string()))??,
-                r.map_err(|e| Error::Internal(e.to_string()))??,
-            )
+            let (l, r) = rayon::join(|| self.execute_plan(left), || self.execute_plan(right));
+            (l?, r?)
         } else {
-            (
-                self.execute_plan(left).await?,
-                self.execute_plan(right).await?,
-            )
+            (self.execute_plan(left)?, self.execute_plan(right)?)
         };
         let left_schema = left_table.schema().clone();
         let right_schema = right_table.schema().clone();
@@ -363,7 +350,7 @@ impl ConcurrentPlanExecutor {
         Ok(result)
     }
 
-    pub(crate) async fn execute_cross_join(
+    pub(crate) fn execute_cross_join(
         &self,
         left: &PhysicalPlan,
         right: &PhysicalPlan,
@@ -371,11 +358,10 @@ impl ConcurrentPlanExecutor {
         parallel: bool,
     ) -> Result<Table> {
         self.execute_nested_loop_join(left, right, &JoinType::Cross, None, schema, parallel)
-            .await
     }
 
     #[instrument(skip(self, left, right, left_keys, right_keys))]
-    pub(crate) async fn execute_hash_join(
+    pub(crate) fn execute_hash_join(
         &self,
         left: &PhysicalPlan,
         right: &PhysicalPlan,
@@ -386,23 +372,10 @@ impl ConcurrentPlanExecutor {
         parallel: bool,
     ) -> Result<Table> {
         let (left_table, right_table) = if parallel {
-            let executor_l = self.clone();
-            let executor_r = self.clone();
-            let left_plan = left.clone();
-            let right_plan = right.clone();
-            let (l, r) = tokio::join!(
-                tokio::spawn(async move { executor_l.execute_plan(&left_plan).await }),
-                tokio::spawn(async move { executor_r.execute_plan(&right_plan).await })
-            );
-            (
-                l.map_err(|e| Error::Internal(e.to_string()))??,
-                r.map_err(|e| Error::Internal(e.to_string()))??,
-            )
+            let (l, r) = rayon::join(|| self.execute_plan(left), || self.execute_plan(right));
+            (l?, r?)
         } else {
-            (
-                self.execute_plan(left).await?,
-                self.execute_plan(right).await?,
-            )
+            (self.execute_plan(left)?, self.execute_plan(right)?)
         };
         let left_schema = left_table.schema().clone();
         let right_schema = right_table.schema().clone();
@@ -976,11 +949,9 @@ impl ConcurrentPlanExecutor {
 
                 Ok(result)
             }
-            JoinType::Cross => {
-                return Err(Error::internal(
-                    "Cross join should not be handled by HashJoin",
-                ));
-            }
+            JoinType::Cross => Err(Error::internal(
+                "Cross join should not be handled by HashJoin",
+            )),
         }
     }
 }

@@ -17,13 +17,13 @@ use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
 impl ConcurrentPlanExecutor {
-    pub(crate) async fn execute_unnest(
+    pub(crate) fn execute_unnest(
         &self,
         input: &PhysicalPlan,
         columns: &[UnnestColumn],
         schema: &PlanSchema,
     ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+        let input_table = self.execute_plan(input)?;
         let input_schema = input_table.schema().clone();
         let vars = self.get_variables();
         let sys_vars = self.get_system_variables();
@@ -102,17 +102,12 @@ impl ConcurrentPlanExecutor {
         Ok(())
     }
 
-    pub(crate) async fn execute_qualify(
-        &self,
-        input: &PhysicalPlan,
-        predicate: &Expr,
-    ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+    pub(crate) fn execute_qualify(&self, input: &PhysicalPlan, predicate: &Expr) -> Result<Table> {
+        let input_table = self.execute_plan(input)?;
         let schema = input_table.schema().clone();
 
         if Self::expr_has_window_function(predicate) {
             self.execute_qualify_with_window(&input_table, predicate)
-                .await
         } else {
             let vars = self.get_variables();
             let sys_vars = self.get_system_variables();
@@ -142,7 +137,7 @@ impl ConcurrentPlanExecutor {
         }
     }
 
-    async fn execute_qualify_with_window(&self, input: &Table, predicate: &Expr) -> Result<Table> {
+    fn execute_qualify_with_window(&self, input: &Table, predicate: &Expr) -> Result<Table> {
         let schema = input.schema().clone();
         let n = input.row_count();
         let columns: Vec<&Column> = input.columns().iter().map(|(_, c)| c.as_ref()).collect();

@@ -23,7 +23,7 @@ impl ConcurrentPlanExecutor {
     }
 
     #[instrument(skip(self, columns, query), fields(table = %table_name))]
-    pub(crate) async fn execute_create_table(
+    pub(crate) fn execute_create_table(
         &self,
         table_name: &str,
         columns: &[ColumnDef],
@@ -54,7 +54,7 @@ impl ConcurrentPlanExecutor {
         }
 
         if let Some(query_plan) = query {
-            let result = self.execute_plan(query_plan).await?;
+            let result = self.execute_plan(query_plan)?;
             let schema = result.schema().clone();
             if or_replace && self.catalog.table_exists(table_name) {
                 self.catalog.create_or_replace_table(table_name, result);

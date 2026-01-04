@@ -147,7 +147,12 @@ impl AsyncQueryExecutor {
             Arc::clone(&self.session),
             tables,
         );
-        let result = executor.execute_plan(&executor_plan).await;
+        let (result, executor) = tokio::task::spawn_blocking(move || {
+            let result = executor.execute_plan(&executor_plan);
+            (result, executor)
+        })
+        .await
+        .map_err(|e| yachtsql_common::error::Error::internal(e.to_string()))?;
 
         executor.tables.commit_writes();
 

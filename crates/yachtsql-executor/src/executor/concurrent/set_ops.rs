@@ -11,35 +11,28 @@ use crate::executor::plan_schema_to_schema;
 use crate::plan::PhysicalPlan;
 
 impl ConcurrentPlanExecutor {
-    pub(crate) async fn execute_union(
+    pub(crate) fn execute_union(
         &self,
         inputs: &[PhysicalPlan],
         all: bool,
         schema: &PlanSchema,
         parallel: bool,
     ) -> Result<Table> {
+        use rayon::prelude::*;
+
         let result_schema = plan_schema_to_schema(schema);
         let mut result = Table::empty(result_schema);
         let mut seen: FxHashSet<Vec<Value>> = FxHashSet::default();
 
         let tables: Vec<Table> = if parallel && inputs.len() > 1 {
-            let handles: Vec<_> = inputs
-                .iter()
-                .map(|input| {
-                    let executor = self.clone();
-                    let plan = input.clone();
-                    tokio::spawn(async move { executor.execute_plan(&plan).await })
-                })
-                .collect();
-            let results = futures::future::join_all(handles).await;
-            results
-                .into_iter()
-                .map(|r| r.map_err(|e| Error::Internal(e.to_string()))?)
+            inputs
+                .par_iter()
+                .map(|input| self.execute_plan(input))
                 .collect::<Result<Vec<_>>>()?
         } else {
             let mut tables = Vec::with_capacity(inputs.len());
             for input in inputs {
-                tables.push(self.execute_plan(input).await?);
+                tables.push(self.execute_plan(input)?);
             }
             tables
         };
@@ -58,7 +51,7 @@ impl ConcurrentPlanExecutor {
         Ok(result)
     }
 
-    pub(crate) async fn execute_intersect(
+    pub(crate) fn execute_intersect(
         &self,
         left: &PhysicalPlan,
         right: &PhysicalPlan,
@@ -67,23 +60,10 @@ impl ConcurrentPlanExecutor {
         parallel: bool,
     ) -> Result<Table> {
         let (left_table, right_table) = if parallel {
-            let executor_l = self.clone();
-            let executor_r = self.clone();
-            let left_plan = left.clone();
-            let right_plan = right.clone();
-            let (l, r) = tokio::join!(
-                tokio::spawn(async move { executor_l.execute_plan(&left_plan).await }),
-                tokio::spawn(async move { executor_r.execute_plan(&right_plan).await })
-            );
-            (
-                l.map_err(|e| Error::Internal(e.to_string()))??,
-                r.map_err(|e| Error::Internal(e.to_string()))??,
-            )
+            let (l, r) = rayon::join(|| self.execute_plan(left), || self.execute_plan(right));
+            (l?, r?)
         } else {
-            (
-                self.execute_plan(left).await?,
-                self.execute_plan(right).await?,
-            )
+            (self.execute_plan(left)?, self.execute_plan(right)?)
         };
         let result_schema = plan_schema_to_schema(schema);
         let mut result = Table::empty(result_schema);
@@ -123,7 +103,7 @@ impl ConcurrentPlanExecutor {
         Ok(result)
     }
 
-    pub(crate) async fn execute_except(
+    pub(crate) fn execute_except(
         &self,
         left: &PhysicalPlan,
         right: &PhysicalPlan,
@@ -132,23 +112,10 @@ impl ConcurrentPlanExecutor {
         parallel: bool,
     ) -> Result<Table> {
         let (left_table, right_table) = if parallel {
-            let executor_l = self.clone();
-            let executor_r = self.clone();
-            let left_plan = left.clone();
-            let right_plan = right.clone();
-            let (l, r) = tokio::join!(
-                tokio::spawn(async move { executor_l.execute_plan(&left_plan).await }),
-                tokio::spawn(async move { executor_r.execute_plan(&right_plan).await })
-            );
-            (
-                l.map_err(|e| Error::Internal(e.to_string()))??,
-                r.map_err(|e| Error::Internal(e.to_string()))??,
-            )
+            let (l, r) = rayon::join(|| self.execute_plan(left), || self.execute_plan(right));
+            (l?, r?)
         } else {
-            (
-                self.execute_plan(left).await?,
-                self.execute_plan(right).await?,
-            )
+            (self.execute_plan(left)?, self.execute_plan(right)?)
         };
         let result_schema = plan_schema_to_schema(schema);
         let mut result = Table::empty(result_schema);

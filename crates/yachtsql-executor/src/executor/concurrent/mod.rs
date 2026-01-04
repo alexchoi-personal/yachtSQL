@@ -15,7 +15,6 @@ mod utils;
 
 use std::sync::{Arc, RwLock};
 
-use async_recursion::async_recursion;
 use rustc_hash::FxHashMap;
 use tracing::instrument;
 pub(crate) use utils::{coerce_value, compare_values_for_sort, default_value_for_type};
@@ -122,31 +121,28 @@ impl ConcurrentPlanExecutor {
             .unwrap_or_else(|e| e.into_inner())
     }
 
-    pub async fn execute(&self, plan: &OptimizedLogicalPlan) -> Result<Table> {
+    pub fn execute(&self, plan: &OptimizedLogicalPlan) -> Result<Table> {
         let executor_plan = PhysicalPlan::from_physical(plan);
-        self.execute_plan(&executor_plan).await
+        self.execute_plan(&executor_plan)
     }
 
-    #[async_recursion]
     #[instrument(skip(self))]
-    pub async fn execute_plan(&self, plan: &PhysicalPlan) -> Result<Table> {
+    pub fn execute_plan(&self, plan: &PhysicalPlan) -> Result<Table> {
         match plan {
             PhysicalPlan::TableScan {
                 table_name, schema, ..
-            } => self.execute_scan(table_name, schema).await,
+            } => self.execute_scan(table_name, schema),
             PhysicalPlan::Sample {
                 input,
                 sample_type,
                 sample_value,
-            } => self.execute_sample(input, sample_type, *sample_value).await,
-            PhysicalPlan::Filter { input, predicate } => {
-                self.execute_filter(input, predicate).await
-            }
+            } => self.execute_sample(input, sample_type, *sample_value),
+            PhysicalPlan::Filter { input, predicate } => self.execute_filter(input, predicate),
             PhysicalPlan::Project {
                 input,
                 expressions,
                 schema,
-            } => self.execute_project(input, expressions, schema).await,
+            } => self.execute_project(input, expressions, schema),
             PhysicalPlan::NestedLoopJoin {
                 left,
                 right,
@@ -155,27 +151,21 @@ impl ConcurrentPlanExecutor {
                 schema,
                 hints,
                 ..
-            } => {
-                self.execute_nested_loop_join(
-                    left,
-                    right,
-                    join_type,
-                    condition.as_ref(),
-                    schema,
-                    hints.parallel,
-                )
-                .await
-            }
+            } => self.execute_nested_loop_join(
+                left,
+                right,
+                join_type,
+                condition.as_ref(),
+                schema,
+                hints.parallel,
+            ),
             PhysicalPlan::CrossJoin {
                 left,
                 right,
                 schema,
                 hints,
                 ..
-            } => {
-                self.execute_cross_join(left, right, schema, hints.parallel)
-                    .await
-            }
+            } => self.execute_cross_join(left, right, schema, hints.parallel),
             PhysicalPlan::HashJoin {
                 left,
                 right,
@@ -185,18 +175,15 @@ impl ConcurrentPlanExecutor {
                 schema,
                 hints,
                 ..
-            } => {
-                self.execute_hash_join(
-                    left,
-                    right,
-                    join_type,
-                    left_keys,
-                    right_keys,
-                    schema,
-                    hints.parallel,
-                )
-                .await
-            }
+            } => self.execute_hash_join(
+                left,
+                right,
+                join_type,
+                left_keys,
+                right_keys,
+                schema,
+                hints.parallel,
+            ),
             PhysicalPlan::HashAggregate {
                 input,
                 group_by,
@@ -204,41 +191,35 @@ impl ConcurrentPlanExecutor {
                 schema,
                 grouping_sets,
                 hints,
-            } => {
-                self.execute_aggregate(
-                    input,
-                    group_by,
-                    aggregates,
-                    schema,
-                    grouping_sets.as_ref(),
-                    hints.parallel,
-                )
-                .await
-            }
+            } => self.execute_aggregate(
+                input,
+                group_by,
+                aggregates,
+                schema,
+                grouping_sets.as_ref(),
+                hints.parallel,
+            ),
             PhysicalPlan::Sort {
                 input, sort_exprs, ..
-            } => self.execute_sort(input, sort_exprs).await,
+            } => self.execute_sort(input, sort_exprs),
             PhysicalPlan::Limit {
                 input,
                 limit,
                 offset,
-            } => self.execute_limit(input, *limit, *offset).await,
+            } => self.execute_limit(input, *limit, *offset),
             PhysicalPlan::TopN {
                 input,
                 sort_exprs,
                 limit,
-            } => self.execute_topn(input, sort_exprs, *limit).await,
-            PhysicalPlan::Distinct { input } => self.execute_distinct(input).await,
+            } => self.execute_topn(input, sort_exprs, *limit),
+            PhysicalPlan::Distinct { input } => self.execute_distinct(input),
             PhysicalPlan::Union {
                 inputs,
                 all,
                 schema,
                 hints,
                 ..
-            } => {
-                self.execute_union(inputs, *all, schema, hints.parallel)
-                    .await
-            }
+            } => self.execute_union(inputs, *all, schema, hints.parallel),
             PhysicalPlan::Intersect {
                 left,
                 right,
@@ -246,10 +227,7 @@ impl ConcurrentPlanExecutor {
                 schema,
                 hints,
                 ..
-            } => {
-                self.execute_intersect(left, right, *all, schema, hints.parallel)
-                    .await
-            }
+            } => self.execute_intersect(left, right, *all, schema, hints.parallel),
             PhysicalPlan::Except {
                 left,
                 right,
@@ -257,31 +235,26 @@ impl ConcurrentPlanExecutor {
                 schema,
                 hints,
                 ..
-            } => {
-                self.execute_except(left, right, *all, schema, hints.parallel)
-                    .await
-            }
+            } => self.execute_except(left, right, *all, schema, hints.parallel),
             PhysicalPlan::Window {
                 input,
                 window_exprs,
                 schema,
                 ..
-            } => self.execute_window(input, window_exprs, schema).await,
+            } => self.execute_window(input, window_exprs, schema),
             PhysicalPlan::WithCte {
                 ctes,
                 body,
                 parallel_ctes,
                 ..
-            } => self.execute_cte(ctes, body, parallel_ctes).await,
+            } => self.execute_cte(ctes, body, parallel_ctes),
             PhysicalPlan::Unnest {
                 input,
                 columns,
                 schema,
-            } => self.execute_unnest(input, columns, schema).await,
-            PhysicalPlan::Qualify { input, predicate } => {
-                self.execute_qualify(input, predicate).await
-            }
-            PhysicalPlan::Values { values, schema } => self.execute_values(values, schema).await,
+            } => self.execute_unnest(input, columns, schema),
+            PhysicalPlan::Qualify { input, predicate } => self.execute_qualify(input, predicate),
+            PhysicalPlan::Values { values, schema } => self.execute_values(values, schema),
             PhysicalPlan::Empty { schema } => {
                 let result_schema = plan_schema_to_schema(schema);
                 let mut table = Table::empty(result_schema.clone());
@@ -294,53 +267,44 @@ impl ConcurrentPlanExecutor {
                 table_name,
                 columns,
                 source,
-            } => self.execute_insert(table_name, columns, source).await,
+            } => self.execute_insert(table_name, columns, source),
             PhysicalPlan::Update {
                 table_name,
                 alias,
                 assignments,
                 from,
                 filter,
-            } => {
-                self.execute_update(
-                    table_name,
-                    alias.as_deref(),
-                    assignments,
-                    from.as_deref(),
-                    filter.as_ref(),
-                )
-                .await
-            }
+            } => self.execute_update(
+                table_name,
+                alias.as_deref(),
+                assignments,
+                from.as_deref(),
+                filter.as_ref(),
+            ),
             PhysicalPlan::Delete {
                 table_name,
                 alias,
                 filter,
-            } => {
-                self.execute_delete(table_name, alias.as_deref(), filter.as_ref())
-                    .await
-            }
+            } => self.execute_delete(table_name, alias.as_deref(), filter.as_ref()),
             PhysicalPlan::Merge {
                 target_table,
                 source,
                 on,
                 clauses,
-            } => self.execute_merge(target_table, source, on, clauses).await,
+            } => self.execute_merge(target_table, source, on, clauses),
             PhysicalPlan::CreateTable {
                 table_name,
                 columns,
                 if_not_exists,
                 or_replace,
                 query,
-            } => {
-                self.execute_create_table(
-                    table_name,
-                    columns,
-                    *if_not_exists,
-                    *or_replace,
-                    query.as_deref(),
-                )
-                .await
-            }
+            } => self.execute_create_table(
+                table_name,
+                columns,
+                *if_not_exists,
+                *or_replace,
+                query.as_deref(),
+            ),
             PhysicalPlan::DropTable {
                 table_names,
                 if_exists,
@@ -416,10 +380,8 @@ impl ConcurrentPlanExecutor {
             PhysicalPlan::Call {
                 procedure_name,
                 args,
-            } => self.execute_call(procedure_name, args).await,
-            PhysicalPlan::ExportData { options, query } => {
-                self.execute_export(options, query).await
-            }
+            } => self.execute_call(procedure_name, args),
+            PhysicalPlan::ExportData { options, query } => self.execute_export(options, query),
             PhysicalPlan::LoadData {
                 table_name,
                 options,
@@ -431,36 +393,31 @@ impl ConcurrentPlanExecutor {
                 data_type,
                 default,
             } => self.execute_declare(name, data_type, default.as_ref()),
-            PhysicalPlan::SetVariable { name, value } => {
-                self.execute_set_variable(name, value).await
-            }
+            PhysicalPlan::SetVariable { name, value } => self.execute_set_variable(name, value),
             PhysicalPlan::SetMultipleVariables { names, value } => {
-                self.execute_set_multiple_variables(names, value).await
+                self.execute_set_multiple_variables(names, value)
             }
             PhysicalPlan::If {
                 condition,
                 then_branch,
                 else_branch,
-            } => {
-                self.execute_if(condition, then_branch, else_branch.as_deref())
-                    .await
-            }
+            } => self.execute_if(condition, then_branch, else_branch.as_deref()),
             PhysicalPlan::While {
                 condition,
                 body,
                 label,
-            } => self.execute_while(condition, body, label.as_deref()).await,
-            PhysicalPlan::Loop { body, label } => self.execute_loop(body, label.as_deref()).await,
-            PhysicalPlan::Block { body, label } => self.execute_block(body, label.as_deref()).await,
+            } => self.execute_while(condition, body, label.as_deref()),
+            PhysicalPlan::Loop { body, label } => self.execute_loop(body, label.as_deref()),
+            PhysicalPlan::Block { body, label } => self.execute_block(body, label.as_deref()),
             PhysicalPlan::Repeat {
                 body,
                 until_condition,
-            } => self.execute_repeat(body, until_condition).await,
+            } => self.execute_repeat(body, until_condition),
             PhysicalPlan::For {
                 variable,
                 query,
                 body,
-            } => self.execute_for(variable, query, body).await,
+            } => self.execute_for(variable, query, body),
             PhysicalPlan::Return { value: _ } => {
                 Err(Error::InvalidQuery("RETURN outside of function".into()))
             }
@@ -489,16 +446,13 @@ impl ConcurrentPlanExecutor {
                 if_exists,
             } => self.execute_drop_snapshot(snapshot_name, *if_exists),
             PhysicalPlan::Assert { condition, message } => {
-                self.execute_assert(condition, message.as_ref()).await
+                self.execute_assert(condition, message.as_ref())
             }
             PhysicalPlan::ExecuteImmediate {
                 sql_expr,
                 into_variables,
                 using_params,
-            } => {
-                self.execute_execute_immediate(sql_expr, into_variables, using_params)
-                    .await
-            }
+            } => self.execute_execute_immediate(sql_expr, into_variables, using_params),
             PhysicalPlan::Grant { .. } => Ok(Table::empty(Schema::new())),
             PhysicalPlan::Revoke { .. } => Ok(Table::empty(Schema::new())),
             PhysicalPlan::BeginTransaction => {
@@ -520,7 +474,7 @@ impl ConcurrentPlanExecutor {
             PhysicalPlan::TryCatch {
                 try_block,
                 catch_block,
-            } => self.execute_try_catch(try_block, catch_block).await,
+            } => self.execute_try_catch(try_block, catch_block),
             PhysicalPlan::GapFill {
                 input,
                 ts_column,
@@ -530,32 +484,26 @@ impl ConcurrentPlanExecutor {
                 origin,
                 input_schema,
                 schema,
-            } => {
-                self.execute_gap_fill(
-                    input,
-                    ts_column,
-                    bucket_width,
-                    value_columns,
-                    partitioning_columns,
-                    origin.as_ref(),
-                    input_schema,
-                    schema,
-                )
-                .await
-            }
+            } => self.execute_gap_fill(
+                input,
+                ts_column,
+                bucket_width,
+                value_columns,
+                partitioning_columns,
+                origin.as_ref(),
+                input_schema,
+                schema,
+            ),
             PhysicalPlan::Explain {
                 logical_plan_text,
                 physical_plan_text,
                 analyze,
                 input,
-            } => {
-                self.execute_explain(logical_plan_text, physical_plan_text, *analyze, input)
-                    .await
-            }
+            } => self.execute_explain(logical_plan_text, physical_plan_text, *analyze, input),
         }
     }
 
-    async fn execute_explain(
+    fn execute_explain(
         &self,
         logical_plan_text: &str,
         physical_plan_text: &str,
@@ -572,7 +520,7 @@ impl ConcurrentPlanExecutor {
 
         if analyze {
             let start = std::time::Instant::now();
-            let result = self.execute_plan(input).await?;
+            let result = self.execute_plan(input)?;
             let elapsed = start.elapsed();
 
             let records = vec![
@@ -611,13 +559,12 @@ impl ConcurrentPlanExecutor {
         }
     }
 
-    async fn execute_assert(&self, condition: &Expr, message: Option<&Expr>) -> Result<Table> {
+    fn execute_assert(&self, condition: &Expr, message: Option<&Expr>) -> Result<Table> {
         let empty_schema = Schema::new();
         let empty_record = Record::new();
 
         let result = if Self::expr_contains_subquery(condition) {
-            self.eval_expr_with_subqueries(condition, &empty_schema, &empty_record)
-                .await?
+            self.eval_expr_with_subqueries(condition, &empty_schema, &empty_record)?
         } else {
             let vars = self.get_variables();
             let sys_vars = self.get_system_variables();

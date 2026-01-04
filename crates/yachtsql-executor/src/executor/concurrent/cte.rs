@@ -12,14 +12,16 @@ use crate::executor::plan_schema_to_schema;
 use crate::plan::PhysicalPlan;
 
 impl ConcurrentPlanExecutor {
-    pub(crate) async fn execute_cte(
+    pub(crate) fn execute_cte(
         &self,
         ctes: &[CteDefinition],
         body: &PhysicalPlan,
         parallel_ctes: &[usize],
     ) -> Result<Table> {
+        use rayon::prelude::*;
+
         if ctes.is_empty() {
-            return self.execute_plan(body).await;
+            return self.execute_plan(body);
         }
 
         let cte_names: Vec<String> = ctes.iter().map(|c| c.name.to_uppercase()).collect();
@@ -36,28 +38,18 @@ impl ConcurrentPlanExecutor {
                 && wave_ctes.iter().any(|(i, _)| parallel_ctes.contains(i));
 
             if can_parallel {
-                let handles: Vec<_> = wave_ctes
-                    .iter()
+                let results: Vec<Result<(String, Table, Option<Vec<String>>)>> = wave_ctes
+                    .par_iter()
                     .map(|(_, cte)| {
-                        let executor = self.clone();
-                        let query = cte.query.clone();
-                        let name = cte.name.to_uppercase();
-                        let columns = cte.columns.clone();
-                        tokio::spawn(async move {
-                            let physical_cte = yachtsql_optimizer::optimize(&query)?;
-                            let cte_plan = PhysicalPlan::from_physical(&physical_cte);
-                            let cte_result = executor.execute_plan(&cte_plan).await?;
-                            Ok((name, cte_result, columns))
-                        })
+                        let physical_cte = yachtsql_optimizer::optimize(&cte.query)?;
+                        let cte_plan = PhysicalPlan::from_physical(&physical_cte);
+                        let cte_result = self.execute_plan(&cte_plan)?;
+                        Ok((cte.name.to_uppercase(), cte_result, cte.columns.clone()))
                     })
                     .collect();
-                let results: Vec<
-                    std::result::Result<Result<(String, Table, Option<Vec<String>>)>, _>,
-                > = futures::future::join_all(handles).await;
 
                 for result in results {
-                    let (name, mut table, columns) =
-                        result.map_err(|e| Error::Internal(e.to_string()))??;
+                    let (name, mut table, columns) = result?;
                     if let Some(ref cols) = columns {
                         table = self.apply_cte_column_aliases(&table, cols)?;
                     }
@@ -69,11 +61,11 @@ impl ConcurrentPlanExecutor {
             } else {
                 for (_, cte) in wave_ctes {
                     if cte.recursive {
-                        self.execute_recursive_cte(cte).await?;
+                        self.execute_recursive_cte(cte)?;
                     } else {
                         let physical_cte = yachtsql_optimizer::optimize(&cte.query)?;
                         let cte_plan = PhysicalPlan::from_physical(&physical_cte);
-                        let mut cte_result = self.execute_plan(&cte_plan).await?;
+                        let mut cte_result = self.execute_plan(&cte_plan)?;
 
                         if let Some(ref columns) = cte.columns {
                             cte_result = self.apply_cte_column_aliases(&cte_result, columns)?;
@@ -87,7 +79,7 @@ impl ConcurrentPlanExecutor {
                 }
             }
         }
-        self.execute_plan(body).await
+        self.execute_plan(body)
     }
 
     fn build_cte_dependencies(
@@ -166,7 +158,7 @@ impl ConcurrentPlanExecutor {
         Ok(result)
     }
 
-    async fn execute_recursive_cte(&self, cte: &CteDefinition) -> Result<()> {
+    fn execute_recursive_cte(&self, cte: &CteDefinition) -> Result<()> {
         const MAX_RECURSION_DEPTH: usize = 500;
 
         let (anchor_terms, recursive_terms) = Self::split_recursive_cte(&cte.query, &cte.name);
@@ -175,7 +167,7 @@ impl ConcurrentPlanExecutor {
         for anchor in &anchor_terms {
             let physical = yachtsql_optimizer::optimize(anchor)?;
             let anchor_plan = PhysicalPlan::from_physical(&physical);
-            let result = self.execute_plan(&anchor_plan).await?;
+            let result = self.execute_plan(&anchor_plan)?;
             let n = result.row_count();
             let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c.as_ref()).collect();
             for row_idx in 0..n {
@@ -211,7 +203,7 @@ impl ConcurrentPlanExecutor {
             for recursive_term in &recursive_terms {
                 let physical = yachtsql_optimizer::optimize(recursive_term)?;
                 let rec_plan = PhysicalPlan::from_physical(&physical);
-                let result = self.execute_plan(&rec_plan).await?;
+                let result = self.execute_plan(&rec_plan)?;
                 let n = result.row_count();
                 let columns: Vec<&Column> =
                     result.columns().iter().map(|(_, c)| c.as_ref()).collect();

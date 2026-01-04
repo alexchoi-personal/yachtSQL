@@ -13,7 +13,7 @@ use crate::value_evaluator::ValueEvaluator;
 
 impl ConcurrentPlanExecutor {
     #[instrument(skip(self, columns, source), fields(table = %table_name))]
-    pub(crate) async fn execute_insert(
+    pub(crate) fn execute_insert(
         &self,
         table_name: &str,
         columns: &[String],
@@ -68,8 +68,7 @@ impl ConcurrentPlanExecutor {
                                     .and_then(|v| v.clone())
                                     .unwrap_or(Value::Null),
                                 _ if Self::expr_contains_subquery(expr) => {
-                                    self.eval_expr_with_subqueries(expr, &empty_schema, &empty_rec)
-                                        .await?
+                                    self.eval_expr_with_subqueries(expr, &empty_schema, &empty_rec)?
                                 }
                                 _ => {
                                     let vars = self.get_variables();
@@ -84,10 +83,11 @@ impl ConcurrentPlanExecutor {
                             };
                             coerced_row.push(coerce_value(final_val, &field.data_type)?);
                         } else if Self::expr_contains_subquery(expr) {
-                            coerced_row.push(
-                                self.eval_expr_with_subqueries(expr, &empty_schema, &empty_rec)
-                                    .await?,
-                            );
+                            coerced_row.push(self.eval_expr_with_subqueries(
+                                expr,
+                                &empty_schema,
+                                &empty_rec,
+                            )?);
                         } else {
                             let vars = self.get_variables();
                             let sys_vars = self.get_system_variables();
@@ -116,8 +116,7 @@ impl ConcurrentPlanExecutor {
                                     default_values[col_idx].clone().unwrap_or(Value::Null)
                                 }
                                 _ if Self::expr_contains_subquery(expr) => {
-                                    self.eval_expr_with_subqueries(expr, &empty_schema, &empty_rec)
-                                        .await?
+                                    self.eval_expr_with_subqueries(expr, &empty_schema, &empty_rec)?
                                 }
                                 _ => {
                                     let vars = self.get_variables();
@@ -149,7 +148,7 @@ impl ConcurrentPlanExecutor {
             return Ok(Table::empty(Schema::new()));
         }
 
-        let source_table = self.execute_plan(source).await?;
+        let source_table = self.execute_plan(source)?;
 
         let source_n = source_table.row_count();
         let source_cols: Vec<&Column> = source_table
@@ -212,7 +211,7 @@ impl ConcurrentPlanExecutor {
     }
 
     #[instrument(skip(self, assignments, from, filter), fields(table = %table_name))]
-    pub(crate) async fn execute_update(
+    pub(crate) fn execute_update(
         &self,
         table_name: &str,
         alias: Option<&str>,
@@ -263,7 +262,7 @@ impl ConcurrentPlanExecutor {
 
         match from {
             Some(from_plan) => {
-                let from_data = self.execute_plan(from_plan).await?;
+                let from_data = self.execute_plan(from_plan)?;
                 let from_schema = from_data.schema().clone();
 
                 let mut combined_schema = target_schema.clone();
@@ -303,8 +302,7 @@ impl ConcurrentPlanExecutor {
                                         expr,
                                         &combined_schema,
                                         &combined_record,
-                                    )
-                                    .await?
+                                    )?
                                     .as_bool()
                                     .unwrap_or(false)
                                 } else {
@@ -340,8 +338,7 @@ impl ConcurrentPlanExecutor {
                                                     &assignment.value,
                                                     &combined_schema,
                                                     &combined_record,
-                                                )
-                                                .await?
+                                                )?
                                             } else {
                                                 let vars = self.get_variables();
                                                 let sys_vars = self.get_system_variables();
@@ -391,8 +388,7 @@ impl ConcurrentPlanExecutor {
                             table_cols.iter().map(|c| c.get_value(row_idx)).collect();
                         let record = Record::from_values(row_values.clone());
                         let matches = if let Some(f) = filter {
-                            self.eval_expr_with_subqueries(f, &target_schema, &record)
-                                .await?
+                            self.eval_expr_with_subqueries(f, &target_schema, &record)?
                                 .as_bool()
                                 .unwrap_or(false)
                         } else {
@@ -409,14 +405,11 @@ impl ConcurrentPlanExecutor {
                                         Expr::Default => {
                                             default_values[idx].clone().unwrap_or(Value::Null)
                                         }
-                                        _ => {
-                                            self.eval_expr_with_subqueries(
-                                                &assignment.value,
-                                                &target_schema,
-                                                &record,
-                                            )
-                                            .await?
-                                        }
+                                        _ => self.eval_expr_with_subqueries(
+                                            &assignment.value,
+                                            &target_schema,
+                                            &record,
+                                        )?,
                                     };
                                     if field_path.is_empty() {
                                         new_row[idx] = val;
@@ -542,7 +535,7 @@ impl ConcurrentPlanExecutor {
     }
 
     #[instrument(skip(self, filter), fields(table = %table_name))]
-    pub(crate) async fn execute_delete(
+    pub(crate) fn execute_delete(
         &self,
         table_name: &str,
         alias: Option<&str>,
@@ -571,8 +564,7 @@ impl ConcurrentPlanExecutor {
                 let record = Record::from_values(row_values.clone());
                 let matches = match filter {
                     Some(f) => self
-                        .eval_expr_with_subqueries(f, &schema, &record)
-                        .await?
+                        .eval_expr_with_subqueries(f, &schema, &record)?
                         .as_bool()
                         .unwrap_or(false),
                     None => true,
@@ -628,14 +620,14 @@ impl ConcurrentPlanExecutor {
         new_schema
     }
 
-    pub(crate) async fn execute_merge(
+    pub(crate) fn execute_merge(
         &self,
         target_table: &str,
         source: &PhysicalPlan,
         on: &Expr,
         clauses: &[MergeClause],
     ) -> Result<Table> {
-        let source_table = self.execute_plan(source).await?;
+        let source_table = self.execute_plan(source)?;
         let source_schema = source_table.schema().clone();
         let source_n = source_table.row_count();
         let source_cols: Vec<&Column> = source_table
@@ -669,8 +661,7 @@ impl ConcurrentPlanExecutor {
             for (s_idx, source_row) in source_rows.iter().enumerate() {
                 let combined_record = self.create_combined_record(target_row, source_row);
                 let val = if on_has_subquery {
-                    self.eval_expr_with_subqueries(on, &combined_schema, &combined_record)
-                        .await?
+                    self.eval_expr_with_subqueries(on, &combined_schema, &combined_record)?
                 } else {
                     let vars = self.get_variables();
                     let udf = self.get_user_functions();
@@ -720,8 +711,7 @@ impl ConcurrentPlanExecutor {
                                         pred,
                                         &combined_schema,
                                         &combined_record,
-                                    )
-                                    .await?
+                                    )?
                                     .as_bool()
                                     .unwrap_or(false)
                                 } else {
@@ -757,8 +747,7 @@ impl ConcurrentPlanExecutor {
                                         &assignment.value,
                                         &combined_schema,
                                         &combined_record,
-                                    )
-                                    .await?
+                                    )?
                                 } else {
                                     let vars = self.get_variables();
                                     let sys_vars = self.get_system_variables();
@@ -798,8 +787,7 @@ impl ConcurrentPlanExecutor {
                                         pred,
                                         &combined_schema,
                                         &combined_record,
-                                    )
-                                    .await?
+                                    )?
                                     .as_bool()
                                     .unwrap_or(false)
                                 } else {
