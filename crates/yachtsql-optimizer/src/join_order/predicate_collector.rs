@@ -53,9 +53,9 @@ pub fn estimate_selectivity(predicate: &Expr, cost_model: &CostModel) -> f64 {
             let right_distinct = get_column_distinct_count(right, cost_model);
 
             match (left_distinct, right_distinct) {
-                (Some(ld), Some(rd)) => 1.0 / ld.max(rd) as f64,
-                (Some(d), None) | (None, Some(d)) => 1.0 / d as f64,
-                (None, None) => 0.1,
+                (Some(ld), Some(rd)) if ld.max(rd) > 0 => 1.0 / ld.max(rd) as f64,
+                (Some(d), None) | (None, Some(d)) if d > 0 => 1.0 / d as f64,
+                _ => 0.1,
             }
         }
 

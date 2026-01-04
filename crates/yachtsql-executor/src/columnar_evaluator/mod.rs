@@ -474,17 +474,18 @@ impl<'a> ColumnarEvaluator<'a> {
             return Ok(col.clone());
         }
 
-        let upper_name = name.to_uppercase();
         for (col_name, col) in input.columns().iter() {
-            if col_name.to_uppercase() == upper_name {
+            if col_name.eq_ignore_ascii_case(name) {
                 return Ok(col.as_ref().clone());
             }
         }
 
-        if let Some(vars) = self.variables
-            && let Some(val) = vars.get(&upper_name)
-        {
-            return Ok(Column::broadcast(val.clone(), input.row_count()));
+        if let Some(vars) = self.variables {
+            for (var_name, val) in vars.iter() {
+                if var_name.eq_ignore_ascii_case(name) {
+                    return Ok(Column::broadcast(val.clone(), input.row_count()));
+                }
+            }
         }
 
         Err(Error::ColumnNotFound(name.to_string()))

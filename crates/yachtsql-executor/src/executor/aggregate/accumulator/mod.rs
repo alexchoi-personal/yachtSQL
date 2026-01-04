@@ -10,8 +10,6 @@ mod logical;
 mod statistical;
 mod utils;
 
-use std::collections::{HashMap, HashSet};
-
 pub(crate) use approximate::{
     ApproxQuantilesAccumulator, ApproxTopCountAccumulator, ApproxTopSumAccumulator,
 };
@@ -26,6 +24,7 @@ pub(crate) use conditional::{
 };
 pub(crate) use grouping_acc::{GroupingAccumulator, GroupingIdAccumulator};
 pub(crate) use logical::{LogicalAndAccumulator, LogicalOrAccumulator};
+use rustc_hash::{FxHashMap, FxHashSet};
 pub(crate) use statistical::{CovarianceAccumulator, CovarianceStatType, VarianceAccumulator};
 pub(crate) use utils::{
     extract_agg_limit, extract_int_arg, extract_string_agg_separator, get_agg_func,
@@ -57,7 +56,7 @@ pub(crate) enum Accumulator {
     },
     First(Option<Value>),
     Last(Option<Value>),
-    CountDistinct(HashSet<Value>),
+    CountDistinct(FxHashSet<Value>),
     BitAnd(Option<i64>),
     BitOr(Option<i64>),
     BitXor(Option<i64>),
@@ -98,11 +97,11 @@ pub(crate) enum Accumulator {
         num_quantiles: usize,
     },
     ApproxTopCount {
-        counts: HashMap<String, i64>,
+        counts: FxHashMap<Value, i64>,
         top_n: usize,
     },
     ApproxTopSum {
-        sums: HashMap<String, f64>,
+        sums: FxHashMap<Value, f64>,
         top_n: usize,
     },
 }
@@ -114,7 +113,7 @@ impl Accumulator {
             Some(func) => match func {
                 AggregateFunction::Count => {
                     if distinct {
-                        Accumulator::CountDistinct(HashSet::new())
+                        Accumulator::CountDistinct(FxHashSet::default())
                     } else {
                         Accumulator::Count(0)
                     }
@@ -189,14 +188,14 @@ impl Accumulator {
                 AggregateFunction::ApproxTopCount => {
                     let top_n = extract_int_arg(expr, 1).unwrap_or(10) as usize;
                     Accumulator::ApproxTopCount {
-                        counts: HashMap::new(),
+                        counts: FxHashMap::default(),
                         top_n,
                     }
                 }
                 AggregateFunction::ApproxTopSum => {
                     let top_n = extract_int_arg(expr, 2).unwrap_or(10) as usize;
                     Accumulator::ApproxTopSum {
-                        sums: HashMap::new(),
+                        sums: FxHashMap::default(),
                         top_n,
                     }
                 }
@@ -231,7 +230,7 @@ impl Accumulator {
                     stat_type: CovarianceStatType::Covariance,
                 },
                 AggregateFunction::ApproxCountDistinct => {
-                    Accumulator::CountDistinct(HashSet::new())
+                    Accumulator::CountDistinct(FxHashSet::default())
                 }
             },
             None => Accumulator::Count(0),
@@ -368,8 +367,7 @@ impl Accumulator {
             }
             Accumulator::ApproxTopCount { counts, .. } => {
                 if !value.is_null() {
-                    let key = format!("{:?}", value);
-                    *counts.entry(key).or_insert(0) += 1;
+                    *counts.entry(value.clone()).or_insert(0) += 1;
                 }
             }
             Accumulator::ApproxTopSum { .. } => {}
@@ -534,9 +532,8 @@ impl Accumulator {
             if value.is_null() || weight.is_null() {
                 return Ok(());
             }
-            let key = format!("{:?}", value);
             let w = utils::value_to_f64(weight).unwrap_or(0.0);
-            *sums.entry(key).or_insert(0.0) += w;
+            *sums.entry(value.clone()).or_insert(0.0) += w;
         }
         Ok(())
     }
@@ -701,18 +698,8 @@ impl Accumulator {
                 let result: Vec<Value> = entries
                     .into_iter()
                     .map(|(key, count)| {
-                        let parsed_val = if key.starts_with("String(\"") && key.ends_with("\")") {
-                            Value::String(key[8..key.len() - 2].to_string())
-                        } else if key.starts_with("Int64(") && key.ends_with(")") {
-                            key[6..key.len() - 1]
-                                .parse::<i64>()
-                                .map(Value::Int64)
-                                .unwrap_or_else(|_| Value::String(key.clone()))
-                        } else {
-                            Value::String(key.clone())
-                        };
                         Value::Struct(vec![
-                            ("value".to_string(), parsed_val),
+                            ("value".to_string(), key.clone()),
                             ("count".to_string(), Value::Int64(*count)),
                         ])
                     })
@@ -726,18 +713,8 @@ impl Accumulator {
                 let result: Vec<Value> = entries
                     .into_iter()
                     .map(|(key, sum)| {
-                        let parsed_val = if key.starts_with("String(\"") && key.ends_with("\")") {
-                            Value::String(key[8..key.len() - 2].to_string())
-                        } else if key.starts_with("Int64(") && key.ends_with(")") {
-                            key[6..key.len() - 1]
-                                .parse::<i64>()
-                                .map(Value::Int64)
-                                .unwrap_or_else(|_| Value::String(key.clone()))
-                        } else {
-                            Value::String(key.clone())
-                        };
                         Value::Struct(vec![
-                            ("value".to_string(), parsed_val),
+                            ("value".to_string(), key.clone()),
                             ("sum".to_string(), Value::Float64(OrderedFloat(*sum))),
                         ])
                     })

@@ -64,7 +64,9 @@ impl GreedyJoinReorderer {
         let first_id = self.find_smallest_relation(graph, &available);
         available.remove(&first_id);
 
-        let first_rel = graph.get_relation(first_id).unwrap();
+        let first_rel = graph
+            .get_relation(first_id)
+            .expect("invariant: relation id must exist in graph");
         let mut current_relations: Vec<RelationId> = vec![first_id];
         let mut current_plan = first_rel.plan.clone();
         let mut current_row_count = first_rel.row_count_estimate;
@@ -79,7 +81,9 @@ impl GreedyJoinReorderer {
             let (next_id, join_cost, predicates) =
                 self.find_best_next(graph, &current_relations, current_row_count, &available);
 
-            let next_rel = graph.get_relation(next_id).unwrap();
+            let next_rel = graph
+                .get_relation(next_id)
+                .expect("invariant: relation id must exist in graph");
             Self::add_relation_offsets(
                 next_rel,
                 &mut table_offsets,
@@ -161,7 +165,9 @@ impl GreedyJoinReorderer {
         let mut reordered_offset = 0;
 
         for &rel_id in join_order {
-            let rel = graph.get_relation(rel_id).unwrap();
+            let rel = graph
+                .get_relation(rel_id)
+                .expect("invariant: relation id must exist in graph");
             let original_offset = self.compute_original_offset(graph, rel.original_position);
 
             for col_idx in 0..rel.schema.fields.len() {
@@ -208,7 +214,9 @@ impl GreedyJoinReorderer {
         let mut best: Option<(RelationId, JoinCost, usize, Vec<Expr>)> = None;
 
         for &candidate_id in available {
-            let candidate = graph.get_relation(candidate_id).unwrap();
+            let candidate = graph
+                .get_relation(candidate_id)
+                .expect("invariant: relation id must exist in graph");
 
             let mut applicable_edges = Vec::new();
             for &rel_id in current_relations {
@@ -240,7 +248,8 @@ impl GreedyJoinReorderer {
             }
         }
 
-        let (id, cost, _, predicates) = best.unwrap();
+        let (id, cost, _, predicates) =
+            best.expect("invariant: available set is non-empty, must find a candidate");
         (id, cost, predicates)
     }
 
@@ -258,6 +267,6 @@ impl GreedyJoinReorderer {
                     .unwrap_or((usize::MAX, usize::MAX))
             })
             .copied()
-            .unwrap()
+            .expect("invariant: available set must be non-empty")
     }
 }
