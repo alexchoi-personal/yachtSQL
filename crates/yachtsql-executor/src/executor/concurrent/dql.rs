@@ -470,7 +470,7 @@ impl ConcurrentPlanExecutor {
             .collect();
 
         let mut seen: FxHashSet<Vec<Value>> = FxHashSet::default();
-        let mut unique_indices: Vec<usize> = Vec::new();
+        let mut unique_indices: Vec<usize> = Vec::with_capacity(n);
 
         for row_idx in 0..n {
             let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();

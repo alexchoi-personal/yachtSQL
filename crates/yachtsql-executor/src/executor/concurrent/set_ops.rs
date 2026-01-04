@@ -1,7 +1,6 @@
 #![coverage(off)]
 
-use std::collections::{HashMap, HashSet};
-
+use rustc_hash::{FxHashMap, FxHashSet};
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::PlanSchema;
@@ -21,7 +20,7 @@ impl ConcurrentPlanExecutor {
     ) -> Result<Table> {
         let result_schema = plan_schema_to_schema(schema);
         let mut result = Table::empty(result_schema);
-        let mut seen: HashSet<Vec<Value>> = HashSet::new();
+        let mut seen: FxHashSet<Vec<Value>> = FxHashSet::default();
 
         let tables: Vec<Table> = if parallel && inputs.len() > 1 {
             let handles: Vec<_> = inputs
@@ -89,7 +88,7 @@ impl ConcurrentPlanExecutor {
         let result_schema = plan_schema_to_schema(schema);
         let mut result = Table::empty(result_schema);
 
-        let mut right_set: HashMap<Vec<Value>, usize> = HashMap::new();
+        let mut right_set: FxHashMap<Vec<Value>, usize> = FxHashMap::default();
         let right_n = right_table.row_count();
         let right_columns: Vec<&Column> = right_table
             .columns()
@@ -101,7 +100,7 @@ impl ConcurrentPlanExecutor {
             *right_set.entry(values).or_insert(0) += 1;
         }
 
-        let mut seen: HashSet<Vec<Value>> = HashSet::new();
+        let mut seen: FxHashSet<Vec<Value>> = FxHashSet::default();
         let left_n = left_table.row_count();
         let left_columns: Vec<&Column> = left_table
             .columns()
@@ -154,7 +153,7 @@ impl ConcurrentPlanExecutor {
         let result_schema = plan_schema_to_schema(schema);
         let mut result = Table::empty(result_schema);
 
-        let mut right_set: HashMap<Vec<Value>, usize> = HashMap::new();
+        let mut right_set: FxHashMap<Vec<Value>, usize> = FxHashMap::default();
         let right_n = right_table.row_count();
         let right_columns: Vec<&Column> = right_table
             .columns()
@@ -166,7 +165,7 @@ impl ConcurrentPlanExecutor {
             *right_set.entry(values).or_insert(0) += 1;
         }
 
-        let mut seen: HashSet<Vec<Value>> = HashSet::new();
+        let mut seen: FxHashSet<Vec<Value>> = FxHashSet::default();
         let left_n = left_table.row_count();
         let left_columns: Vec<&Column> = left_table
             .columns()
