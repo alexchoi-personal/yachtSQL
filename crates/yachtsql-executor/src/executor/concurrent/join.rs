@@ -40,6 +40,45 @@ fn extract_key_values_direct(
         .collect()
 }
 
+fn hash_json_value<H: Hasher>(json: &serde_json::Value, hasher: &mut H) {
+    match json {
+        serde_json::Value::Null => 0u8.hash(hasher),
+        serde_json::Value::Bool(b) => {
+            1u8.hash(hasher);
+            b.hash(hasher);
+        }
+        serde_json::Value::Number(n) => {
+            2u8.hash(hasher);
+            if let Some(i) = n.as_i64() {
+                i.hash(hasher);
+            } else if let Some(u) = n.as_u64() {
+                u.hash(hasher);
+            } else if let Some(f) = n.as_f64() {
+                f.to_bits().hash(hasher);
+            }
+        }
+        serde_json::Value::String(s) => {
+            3u8.hash(hasher);
+            s.hash(hasher);
+        }
+        serde_json::Value::Array(arr) => {
+            4u8.hash(hasher);
+            arr.len().hash(hasher);
+            for v in arr {
+                hash_json_value(v, hasher);
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            5u8.hash(hasher);
+            obj.len().hash(hasher);
+            for (k, v) in obj {
+                k.hash(hasher);
+                hash_json_value(v, hasher);
+            }
+        }
+    }
+}
+
 fn hash_key_values(key_values: &[Value]) -> u64 {
     let mut hasher = rustc_hash::FxHasher::default();
     for value in key_values {
@@ -48,15 +87,15 @@ fn hash_key_values(key_values: &[Value]) -> u64 {
             Value::Bool(b) => b.hash(&mut hasher),
             Value::Int64(i) => i.hash(&mut hasher),
             Value::Float64(f) => f.to_bits().hash(&mut hasher),
-            Value::Numeric(n) => n.to_string().hash(&mut hasher),
-            Value::BigNumeric(n) => n.to_string().hash(&mut hasher),
+            Value::Numeric(n) => n.hash(&mut hasher),
+            Value::BigNumeric(n) => n.hash(&mut hasher),
             Value::String(s) => s.hash(&mut hasher),
             Value::Bytes(b) => b.hash(&mut hasher),
             Value::Date(d) => d.hash(&mut hasher),
             Value::Time(t) => t.hash(&mut hasher),
             Value::DateTime(dt) => dt.hash(&mut hasher),
             Value::Timestamp(ts) => ts.hash(&mut hasher),
-            Value::Json(j) => j.to_string().hash(&mut hasher),
+            Value::Json(j) => hash_json_value(j, &mut hasher),
             Value::Array(a) => {
                 for v in a {
                     hash_key_values(std::slice::from_ref(v)).hash(&mut hasher);
@@ -68,7 +107,7 @@ fn hash_key_values(key_values: &[Value]) -> u64 {
                     hash_key_values(std::slice::from_ref(v)).hash(&mut hasher);
                 }
             }
-            Value::Geography(g) => g.to_string().hash(&mut hasher),
+            Value::Geography(g) => g.hash(&mut hasher),
             Value::Interval(i) => {
                 i.months.hash(&mut hasher);
                 i.days.hash(&mut hasher);

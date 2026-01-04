@@ -612,8 +612,14 @@ impl Column {
                         result_data.push(0.0);
                         result_nulls.push(true);
                     } else {
-                        result_data.push(l[i] + r[i]);
-                        result_nulls.push(false);
+                        let result = l[i] + r[i];
+                        if result.is_nan() || result.is_infinite() {
+                            result_data.push(0.0);
+                            result_nulls.push(true);
+                        } else {
+                            result_data.push(result);
+                            result_nulls.push(false);
+                        }
                     }
                 }
                 Column::Float64 {
@@ -687,8 +693,14 @@ impl Column {
                         result_data.push(0.0);
                         result_nulls.push(true);
                     } else {
-                        result_data.push(l[i] - r[i]);
-                        result_nulls.push(false);
+                        let result = l[i] - r[i];
+                        if result.is_nan() || result.is_infinite() {
+                            result_data.push(0.0);
+                            result_nulls.push(true);
+                        } else {
+                            result_data.push(result);
+                            result_nulls.push(false);
+                        }
                     }
                 }
                 Column::Float64 {
@@ -762,8 +774,14 @@ impl Column {
                         result_data.push(0.0);
                         result_nulls.push(true);
                     } else {
-                        result_data.push(l[i] * r[i]);
-                        result_nulls.push(false);
+                        let result = l[i] * r[i];
+                        if result.is_nan() || result.is_infinite() {
+                            result_data.push(0.0);
+                            result_nulls.push(true);
+                        } else {
+                            result_data.push(result);
+                            result_nulls.push(false);
+                        }
                     }
                 }
                 Column::Float64 {
@@ -829,8 +847,14 @@ impl Column {
                         result_data.push(0.0);
                         result_nulls.push(true);
                     } else {
-                        result_data.push(l[i] / r[i]);
-                        result_nulls.push(false);
+                        let result = l[i] / r[i];
+                        if result.is_nan() || result.is_infinite() {
+                            result_data.push(0.0);
+                            result_nulls.push(true);
+                        } else {
+                            result_data.push(result);
+                            result_nulls.push(false);
+                        }
                     }
                 }
                 Column::Float64 {

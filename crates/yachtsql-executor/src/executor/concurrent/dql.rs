@@ -462,24 +462,24 @@ impl ConcurrentPlanExecutor {
 
     pub(crate) async fn execute_distinct(&self, input: &PhysicalPlan) -> Result<Table> {
         let input_table = self.execute_plan(input).await?;
-        let schema = input_table.schema().clone();
-        let mut result = Table::empty(schema);
-        let mut seen: FxHashSet<Vec<Value>> = FxHashSet::default();
-
         let n = input_table.row_count();
         let columns: Vec<&Column> = input_table
             .columns()
             .iter()
             .map(|(_, c)| c.as_ref())
             .collect();
+
+        let mut seen: FxHashSet<Vec<Value>> = FxHashSet::default();
+        let mut unique_indices: Vec<usize> = Vec::new();
+
         for row_idx in 0..n {
             let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-            if seen.insert(values.clone()) {
-                result.push_row(values)?;
+            if seen.insert(values) {
+                unique_indices.push(row_idx);
             }
         }
 
-        Ok(result)
+        input_table.gather_rows(&unique_indices)
     }
 
     pub(crate) async fn execute_aggregate(
