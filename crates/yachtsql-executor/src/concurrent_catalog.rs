@@ -824,6 +824,18 @@ impl ConcurrentCatalog {
         let table = handle.read();
         Some(table.schema().clone())
     }
+
+    pub fn collect_table_stats(&self) -> HashMap<String, yachtsql_optimizer::TableStats> {
+        let mut stats = HashMap::new();
+        for entry in self.tables.iter() {
+            let table_name = entry.key().clone();
+            let handle = entry.value();
+            let table = handle.read();
+            let row_count = table.row_count();
+            stats.insert(table_name, yachtsql_optimizer::TableStats::new(row_count));
+        }
+        stats
+    }
 }
 
 impl Default for ConcurrentCatalog {

@@ -666,112 +666,89 @@ fn bench_optimizer_phases(c: &mut Criterion) {
 
     let rt = Runtime::new().unwrap();
     let executor = AsyncQueryExecutor::new();
-    setup_ecommerce_schema(&executor, 1000, &rt);
+    setup_ecommerce_schema(&executor, 10000, &rt);
 
-    let join_query = "
-        SELECT c.name, p.name, SUM(oi.quantity)
-        FROM order_items oi
-        JOIN orders o ON oi.order_id = o.order_id
-        JOIN customers c ON o.customer_id = c.customer_id
-        JOIN products p ON oi.product_id = p.product_id
-        WHERE o.status = 'Completed'
-        GROUP BY c.name, p.name
+    let query1_count_by_segment = "
+        SELECT c.name, COUNT(*) as order_count
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id
+        JOIN order_items oi ON o.order_id = oi.order_id
+        WHERE c.segment = 'VIP'
+        GROUP BY c.name
     ";
 
-    rt.block_on(async {
-        executor
-            .execute_sql("SET OPTIMIZER_JOIN_REORDER = true")
-            .await
-            .unwrap();
-        executor
-            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = true")
-            .await
-            .unwrap();
-        executor
-            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = true")
-            .await
-            .unwrap();
-    });
-    group.bench_function("all_on", |b| {
-        b.to_async(&rt)
-            .iter(|| async { executor.execute_sql(join_query).await.unwrap() });
-    });
+    let query2_revenue_by_segment = "
+        SELECT c.segment, SUM(oi.quantity * oi.unit_price) as revenue
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id
+        JOIN order_items oi ON o.order_id = oi.order_id
+        WHERE c.segment = 'Enterprise'
+        GROUP BY c.segment
+    ";
 
-    rt.block_on(async {
-        executor
-            .execute_sql("SET OPTIMIZER_JOIN_REORDER = false")
-            .await
-            .unwrap();
-        executor
-            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = false")
-            .await
-            .unwrap();
-        executor
-            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = false")
-            .await
-            .unwrap();
-    });
-    group.bench_function("all_off", |b| {
-        b.to_async(&rt)
-            .iter(|| async { executor.execute_sql(join_query).await.unwrap() });
-    });
+    let query3_orders_with_status = "
+        SELECT c.name, o.order_id, o.status
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id
+        WHERE o.status = 'Completed' AND c.segment = 'VIP'
+    ";
 
-    rt.block_on(async {
-        executor
-            .execute_sql("SET OPTIMIZER_JOIN_REORDER = true")
-            .await
-            .unwrap();
-        executor
-            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = false")
-            .await
-            .unwrap();
-        executor
-            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = false")
-            .await
-            .unwrap();
-    });
-    group.bench_function("join_reorder_only", |b| {
-        b.to_async(&rt)
-            .iter(|| async { executor.execute_sql(join_query).await.unwrap() });
-    });
+    let query4_top_customers = "
+        SELECT c.name, COUNT(*) as order_count
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id
+        WHERE c.customer_id < 100
+        GROUP BY c.name
+    ";
 
-    rt.block_on(async {
-        executor
-            .execute_sql("SET OPTIMIZER_JOIN_REORDER = false")
-            .await
-            .unwrap();
-        executor
-            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = true")
-            .await
-            .unwrap();
-        executor
-            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = false")
-            .await
-            .unwrap();
-    });
-    group.bench_function("filter_pushdown_only", |b| {
-        b.to_async(&rt)
-            .iter(|| async { executor.execute_sql(join_query).await.unwrap() });
-    });
+    let queries = [
+        ("q1_count_segment", query1_count_by_segment),
+        ("q2_revenue_segment", query2_revenue_by_segment),
+        ("q3_orders_status", query3_orders_with_status),
+        ("q4_top_customers", query4_top_customers),
+    ];
 
-    rt.block_on(async {
-        executor
-            .execute_sql("SET OPTIMIZER_JOIN_REORDER = false")
-            .await
-            .unwrap();
-        executor
-            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = false")
-            .await
-            .unwrap();
-        executor
-            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = true")
-            .await
-            .unwrap();
-    });
-    group.bench_function("projection_pushdown_only", |b| {
-        b.to_async(&rt)
-            .iter(|| async { executor.execute_sql(join_query).await.unwrap() });
-    });
+    for (name, query) in queries.iter() {
+        rt.block_on(async {
+            executor.clear_plan_cache();
+            executor
+                .execute_sql("SET OPTIMIZER_JOIN_REORDER = true")
+                .await
+                .unwrap();
+            executor
+                .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = true")
+                .await
+                .unwrap();
+            executor
+                .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = true")
+                .await
+                .unwrap();
+        });
+        group.bench_function(format!("{}_on", name), |b| {
+            b.to_async(&rt)
+                .iter(|| async { executor.execute_sql(query).await.unwrap() });
+        });
+
+        rt.block_on(async {
+            executor.clear_plan_cache();
+            executor
+                .execute_sql("SET OPTIMIZER_JOIN_REORDER = false")
+                .await
+                .unwrap();
+            executor
+                .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = false")
+                .await
+                .unwrap();
+            executor
+                .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = false")
+                .await
+                .unwrap();
+        });
+        group.bench_function(format!("{}_off", name), |b| {
+            b.to_async(&rt)
+                .iter(|| async { executor.execute_sql(query).await.unwrap() });
+        });
+    }
 
     group.finish();
 }

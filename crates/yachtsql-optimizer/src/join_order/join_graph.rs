@@ -77,6 +77,10 @@ impl JoinGraph {
     pub fn relations(&self) -> &[JoinRelation] {
         &self.relations
     }
+
+    pub fn edges(&self) -> &[JoinEdge] {
+        &self.edges
+    }
 }
 
 impl Default for JoinGraph {

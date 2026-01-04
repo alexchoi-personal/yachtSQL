@@ -1,12 +1,53 @@
 #![coverage(off)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use yachtsql_ir::{Expr, JoinType, LogicalPlan, PlanSchema};
 
 use super::cost_model::{CostModel, JoinCost};
 use super::join_graph::{JoinGraph, RelationId};
 use crate::planner::predicate::combine_predicates;
+
+fn remap_column_indices(
+    expr: &Expr,
+    table_offsets: &HashMap<String, usize>,
+    local_offsets: &HashMap<String, HashMap<String, usize>>,
+) -> Expr {
+    match expr {
+        Expr::Column {
+            table: Some(tbl),
+            name,
+            ..
+        } => {
+            let base_offset = table_offsets.get(tbl).copied().unwrap_or(0);
+            let local_offset = local_offsets
+                .get(tbl)
+                .and_then(|m| m.get(name))
+                .copied()
+                .unwrap_or(0);
+            Expr::Column {
+                table: Some(tbl.clone()),
+                name: name.clone(),
+                index: Some(base_offset + local_offset),
+            }
+        }
+        Expr::Column {
+            table: None,
+            name,
+            index,
+        } => Expr::Column {
+            table: None,
+            name: name.clone(),
+            index: *index,
+        },
+        Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
+            left: Box::new(remap_column_indices(left, table_offsets, local_offsets)),
+            op: *op,
+            right: Box::new(remap_column_indices(right, table_offsets, local_offsets)),
+        },
+        other => other.clone(),
+    }
+}
 
 pub struct GreedyJoinReorderer {
     cost_model: CostModel,
@@ -28,12 +69,29 @@ impl GreedyJoinReorderer {
         let mut current_plan = first_rel.plan.clone();
         let mut current_row_count = first_rel.row_count_estimate;
 
+        let mut table_offsets: HashMap<String, usize> = HashMap::new();
+        let mut local_offsets: HashMap<String, HashMap<String, usize>> = HashMap::new();
+
+        Self::add_relation_offsets(first_rel, &mut table_offsets, &mut local_offsets, 0);
+        let mut current_offset = first_rel.schema.fields.len();
+
         while !available.is_empty() {
             let (next_id, join_cost, predicates) =
                 self.find_best_next(graph, &current_relations, current_row_count, &available);
 
             let next_rel = graph.get_relation(next_id).unwrap();
-            let condition = combine_predicates(predicates);
+            Self::add_relation_offsets(
+                next_rel,
+                &mut table_offsets,
+                &mut local_offsets,
+                current_offset,
+            );
+
+            let remapped_predicates: Vec<Expr> = predicates
+                .into_iter()
+                .map(|p| remap_column_indices(&p, &table_offsets, &local_offsets))
+                .collect();
+            let condition = combine_predicates(remapped_predicates);
 
             let new_schema = Self::merge_schemas(current_plan.schema(), &next_rel.schema);
             current_plan = LogicalPlan::Join {
@@ -46,6 +104,7 @@ impl GreedyJoinReorderer {
 
             current_relations.push(next_id);
             current_row_count = join_cost.output_rows;
+            current_offset += next_rel.schema.fields.len();
             available.remove(&next_id);
         }
 
@@ -55,6 +114,23 @@ impl GreedyJoinReorderer {
             current_plan,
             original_schema,
         )
+    }
+
+    fn add_relation_offsets(
+        rel: &super::join_graph::JoinRelation,
+        table_offsets: &mut HashMap<String, usize>,
+        local_offsets: &mut HashMap<String, HashMap<String, usize>>,
+        base_offset: usize,
+    ) {
+        for (idx, field) in rel.schema.fields.iter().enumerate() {
+            if let Some(ref table) = field.table {
+                table_offsets.entry(table.clone()).or_insert(base_offset);
+                local_offsets
+                    .entry(table.clone())
+                    .or_default()
+                    .insert(field.name.clone(), idx);
+            }
+        }
     }
 
     fn merge_schemas(left: &PlanSchema, right: &PlanSchema) -> PlanSchema {
@@ -129,7 +205,7 @@ impl GreedyJoinReorderer {
         current_row_count: usize,
         available: &HashSet<RelationId>,
     ) -> (RelationId, JoinCost, Vec<Expr>) {
-        let mut best: Option<(RelationId, JoinCost, Vec<Expr>)> = None;
+        let mut best: Option<(RelationId, JoinCost, usize, Vec<Expr>)> = None;
 
         for &candidate_id in available {
             let candidate = graph.get_relation(candidate_id).unwrap();
@@ -150,16 +226,22 @@ impl GreedyJoinReorderer {
                 .map(|e| e.predicate.clone())
                 .collect();
 
-            match &best {
-                None => best = Some((candidate_id, cost, predicates)),
-                Some((_, best_cost, _)) if cost.total_cost < best_cost.total_cost => {
-                    best = Some((candidate_id, cost, predicates));
+            let should_update = match &best {
+                None => true,
+                Some((_, best_cost, best_pos, _)) => {
+                    cost.total_cost < best_cost.total_cost
+                        || (cost.total_cost == best_cost.total_cost
+                            && candidate.original_position < *best_pos)
                 }
-                _ => {}
+            };
+
+            if should_update {
+                best = Some((candidate_id, cost, candidate.original_position, predicates));
             }
         }
 
-        best.unwrap()
+        let (id, cost, _, predicates) = best.unwrap();
+        (id, cost, predicates)
     }
 
     fn find_smallest_relation(
@@ -172,8 +254,8 @@ impl GreedyJoinReorderer {
             .min_by_key(|&&id| {
                 graph
                     .get_relation(id)
-                    .map(|r| r.row_count_estimate)
-                    .unwrap_or(usize::MAX)
+                    .map(|r| (r.row_count_estimate, r.original_position))
+                    .unwrap_or((usize::MAX, usize::MAX))
             })
             .copied()
             .unwrap()

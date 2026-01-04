@@ -12,7 +12,6 @@
 
 mod catalog;
 mod columnar_evaluator;
-pub mod constraint_validator;
 mod error;
 mod executor;
 mod js_udf;
@@ -31,10 +30,7 @@ mod physical_planner;
 use std::num::NonZeroUsize;
 
 pub use async_executor::AsyncQueryExecutor;
-pub use catalog::{
-    Catalog, CheckConstraint, ColumnDefault, PrimaryKeyConstraint, TableConstraints,
-    UniqueConstraint, UserFunction, UserProcedure, ViewDef,
-};
+pub use catalog::{Catalog, ColumnDefault, UserFunction, UserProcedure, ViewDef};
 pub use columnar_evaluator::ColumnarEvaluator;
 pub use concurrent_catalog::{ConcurrentCatalog, TableLockSet};
 pub use concurrent_session::ConcurrentSession;

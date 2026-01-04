@@ -113,6 +113,7 @@ impl AsyncQueryExecutor {
     }
 
     fn get_optimizer_settings(&self) -> OptimizerSettings {
+        let table_stats = self.catalog.collect_table_stats();
         OptimizerSettings {
             join_reorder: self
                 .session
@@ -129,7 +130,13 @@ impl AsyncQueryExecutor {
                 .get_variable("OPTIMIZER_PROJECTION_PUSHDOWN")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true),
+            table_stats,
         }
+    }
+
+    pub fn clear_plan_cache(&self) {
+        let mut cache = self.plan_cache.write().unwrap_or_else(|e| e.into_inner());
+        cache.clear();
     }
 
     #[instrument(skip(self), fields(sql_length = sql.len()))]

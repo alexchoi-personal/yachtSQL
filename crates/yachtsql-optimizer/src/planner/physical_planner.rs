@@ -417,8 +417,17 @@ impl PhysicalPlanner {
             }
 
             LogicalPlan::WithCte { ctes, body } => {
-                let body = self.plan(body)?;
-                let ctes = ctes
+                use super::cte_optimization::optimize_ctes;
+
+                let (remaining_ctes, optimized_body) =
+                    optimize_ctes(ctes.clone(), body.as_ref().clone());
+
+                if remaining_ctes.is_empty() {
+                    return self.plan(&optimized_body);
+                }
+
+                let optimized_body = self.plan(&optimized_body)?;
+                let optimized_ctes = remaining_ctes
                     .iter()
                     .map(|cte| {
                         let query = self.plan(&cte.query)?;
@@ -432,8 +441,8 @@ impl PhysicalPlanner {
                     })
                     .collect::<Result<Vec<_>>>()?;
                 Ok(OptimizedLogicalPlan::WithCte {
-                    ctes,
-                    body: Box::new(body),
+                    ctes: optimized_ctes,
+                    body: Box::new(optimized_body),
                 })
             }
 

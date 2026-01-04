@@ -43,32 +43,6 @@ pub struct ColumnDefault {
     pub default_expr: Expr,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TableConstraints {
-    pub primary_key: Option<PrimaryKeyConstraint>,
-    pub unique_constraints: Vec<UniqueConstraint>,
-    pub check_constraints: Vec<CheckConstraint>,
-    pub not_null_columns: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrimaryKeyConstraint {
-    pub name: Option<String>,
-    pub columns: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UniqueConstraint {
-    pub name: String,
-    pub columns: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckConstraint {
-    pub name: String,
-    pub expression: Expr,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionSnapshot {
     pub tables: HashMap<String, Table>,
@@ -84,7 +58,6 @@ pub struct DroppedSchema {
 pub struct Catalog {
     tables: HashMap<String, Table>,
     table_defaults: HashMap<String, Vec<ColumnDefault>>,
-    table_constraints: HashMap<String, TableConstraints>,
     functions: HashMap<String, UserFunction>,
     procedures: HashMap<String, UserProcedure>,
     views: HashMap<String, ViewDef>,
@@ -101,7 +74,6 @@ impl Catalog {
         Self {
             tables: HashMap::new(),
             table_defaults: HashMap::new(),
-            table_constraints: HashMap::new(),
             functions: HashMap::new(),
             procedures: HashMap::new(),
             views: HashMap::new(),
@@ -339,16 +311,6 @@ impl Catalog {
             }
         }
         None
-    }
-
-    pub fn set_table_constraints(&mut self, name: &str, constraints: TableConstraints) {
-        let key = name.to_uppercase();
-        self.table_constraints.insert(key, constraints);
-    }
-
-    pub fn get_table_constraints(&self, name: &str) -> Option<&TableConstraints> {
-        let key = self.resolve_table_name(name);
-        self.table_constraints.get(&key)
     }
 
     pub fn insert_table(&mut self, name: &str, table: Table) -> Result<()> {
