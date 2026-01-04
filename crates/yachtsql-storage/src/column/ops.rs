@@ -115,135 +115,86 @@ impl Column {
         }
         Ok(match self {
             Column::Bool { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx]);
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<bool> = indices.iter().map(|&idx| data[idx]).collect();
                 Column::Bool {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Int64 { data, nulls } => {
                 let mut new_data = AVec::new(64);
-                let mut new_nulls = NullBitmap::new();
                 for &idx in indices {
                     new_data.push(data[idx]);
-                    new_nulls.push(nulls.is_null(idx));
                 }
                 Column::Int64 {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Float64 { data, nulls } => {
                 let mut new_data = AVec::new(64);
-                let mut new_nulls = NullBitmap::new();
                 for &idx in indices {
                     new_data.push(data[idx]);
-                    new_nulls.push(nulls.is_null(idx));
                 }
                 Column::Float64 {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Numeric { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx]);
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx]).collect();
                 Column::Numeric {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::String { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx].clone());
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
                 Column::String {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Bytes { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx].clone());
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
                 Column::Bytes {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Date { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx]);
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx]).collect();
                 Column::Date {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Time { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx]);
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx]).collect();
                 Column::Time {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::DateTime { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx]);
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx]).collect();
                 Column::DateTime {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Timestamp { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx]);
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx]).collect();
                 Column::Timestamp {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Json { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx].clone());
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
                 Column::Json {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Array {
@@ -251,15 +202,10 @@ impl Column {
                 nulls,
                 element_type,
             } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx].clone());
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
                 Column::Array {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                     element_type: element_type.clone(),
                 }
             }
@@ -268,40 +214,25 @@ impl Column {
                 nulls,
                 fields,
             } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx].clone());
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
                 Column::Struct {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                     fields: fields.clone(),
                 }
             }
             Column::Geography { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx].clone());
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
                 Column::Geography {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Interval { data, nulls } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx].clone());
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
                 Column::Interval {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                 }
             }
             Column::Range {
@@ -309,15 +240,10 @@ impl Column {
                 nulls,
                 element_type,
             } => {
-                let mut new_data = Vec::with_capacity(indices.len());
-                let mut new_nulls = NullBitmap::new();
-                for &idx in indices {
-                    new_data.push(data[idx].clone());
-                    new_nulls.push(nulls.is_null(idx));
-                }
+                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
                 Column::Range {
                     data: new_data,
-                    nulls: new_nulls,
+                    nulls: nulls.gather(indices),
                     element_type: element_type.clone(),
                 }
             }

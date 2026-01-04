@@ -31,6 +31,11 @@ impl Record {
         }
     }
 
+    pub fn set_from_slice(&mut self, values: &[Value]) {
+        self.values.clear();
+        self.values.extend_from_slice(values);
+    }
+
     pub fn len(&self) -> usize {
         self.values.len()
     }

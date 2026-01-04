@@ -104,10 +104,11 @@ impl ConcurrentPlanExecutor {
         let left_width = left_schema.field_count();
         let right_width = right_schema.field_count();
 
+        let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
+        let mut eval_record = Record::with_capacity(left_width + right_width);
+
         match join_type {
             JoinType::Inner => {
-                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
-
                 for left_idx in 0..left_n {
                     for right_idx in 0..right_n {
                         combined_values.clear();
@@ -117,9 +118,9 @@ impl ConcurrentPlanExecutor {
 
                         let matches = match condition {
                             Some(c) => {
-                                let combined_record = Record::from_slice(&combined_values);
+                                eval_record.set_from_slice(&combined_values);
                                 evaluator
-                                    .evaluate(c, &combined_record)?
+                                    .evaluate(c, &eval_record)?
                                     .as_bool()
                                     .unwrap_or(false)
                             }
@@ -134,8 +135,6 @@ impl ConcurrentPlanExecutor {
                 }
             }
             JoinType::Left => {
-                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
-
                 for left_idx in 0..left_n {
                     let mut found_match = false;
                     for right_idx in 0..right_n {
@@ -146,9 +145,9 @@ impl ConcurrentPlanExecutor {
 
                         let matches = match condition {
                             Some(c) => {
-                                let combined_record = Record::from_slice(&combined_values);
+                                eval_record.set_from_slice(&combined_values);
                                 evaluator
-                                    .evaluate(c, &combined_record)?
+                                    .evaluate(c, &eval_record)?
                                     .as_bool()
                                     .unwrap_or(false)
                             }
@@ -171,8 +170,6 @@ impl ConcurrentPlanExecutor {
                 }
             }
             JoinType::Right => {
-                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
-
                 for right_idx in 0..right_n {
                     let mut found_match = false;
                     for left_idx in 0..left_n {
@@ -183,9 +180,9 @@ impl ConcurrentPlanExecutor {
 
                         let matches = match condition {
                             Some(c) => {
-                                let combined_record = Record::from_slice(&combined_values);
+                                eval_record.set_from_slice(&combined_values);
                                 evaluator
-                                    .evaluate(c, &combined_record)?
+                                    .evaluate(c, &eval_record)?
                                     .as_bool()
                                     .unwrap_or(false)
                             }
@@ -210,7 +207,6 @@ impl ConcurrentPlanExecutor {
             }
             JoinType::Full => {
                 let mut matched_right: HashSet<usize> = HashSet::with_capacity(right_n);
-                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
 
                 for left_idx in 0..left_n {
                     let mut found_match = false;
@@ -222,9 +218,9 @@ impl ConcurrentPlanExecutor {
 
                         let matches = match condition {
                             Some(c) => {
-                                let combined_record = Record::from_slice(&combined_values);
+                                eval_record.set_from_slice(&combined_values);
                                 evaluator
-                                    .evaluate(c, &combined_record)?
+                                    .evaluate(c, &eval_record)?
                                     .as_bool()
                                     .unwrap_or(false)
                             }
@@ -258,8 +254,6 @@ impl ConcurrentPlanExecutor {
                 }
             }
             JoinType::Cross => {
-                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
-
                 for left_idx in 0..left_n {
                     for right_idx in 0..right_n {
                         combined_values.clear();
@@ -272,6 +266,7 @@ impl ConcurrentPlanExecutor {
                 }
             }
         }
+        drop(eval_record);
 
         Ok(result)
     }

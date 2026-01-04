@@ -216,7 +216,7 @@ impl ConcurrentPlanExecutor {
                 .map(|(_, c)| c.as_ref())
                 .collect();
 
-            let mut all_rows: Vec<Vec<Value>> = Vec::with_capacity(n);
+            let mut result = Table::empty(result_schema);
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
                 let record = Record::from_values(values);
@@ -225,10 +225,8 @@ impl ConcurrentPlanExecutor {
                     let val = evaluator.evaluate(expr, &record)?;
                     new_row.push(val);
                 }
-                all_rows.push(new_row);
+                result.push_row(new_row)?;
             }
-            let mut result = Table::empty(result_schema);
-            result.push_rows(all_rows)?;
             Ok(result)
         }
     }

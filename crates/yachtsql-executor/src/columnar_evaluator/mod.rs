@@ -579,16 +579,30 @@ impl<'a> ColumnarEvaluator<'a> {
     }
 
     fn coerce_int_to_float(&self, col: &Column) -> Result<Column> {
-        let mut values = Vec::with_capacity(col.len());
-        for i in 0..col.len() {
-            let val = col.get_value(i);
-            match val {
-                Value::Int64(v) => values.push(Value::float64(v as f64)),
-                Value::Null => values.push(Value::Null),
-                other => values.push(other),
+        match col {
+            Column::Int64 { data, nulls } => {
+                let mut new_data = aligned_vec::AVec::new(64);
+                for &v in data.iter() {
+                    new_data.push(v as f64);
+                }
+                Ok(Column::Float64 {
+                    data: new_data,
+                    nulls: nulls.clone(),
+                })
+            }
+            _ => {
+                let mut values = Vec::with_capacity(col.len());
+                for i in 0..col.len() {
+                    let val = col.get_value(i);
+                    match val {
+                        Value::Int64(v) => values.push(Value::float64(v as f64)),
+                        Value::Null => values.push(Value::Null),
+                        other => values.push(other),
+                    }
+                }
+                Ok(Column::from_values(&values))
             }
         }
-        Ok(Column::from_values(&values))
     }
 
     fn eval_binary_mod(&self, left: &Column, right: &Column) -> Result<Column> {

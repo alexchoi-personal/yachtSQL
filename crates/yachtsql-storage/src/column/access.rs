@@ -105,6 +105,46 @@ impl Column {
         }
     }
 
+    pub fn get_i64(&self, index: usize) -> Option<i64> {
+        if index >= self.len() || self.is_null(index) {
+            return None;
+        }
+        match self {
+            Column::Int64 { data, .. } => Some(data[index]),
+            _ => None,
+        }
+    }
+
+    pub fn get_f64(&self, index: usize) -> Option<f64> {
+        if index >= self.len() || self.is_null(index) {
+            return None;
+        }
+        match self {
+            Column::Float64 { data, .. } => Some(data[index]),
+            _ => None,
+        }
+    }
+
+    pub fn get_bool(&self, index: usize) -> Option<bool> {
+        if index >= self.len() || self.is_null(index) {
+            return None;
+        }
+        match self {
+            Column::Bool { data, .. } => Some(data[index]),
+            _ => None,
+        }
+    }
+
+    pub fn get_str(&self, index: usize) -> Option<&str> {
+        if index >= self.len() || self.is_null(index) {
+            return None;
+        }
+        match self {
+            Column::String { data, .. } => Some(&data[index]),
+            _ => None,
+        }
+    }
+
     pub fn set(&mut self, index: usize, value: Value) -> Result<()> {
         if index >= self.len() {
             return Err(Error::invalid_query(format!(

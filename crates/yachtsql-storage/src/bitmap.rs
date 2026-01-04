@@ -140,6 +140,23 @@ impl NullBitmap {
         &self.data
     }
 
+    pub fn gather(&self, indices: &[usize]) -> NullBitmap {
+        let len = indices.len();
+        if len == 0 {
+            return NullBitmap::new();
+        }
+        let num_words = len.div_ceil(64);
+        let mut data = vec![0u64; num_words];
+        for (out_idx, &src_idx) in indices.iter().enumerate() {
+            if self.is_null(src_idx) {
+                let word = out_idx / 64;
+                let bit = out_idx % 64;
+                data[word] |= 1 << bit;
+            }
+        }
+        NullBitmap { data, len }
+    }
+
     pub fn extend(&mut self, other: &NullBitmap) {
         if other.len == 0 {
             return;

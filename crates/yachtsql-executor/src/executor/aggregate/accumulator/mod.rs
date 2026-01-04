@@ -263,30 +263,26 @@ impl Accumulator {
             }
             Accumulator::Min(min) => {
                 if !value.is_null() {
-                    *min = Some(match min.take() {
+                    match min {
                         Some(m) => {
-                            if value < &m {
-                                value.clone()
-                            } else {
-                                m
+                            if value < m {
+                                *m = value.clone();
                             }
                         }
-                        None => value.clone(),
-                    });
+                        None => *min = Some(value.clone()),
+                    }
                 }
             }
             Accumulator::Max(max) => {
                 if !value.is_null() {
-                    *max = Some(match max.take() {
+                    match max {
                         Some(m) => {
-                            if value > &m {
-                                value.clone()
-                            } else {
-                                m
+                            if value > m {
+                                *m = value.clone();
                             }
                         }
-                        None => value.clone(),
-                    });
+                        None => *max = Some(value.clone()),
+                    }
                 }
             }
             Accumulator::ArrayAgg { .. } => {}

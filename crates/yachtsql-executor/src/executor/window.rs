@@ -564,15 +564,17 @@ fn compute_aggregate(
         _ => false,
     };
 
-    let values: Vec<Value> = indices
-        .iter()
-        .map(|&idx| extract_window_arg(expr, 0, evaluator, &rows[idx]).unwrap_or(Value::Null))
-        .collect();
-
     match func {
         AggregateFunction::Count => {
             let count = if has_args {
-                values.iter().filter(|v| !v.is_null()).count()
+                indices
+                    .iter()
+                    .filter(|&&idx| {
+                        !extract_window_arg(expr, 0, evaluator, &rows[idx])
+                            .unwrap_or(Value::Null)
+                            .is_null()
+                    })
+                    .count()
             } else {
                 indices.len()
             };
@@ -580,7 +582,8 @@ fn compute_aggregate(
         }
         AggregateFunction::Sum => {
             let mut sum = 0f64;
-            for v in &values {
+            for &idx in indices {
+                let v = extract_window_arg(expr, 0, evaluator, &rows[idx]).unwrap_or(Value::Null);
                 if let Some(n) = v.as_f64() {
                     sum += n;
                 } else if let Some(n) = v.as_i64() {
@@ -592,7 +595,8 @@ fn compute_aggregate(
         AggregateFunction::Avg => {
             let mut sum = 0f64;
             let mut count = 0;
-            for v in &values {
+            for &idx in indices {
+                let v = extract_window_arg(expr, 0, evaluator, &rows[idx]).unwrap_or(Value::Null);
                 if let Some(n) = v.as_f64() {
                     sum += n;
                     count += 1;
@@ -610,11 +614,31 @@ fn compute_aggregate(
             }
         }
         AggregateFunction::Min => {
-            let min = values.iter().filter(|v| !v.is_null()).min().cloned();
+            let mut min: Option<Value> = None;
+            for &idx in indices {
+                let v = extract_window_arg(expr, 0, evaluator, &rows[idx]).unwrap_or(Value::Null);
+                if !v.is_null() {
+                    min = Some(match min {
+                        Some(m) if v < m => v,
+                        Some(m) => m,
+                        None => v,
+                    });
+                }
+            }
             Ok(min.unwrap_or(Value::Null))
         }
         AggregateFunction::Max => {
-            let max = values.iter().filter(|v| !v.is_null()).max().cloned();
+            let mut max: Option<Value> = None;
+            for &idx in indices {
+                let v = extract_window_arg(expr, 0, evaluator, &rows[idx]).unwrap_or(Value::Null);
+                if !v.is_null() {
+                    max = Some(match max {
+                        Some(m) if v > m => v,
+                        Some(m) => m,
+                        None => v,
+                    });
+                }
+            }
             Ok(max.unwrap_or(Value::Null))
         }
         _ => Ok(Value::Null),
