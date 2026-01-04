@@ -1,5 +1,7 @@
 #![coverage(off)]
 
+use std::collections::HashSet;
+
 use yachtsql_common::types::Value;
 
 #[derive(Clone)]
@@ -80,16 +82,16 @@ impl StringAggAccumulator {
 }
 
 #[derive(Clone)]
-pub(crate) struct CountDistinctAccumulator(pub(crate) Vec<Value>);
+pub(crate) struct CountDistinctAccumulator(pub(crate) HashSet<Value>);
 
 impl CountDistinctAccumulator {
     pub(crate) fn new() -> Self {
-        Self(Vec::new())
+        Self(HashSet::new())
     }
 
     pub(crate) fn accumulate(&mut self, value: &Value) {
-        if !value.is_null() && !self.0.contains(value) {
-            self.0.push(value.clone());
+        if !value.is_null() {
+            self.0.insert(value.clone());
         }
     }
 
@@ -99,9 +101,7 @@ impl CountDistinctAccumulator {
 
     pub(crate) fn merge(&mut self, other: &Self) {
         for v in &other.0 {
-            if !self.0.contains(v) {
-                self.0.push(v.clone());
-            }
+            self.0.insert(v.clone());
         }
     }
 }

@@ -1,6 +1,7 @@
 #![coverage(off)]
 
 use aligned_vec::AVec;
+use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 
 use super::Column;
@@ -314,13 +315,15 @@ impl Column {
         }
     }
 
-    pub fn filter_by_mask(&self, mask: &Column) -> Self {
+    pub fn filter_by_mask(&self, mask: &Column) -> Result<Self> {
         let Column::Bool {
             data: mask_data,
             nulls: mask_nulls,
         } = mask
         else {
-            panic!("filter_by_mask requires a Bool column as mask");
+            return Err(Error::internal(
+                "filter_by_mask requires a Bool column as mask",
+            ));
         };
 
         let mut indices = Vec::new();
@@ -329,7 +332,7 @@ impl Column {
                 indices.push(i);
             }
         }
-        self.gather(&indices)
+        Ok(self.gather(&indices))
     }
 
     pub fn from_values(values: &[Value]) -> Self {
@@ -349,7 +352,7 @@ impl Column {
         column
     }
 
-    pub fn extend(&mut self, other: &Column) {
+    pub fn extend(&mut self, other: &Column) -> Result<()> {
         match (self, other) {
             (
                 Column::Bool {
@@ -569,14 +572,21 @@ impl Column {
                 d1.extend(d2.iter().cloned());
                 n1.extend(n2);
             }
-            _ => panic!("Cannot extend columns of different types"),
+            (s, o) => {
+                return Err(Error::internal(format!(
+                    "Cannot extend columns of different types: {:?} and {:?}",
+                    s.data_type(),
+                    o.data_type()
+                )));
+            }
         }
+        Ok(())
     }
 }
 
 impl Column {
-    pub fn binary_add(&self, other: &Column) -> Self {
-        match (self, other) {
+    pub fn binary_add(&self, other: &Column) -> Result<Self> {
+        Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
                 let mut result_data = AVec::with_capacity(64, len);
@@ -586,8 +596,16 @@ impl Column {
                         result_data.push(0);
                         result_nulls.push(true);
                     } else {
-                        result_data.push(l[i].wrapping_add(r[i]));
-                        result_nulls.push(false);
+                        match l[i].checked_add(r[i]) {
+                            Some(v) => {
+                                result_data.push(v);
+                                result_nulls.push(false);
+                            }
+                            None => {
+                                result_data.push(0);
+                                result_nulls.push(true);
+                            }
+                        }
                     }
                 }
                 Column::Int64 {
@@ -631,16 +649,18 @@ impl Column {
                     nulls: result_nulls,
                 }
             }
-            _ => panic!(
-                "binary_add: incompatible column types {:?} and {:?}",
-                self.data_type(),
-                other.data_type()
-            ),
-        }
+            _ => {
+                return Err(Error::internal(format!(
+                    "binary_add: incompatible column types {:?} and {:?}",
+                    self.data_type(),
+                    other.data_type()
+                )));
+            }
+        })
     }
 
-    pub fn binary_sub(&self, other: &Column) -> Self {
-        match (self, other) {
+    pub fn binary_sub(&self, other: &Column) -> Result<Self> {
+        Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
                 let mut result_data = AVec::with_capacity(64, len);
@@ -650,8 +670,16 @@ impl Column {
                         result_data.push(0);
                         result_nulls.push(true);
                     } else {
-                        result_data.push(l[i].wrapping_sub(r[i]));
-                        result_nulls.push(false);
+                        match l[i].checked_sub(r[i]) {
+                            Some(v) => {
+                                result_data.push(v);
+                                result_nulls.push(false);
+                            }
+                            None => {
+                                result_data.push(0);
+                                result_nulls.push(true);
+                            }
+                        }
                     }
                 }
                 Column::Int64 {
@@ -695,16 +723,18 @@ impl Column {
                     nulls: result_nulls,
                 }
             }
-            _ => panic!(
-                "binary_sub: incompatible column types {:?} and {:?}",
-                self.data_type(),
-                other.data_type()
-            ),
-        }
+            _ => {
+                return Err(Error::internal(format!(
+                    "binary_sub: incompatible column types {:?} and {:?}",
+                    self.data_type(),
+                    other.data_type()
+                )));
+            }
+        })
     }
 
-    pub fn binary_mul(&self, other: &Column) -> Self {
-        match (self, other) {
+    pub fn binary_mul(&self, other: &Column) -> Result<Self> {
+        Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
                 let mut result_data = AVec::with_capacity(64, len);
@@ -714,8 +744,16 @@ impl Column {
                         result_data.push(0);
                         result_nulls.push(true);
                     } else {
-                        result_data.push(l[i].wrapping_mul(r[i]));
-                        result_nulls.push(false);
+                        match l[i].checked_mul(r[i]) {
+                            Some(v) => {
+                                result_data.push(v);
+                                result_nulls.push(false);
+                            }
+                            None => {
+                                result_data.push(0);
+                                result_nulls.push(true);
+                            }
+                        }
                     }
                 }
                 Column::Int64 {
@@ -759,16 +797,18 @@ impl Column {
                     nulls: result_nulls,
                 }
             }
-            _ => panic!(
-                "binary_mul: incompatible column types {:?} and {:?}",
-                self.data_type(),
-                other.data_type()
-            ),
-        }
+            _ => {
+                return Err(Error::internal(format!(
+                    "binary_mul: incompatible column types {:?} and {:?}",
+                    self.data_type(),
+                    other.data_type()
+                )));
+            }
+        })
     }
 
-    pub fn binary_div(&self, other: &Column) -> Self {
-        match (self, other) {
+    pub fn binary_div(&self, other: &Column) -> Result<Self> {
+        Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
                 let mut result_data = AVec::with_capacity(64, len);
@@ -823,16 +863,18 @@ impl Column {
                     nulls: result_nulls,
                 }
             }
-            _ => panic!(
-                "binary_div: incompatible column types {:?} and {:?}",
-                self.data_type(),
-                other.data_type()
-            ),
-        }
+            _ => {
+                return Err(Error::internal(format!(
+                    "binary_div: incompatible column types {:?} and {:?}",
+                    self.data_type(),
+                    other.data_type()
+                )));
+            }
+        })
     }
 
-    pub fn binary_eq(&self, other: &Column) -> Self {
-        match (self, other) {
+    pub fn binary_eq(&self, other: &Column) -> Result<Self> {
+        Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
                 let mut result_data = Vec::with_capacity(len);
@@ -1016,21 +1058,23 @@ impl Column {
                     nulls: result_nulls,
                 }
             }
-            _ => panic!(
-                "binary_eq: incompatible column types {:?} and {:?}",
-                self.data_type(),
-                other.data_type()
-            ),
-        }
+            _ => {
+                return Err(Error::internal(format!(
+                    "binary_eq: incompatible column types {:?} and {:?}",
+                    self.data_type(),
+                    other.data_type()
+                )));
+            }
+        })
     }
 
-    pub fn binary_ne(&self, other: &Column) -> Self {
-        let eq_result = self.binary_eq(other);
+    pub fn binary_ne(&self, other: &Column) -> Result<Self> {
+        let eq_result = self.binary_eq(other)?;
         eq_result.unary_not()
     }
 
-    pub fn binary_lt(&self, other: &Column) -> Self {
-        match (self, other) {
+    pub fn binary_lt(&self, other: &Column) -> Result<Self> {
+        Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
                 let mut result_data = Vec::with_capacity(len);
@@ -1216,16 +1260,18 @@ impl Column {
                     nulls: result_nulls,
                 }
             }
-            _ => panic!(
-                "binary_lt: incompatible column types {:?} and {:?}",
-                self.data_type(),
-                other.data_type()
-            ),
-        }
+            _ => {
+                return Err(Error::internal(format!(
+                    "binary_lt: incompatible column types {:?} and {:?}",
+                    self.data_type(),
+                    other.data_type()
+                )));
+            }
+        })
     }
 
-    pub fn binary_le(&self, other: &Column) -> Self {
-        match (self, other) {
+    pub fn binary_le(&self, other: &Column) -> Result<Self> {
+        Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
                 let mut result_data = Vec::with_capacity(len);
@@ -1411,23 +1457,25 @@ impl Column {
                     nulls: result_nulls,
                 }
             }
-            _ => panic!(
-                "binary_le: incompatible column types {:?} and {:?}",
-                self.data_type(),
-                other.data_type()
-            ),
-        }
+            _ => {
+                return Err(Error::internal(format!(
+                    "binary_le: incompatible column types {:?} and {:?}",
+                    self.data_type(),
+                    other.data_type()
+                )));
+            }
+        })
     }
 
-    pub fn binary_gt(&self, other: &Column) -> Self {
+    pub fn binary_gt(&self, other: &Column) -> Result<Self> {
         other.binary_lt(self)
     }
 
-    pub fn binary_ge(&self, other: &Column) -> Self {
+    pub fn binary_ge(&self, other: &Column) -> Result<Self> {
         other.binary_le(self)
     }
 
-    pub fn binary_and(&self, other: &Column) -> Self {
+    pub fn binary_and(&self, other: &Column) -> Result<Self> {
         let (left, right) = match (self, other) {
             (Column::Bool { data: l, nulls: ln }, Column::Bool { data: r, nulls: rn }) => {
                 (Some((l, ln)), Some((r, rn)))
@@ -1437,11 +1485,13 @@ impl Column {
             }
             (_, Column::Bool { data: r, nulls: rn }) if self.is_all_null() => (None, Some((r, rn))),
             (_, _) if self.is_all_null() && other.is_all_null() => (None, None),
-            _ => panic!(
-                "binary_and: requires Bool columns, got {:?} and {:?}",
-                self.data_type(),
-                other.data_type()
-            ),
+            _ => {
+                return Err(Error::internal(format!(
+                    "binary_and: requires Bool columns, got {:?} and {:?}",
+                    self.data_type(),
+                    other.data_type()
+                )));
+            }
         };
 
         let len = self.len();
@@ -1473,13 +1523,13 @@ impl Column {
             }
         }
 
-        Column::Bool {
+        Ok(Column::Bool {
             data: result_data,
             nulls: result_nulls,
-        }
+        })
     }
 
-    pub fn binary_or(&self, other: &Column) -> Self {
+    pub fn binary_or(&self, other: &Column) -> Result<Self> {
         let (left, right) = match (self, other) {
             (Column::Bool { data: l, nulls: ln }, Column::Bool { data: r, nulls: rn }) => {
                 (Some((l, ln)), Some((r, rn)))
@@ -1489,11 +1539,13 @@ impl Column {
             }
             (_, Column::Bool { data: r, nulls: rn }) if self.is_all_null() => (None, Some((r, rn))),
             (_, _) if self.is_all_null() && other.is_all_null() => (None, None),
-            _ => panic!(
-                "binary_or: requires Bool columns, got {:?} and {:?}",
-                self.data_type(),
-                other.data_type()
-            ),
+            _ => {
+                return Err(Error::internal(format!(
+                    "binary_or: requires Bool columns, got {:?} and {:?}",
+                    self.data_type(),
+                    other.data_type()
+                )));
+            }
         };
 
         let len = self.len();
@@ -1525,30 +1577,27 @@ impl Column {
             }
         }
 
-        Column::Bool {
+        Ok(Column::Bool {
             data: result_data,
             nulls: result_nulls,
-        }
+        })
     }
 
-    pub fn unary_not(&self) -> Self {
+    pub fn unary_not(&self) -> Result<Self> {
         match self {
             Column::Bool { data, nulls } => {
                 let result_data: Vec<bool> = data.iter().map(|v| !v).collect();
-                Column::Bool {
+                Ok(Column::Bool {
                     data: result_data,
                     nulls: nulls.clone(),
-                }
+                })
             }
-            _ => panic!(
-                "unary_not: requires Bool column, got {:?}",
-                self.data_type()
-            ),
+            _ => Err(Error::type_mismatch_msg("unary_not: requires Bool column")),
         }
     }
 
-    pub fn unary_neg(&self) -> Self {
-        match self {
+    pub fn unary_neg(&self) -> Result<Self> {
+        Ok(match self {
             Column::Int64 { data, nulls } => {
                 let mut result_data = AVec::with_capacity(64, data.len());
                 for v in data.iter() {
@@ -1576,11 +1625,13 @@ impl Column {
                     nulls: nulls.clone(),
                 }
             }
-            _ => panic!(
-                "unary_neg: requires numeric column, got {:?}",
-                self.data_type()
-            ),
-        }
+            _ => {
+                return Err(Error::internal(format!(
+                    "unary_neg: requires numeric column, got {:?}",
+                    self.data_type()
+                )));
+            }
+        })
     }
 
     pub fn is_null_mask(&self) -> Self {
@@ -2086,7 +2137,7 @@ mod tests {
             data: vec![true, false, true, false, true],
             nulls: NullBitmap::new_valid(5),
         };
-        let filtered = col.filter_by_mask(&mask);
+        let filtered = col.filter_by_mask(&mask).unwrap();
         assert_eq!(filtered.len(), 3);
         assert_eq!(filtered.get_value(0), Value::Int64(10));
         assert_eq!(filtered.get_value(1), Value::Int64(30));
@@ -2107,14 +2158,13 @@ mod tests {
             data: vec![true, true, false],
             nulls: mask_nulls,
         };
-        let filtered = col.filter_by_mask(&mask);
+        let filtered = col.filter_by_mask(&mask).unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered.get_value(0), Value::Int64(10));
     }
 
     #[test]
-    #[should_panic(expected = "filter_by_mask requires a Bool column as mask")]
-    fn test_filter_by_mask_non_bool_panic() {
+    fn test_filter_by_mask_non_bool_error() {
         let col = Column::Int64 {
             data: AVec::from_iter(64, vec![1, 2, 3]),
             nulls: NullBitmap::new_valid(3),
@@ -2123,7 +2173,14 @@ mod tests {
             data: AVec::from_iter(64, vec![1, 0, 1]),
             nulls: NullBitmap::new_valid(3),
         };
-        col.filter_by_mask(&bad_mask);
+        let result = col.filter_by_mask(&bad_mask);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("filter_by_mask requires a Bool column as mask")
+        );
     }
 
     #[test]
@@ -2178,7 +2235,7 @@ mod tests {
             data: vec![false, true],
             nulls: NullBitmap::new_valid(2),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 4);
         assert_eq!(col1.get_value(2), Value::Bool(false));
         assert_eq!(col1.get_value(3), Value::Bool(true));
@@ -2194,7 +2251,7 @@ mod tests {
             data: AVec::from_iter(64, vec![3, 4]),
             nulls: NullBitmap::new_valid(2),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 4);
         assert_eq!(col1.get_value(2), Value::Int64(3));
         assert_eq!(col1.get_value(3), Value::Int64(4));
@@ -2210,7 +2267,7 @@ mod tests {
             data: AVec::from_iter(64, vec![3.0]),
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 3);
         assert_eq!(col1.get_value(2), Value::float64(3.0));
     }
@@ -2225,7 +2282,7 @@ mod tests {
             data: vec![Decimal::new(200, 2)],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::Numeric(Decimal::new(200, 2)));
     }
@@ -2240,7 +2297,7 @@ mod tests {
             data: vec!["b".to_string()],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::String("b".to_string()));
     }
@@ -2255,7 +2312,7 @@ mod tests {
             data: vec![vec![2]],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::Bytes(vec![2]));
     }
@@ -2272,7 +2329,7 @@ mod tests {
             data: vec![d2],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::Date(d2));
     }
@@ -2289,7 +2346,7 @@ mod tests {
             data: vec![t2],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::Time(t2));
     }
@@ -2312,7 +2369,7 @@ mod tests {
             data: vec![dt2],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::DateTime(dt2));
     }
@@ -2329,7 +2386,7 @@ mod tests {
             data: vec![ts2],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::Timestamp(ts2));
     }
@@ -2346,7 +2403,7 @@ mod tests {
             data: vec![j2.clone()],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::Json(j2));
     }
@@ -2365,7 +2422,7 @@ mod tests {
             nulls: NullBitmap::new_valid(1),
             element_type: DataType::Int64,
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::Array(arr2));
     }
@@ -2384,7 +2441,7 @@ mod tests {
             nulls: NullBitmap::new_valid(1),
             fields: vec![("x".to_string(), DataType::Int64)],
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::Struct(s2));
     }
@@ -2399,7 +2456,7 @@ mod tests {
             data: vec!["POINT(1 1)".to_string()],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(
             col1.get_value(1),
@@ -2427,7 +2484,7 @@ mod tests {
             data: vec![i2.clone()],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::Interval(i2));
     }
@@ -2446,7 +2503,7 @@ mod tests {
             nulls: NullBitmap::new_valid(1),
             element_type: DataType::Int64,
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
         assert_eq!(col1.len(), 2);
         assert_eq!(col1.get_value(1), Value::Range(r2));
     }
@@ -2462,7 +2519,7 @@ mod tests {
             data: vec!["a".to_string()],
             nulls: NullBitmap::new_valid(1),
         };
-        col1.extend(&col2);
+        col1.extend(&col2).unwrap();
     }
 
     #[test]
@@ -2475,7 +2532,7 @@ mod tests {
             data: AVec::from_iter(64, vec![10, 20, 30]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_add(&b);
+        let result = a.binary_add(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Int64(11));
         assert_eq!(result.get_value(1), Value::Int64(22));
         assert_eq!(result.get_value(2), Value::Int64(33));
@@ -2491,7 +2548,7 @@ mod tests {
             data: AVec::from_iter(64, vec![0.5, 1.5]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_add(&b);
+        let result = a.binary_add(&b).unwrap();
         assert_eq!(result.get_value(0), Value::float64(2.0));
         assert_eq!(result.get_value(1), Value::float64(4.0));
     }
@@ -2506,7 +2563,7 @@ mod tests {
             data: vec![Decimal::new(50, 2), Decimal::new(100, 2)],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_add(&b);
+        let result = a.binary_add(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Numeric(Decimal::new(150, 2)));
         assert_eq!(result.get_value(1), Value::Numeric(Decimal::new(300, 2)));
     }
@@ -2525,7 +2582,7 @@ mod tests {
             data: AVec::from_iter(64, vec![10, 20, 30]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_add(&b);
+        let result = a.binary_add(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Int64(11));
         assert_eq!(result.get_value(1), Value::Null);
         assert_eq!(result.get_value(2), Value::Int64(33));
@@ -2544,7 +2601,7 @@ mod tests {
             data: AVec::from_iter(64, vec![0.0, 3.0]),
             nulls: nulls_b,
         };
-        let result = a.binary_add(&b);
+        let result = a.binary_add(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::float64(5.0));
     }
@@ -2561,7 +2618,7 @@ mod tests {
             data: vec![Decimal::new(100, 2)],
             nulls: NullBitmap::new_valid(1),
         };
-        let result = a.binary_add(&b);
+        let result = a.binary_add(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
     }
 
@@ -2576,7 +2633,7 @@ mod tests {
             data: vec!["a".to_string()],
             nulls: NullBitmap::new_valid(1),
         };
-        a.binary_add(&b);
+        a.binary_add(&b).unwrap();
     }
 
     #[test]
@@ -2589,7 +2646,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1, 2, 3]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_sub(&b);
+        let result = a.binary_sub(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Int64(9));
         assert_eq!(result.get_value(1), Value::Int64(18));
         assert_eq!(result.get_value(2), Value::Int64(27));
@@ -2605,7 +2662,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1.5, 2.5]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_sub(&b);
+        let result = a.binary_sub(&b).unwrap();
         assert_eq!(result.get_value(0), Value::float64(3.5));
         assert_eq!(result.get_value(1), Value::float64(7.5));
     }
@@ -2620,7 +2677,7 @@ mod tests {
             data: vec![Decimal::new(200, 2)],
             nulls: NullBitmap::new_valid(1),
         };
-        let result = a.binary_sub(&b);
+        let result = a.binary_sub(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Numeric(Decimal::new(300, 2)));
     }
 
@@ -2637,7 +2694,7 @@ mod tests {
             data: AVec::from_iter(64, vec![5, 3]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_sub(&b);
+        let result = a.binary_sub(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Int64(7));
     }
@@ -2655,7 +2712,7 @@ mod tests {
             data: AVec::from_iter(64, vec![2.0, 0.0]),
             nulls,
         };
-        let result = a.binary_sub(&b);
+        let result = a.binary_sub(&b).unwrap();
         assert_eq!(result.get_value(0), Value::float64(3.0));
         assert_eq!(result.get_value(1), Value::Null);
     }
@@ -2672,7 +2729,7 @@ mod tests {
             data: vec![Decimal::ZERO],
             nulls,
         };
-        let result = a.binary_sub(&b);
+        let result = a.binary_sub(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
     }
 
@@ -2687,7 +2744,7 @@ mod tests {
             data: vec![true],
             nulls: NullBitmap::new_valid(1),
         };
-        a.binary_sub(&b);
+        a.binary_sub(&b).unwrap();
     }
 
     #[test]
@@ -2700,7 +2757,7 @@ mod tests {
             data: AVec::from_iter(64, vec![5, 6, 7]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_mul(&b);
+        let result = a.binary_mul(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Int64(10));
         assert_eq!(result.get_value(1), Value::Int64(18));
         assert_eq!(result.get_value(2), Value::Int64(28));
@@ -2716,7 +2773,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1.5, 2.0]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_mul(&b);
+        let result = a.binary_mul(&b).unwrap();
         assert_eq!(result.get_value(0), Value::float64(3.0));
         assert_eq!(result.get_value(1), Value::float64(6.0));
     }
@@ -2731,7 +2788,7 @@ mod tests {
             data: vec![Decimal::new(200, 2)],
             nulls: NullBitmap::new_valid(1),
         };
-        let result = a.binary_mul(&b);
+        let result = a.binary_mul(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Numeric(Decimal::new(200, 2)));
     }
 
@@ -2748,7 +2805,7 @@ mod tests {
             data: AVec::from_iter(64, vec![10, 10]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_mul(&b);
+        let result = a.binary_mul(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Int64(50));
     }
@@ -2766,7 +2823,7 @@ mod tests {
             data: AVec::from_iter(64, vec![3.0, 4.0]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_mul(&b);
+        let result = a.binary_mul(&b).unwrap();
         assert_eq!(result.get_value(0), Value::float64(6.0));
         assert_eq!(result.get_value(1), Value::Null);
     }
@@ -2783,7 +2840,7 @@ mod tests {
             data: vec![Decimal::new(100, 2)],
             nulls: NullBitmap::new_valid(1),
         };
-        let result = a.binary_mul(&b);
+        let result = a.binary_mul(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
     }
 
@@ -2798,7 +2855,7 @@ mod tests {
             data: vec!["a".to_string()],
             nulls: NullBitmap::new_valid(1),
         };
-        a.binary_mul(&b);
+        a.binary_mul(&b).unwrap();
     }
 
     #[test]
@@ -2811,7 +2868,7 @@ mod tests {
             data: AVec::from_iter(64, vec![2, 5, 10]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_div(&b);
+        let result = a.binary_div(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Int64(5));
         assert_eq!(result.get_value(1), Value::Int64(4));
         assert_eq!(result.get_value(2), Value::Int64(3));
@@ -2827,7 +2884,7 @@ mod tests {
             data: AVec::from_iter(64, vec![0, 5]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_div(&b);
+        let result = a.binary_div(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Int64(4));
     }
@@ -2842,7 +2899,7 @@ mod tests {
             data: AVec::from_iter(64, vec![2.0, 3.0]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_div(&b);
+        let result = a.binary_div(&b).unwrap();
         assert_eq!(result.get_value(0), Value::float64(5.0));
         assert_eq!(result.get_value(1), Value::float64(5.0));
     }
@@ -2857,7 +2914,7 @@ mod tests {
             data: vec![Decimal::new(200, 2)],
             nulls: NullBitmap::new_valid(1),
         };
-        let result = a.binary_div(&b);
+        let result = a.binary_div(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Numeric(Decimal::new(500, 2)));
     }
 
@@ -2871,7 +2928,7 @@ mod tests {
             data: vec![Decimal::ZERO],
             nulls: NullBitmap::new_valid(1),
         };
-        let result = a.binary_div(&b);
+        let result = a.binary_div(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
     }
 
@@ -2888,7 +2945,7 @@ mod tests {
             data: AVec::from_iter(64, vec![5, 4]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_div(&b);
+        let result = a.binary_div(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Int64(5));
     }
@@ -2906,7 +2963,7 @@ mod tests {
             data: AVec::from_iter(64, vec![2.0, 0.0]),
             nulls,
         };
-        let result = a.binary_div(&b);
+        let result = a.binary_div(&b).unwrap();
         assert_eq!(result.get_value(0), Value::float64(5.0));
         assert_eq!(result.get_value(1), Value::Null);
     }
@@ -2923,7 +2980,7 @@ mod tests {
             data: vec![Decimal::new(50, 2)],
             nulls: NullBitmap::new_valid(1),
         };
-        let result = a.binary_div(&b);
+        let result = a.binary_div(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
     }
 
@@ -2938,7 +2995,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1]),
             nulls: NullBitmap::new_valid(1),
         };
-        a.binary_div(&b);
+        a.binary_div(&b).unwrap();
     }
 
     #[test]
@@ -2951,7 +3008,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1, 5, 3]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
         assert_eq!(result.get_value(2), Value::Bool(true));
@@ -2967,7 +3024,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1.0, 3.0]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -2982,7 +3039,7 @@ mod tests {
             data: vec!["a".to_string(), "c".to_string()],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -2997,7 +3054,7 @@ mod tests {
             data: vec![true, true, false],
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3013,7 +3070,7 @@ mod tests {
             data: vec![vec![1, 2], vec![5, 6]],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3043,7 +3100,7 @@ mod tests {
             data: vec![i2, i3],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3060,7 +3117,7 @@ mod tests {
             data: vec![d1, d2],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3077,7 +3134,7 @@ mod tests {
             data: vec![t1, t2],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3100,7 +3157,7 @@ mod tests {
             data: vec![dt1, dt2],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3117,7 +3174,7 @@ mod tests {
             data: vec![ts1, ts2],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3135,7 +3192,7 @@ mod tests {
             data: AVec::from_iter(64, vec![0, 5]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -3151,7 +3208,7 @@ mod tests {
             data: vec!["1".to_string()],
             nulls: NullBitmap::new_valid(1),
         };
-        a.binary_eq(&b);
+        a.binary_eq(&b).unwrap();
     }
 
     #[test]
@@ -3164,7 +3221,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1, 5, 3]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_ne(&b);
+        let result = a.binary_ne(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(false));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3180,7 +3237,7 @@ mod tests {
             data: AVec::from_iter(64, vec![2, 3, 3]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3196,7 +3253,7 @@ mod tests {
             data: AVec::from_iter(64, vec![2.0, 3.0]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3211,7 +3268,7 @@ mod tests {
             data: vec!["b".to_string(), "a".to_string()],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3226,7 +3283,7 @@ mod tests {
             data: vec![vec![2], vec![3]],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3241,7 +3298,7 @@ mod tests {
             data: vec![Decimal::new(200, 2), Decimal::new(300, 2)],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3266,7 +3323,7 @@ mod tests {
             data: vec![i2, i1],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3283,7 +3340,7 @@ mod tests {
             data: vec![d2, d1],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3300,7 +3357,7 @@ mod tests {
             data: vec![t2, t1],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3323,7 +3380,7 @@ mod tests {
             data: vec![dt2, dt1],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3340,7 +3397,7 @@ mod tests {
             data: vec![ts2, ts1],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3358,7 +3415,7 @@ mod tests {
             data: AVec::from_iter(64, vec![5, 5]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -3374,7 +3431,7 @@ mod tests {
             data: vec![true],
             nulls: NullBitmap::new_valid(1),
         };
-        a.binary_lt(&b);
+        a.binary_lt(&b).unwrap();
     }
 
     #[test]
@@ -3387,7 +3444,7 @@ mod tests {
             data: AVec::from_iter(64, vec![2, 3, 4]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3403,7 +3460,7 @@ mod tests {
             data: AVec::from_iter(64, vec![2.0, 3.0, 4.0]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3419,7 +3476,7 @@ mod tests {
             data: vec!["b".to_string(), "b".to_string(), "a".to_string()],
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3435,7 +3492,7 @@ mod tests {
             data: vec![vec![2], vec![2], vec![1]],
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3459,7 +3516,7 @@ mod tests {
             ],
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3490,7 +3547,7 @@ mod tests {
             data: vec![i3, i1.clone(), i1],
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3508,7 +3565,7 @@ mod tests {
             data: vec![d2, d1, d1],
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3526,7 +3583,7 @@ mod tests {
             data: vec![t2, t1, t1],
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3550,7 +3607,7 @@ mod tests {
             data: vec![dt2, dt1, dt1],
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3568,7 +3625,7 @@ mod tests {
             data: vec![ts2, ts1, ts1],
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3587,7 +3644,7 @@ mod tests {
             data: AVec::from_iter(64, vec![5, 3]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -3603,7 +3660,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1]),
             nulls: NullBitmap::new_valid(1),
         };
-        a.binary_le(&b);
+        a.binary_le(&b).unwrap();
     }
 
     #[test]
@@ -3616,7 +3673,7 @@ mod tests {
             data: AVec::from_iter(64, vec![2, 2, 2]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_gt(&b);
+        let result = a.binary_gt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(false));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3632,7 +3689,7 @@ mod tests {
             data: AVec::from_iter(64, vec![2, 2, 2]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = a.binary_ge(&b);
+        let result = a.binary_ge(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3648,13 +3705,13 @@ mod tests {
             data: vec![true, false, true, false],
             nulls: NullBitmap::new_valid(4),
         };
-        let and_result = a.binary_and(&b);
+        let and_result = a.binary_and(&b).unwrap();
         assert_eq!(and_result.get_value(0), Value::Bool(true));
         assert_eq!(and_result.get_value(1), Value::Bool(false));
         assert_eq!(and_result.get_value(2), Value::Bool(false));
         assert_eq!(and_result.get_value(3), Value::Bool(false));
 
-        let or_result = a.binary_or(&b);
+        let or_result = a.binary_or(&b).unwrap();
         assert_eq!(or_result.get_value(0), Value::Bool(true));
         assert_eq!(or_result.get_value(1), Value::Bool(true));
         assert_eq!(or_result.get_value(2), Value::Bool(true));
@@ -3681,7 +3738,7 @@ mod tests {
             data: vec![false, true, false, true],
             nulls: nulls_b,
         };
-        let result = a.binary_and(&b);
+        let result = a.binary_and(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Null);
         assert_eq!(result.get_value(2), Value::Null);
@@ -3704,7 +3761,7 @@ mod tests {
             data: vec![false, false],
             nulls: nulls_b,
         };
-        let result = a.binary_and(&b);
+        let result = a.binary_and(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(false));
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3729,7 +3786,7 @@ mod tests {
             data: vec![false, false, false, false],
             nulls: nulls_b,
         };
-        let result = a.binary_or(&b);
+        let result = a.binary_or(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Null);
         assert_eq!(result.get_value(2), Value::Bool(true));
@@ -3752,7 +3809,7 @@ mod tests {
             data: vec![false, true],
             nulls: nulls_b,
         };
-        let result = a.binary_or(&b);
+        let result = a.binary_or(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -3767,7 +3824,7 @@ mod tests {
             data: AVec::from_iter(64, vec![0, 0]),
             nulls: NullBitmap::new_null(2),
         };
-        let result = a.binary_and(&b);
+        let result = a.binary_and(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3782,7 +3839,7 @@ mod tests {
             data: vec![true, false],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_and(&b);
+        let result = a.binary_and(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(false));
     }
@@ -3797,7 +3854,7 @@ mod tests {
             data: AVec::from_iter(64, vec![0]),
             nulls: NullBitmap::new_null(1),
         };
-        let result = a.binary_and(&b);
+        let result = a.binary_and(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
     }
 
@@ -3811,7 +3868,7 @@ mod tests {
             data: AVec::from_iter(64, vec![0, 0]),
             nulls: NullBitmap::new_null(2),
         };
-        let result = a.binary_or(&b);
+        let result = a.binary_or(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Null);
     }
@@ -3826,7 +3883,7 @@ mod tests {
             data: vec![true, false],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_or(&b);
+        let result = a.binary_or(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Bool(true));
         assert_eq!(result.get_value(1), Value::Null);
     }
@@ -3841,7 +3898,7 @@ mod tests {
             data: AVec::from_iter(64, vec![0]),
             nulls: NullBitmap::new_null(1),
         };
-        let result = a.binary_or(&b);
+        let result = a.binary_or(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
     }
 
@@ -3856,7 +3913,7 @@ mod tests {
             data: vec!["a".to_string()],
             nulls: NullBitmap::new_valid(1),
         };
-        a.binary_and(&b);
+        a.binary_and(&b).unwrap();
     }
 
     #[test]
@@ -3870,7 +3927,7 @@ mod tests {
             data: vec!["a".to_string()],
             nulls: NullBitmap::new_valid(1),
         };
-        a.binary_or(&b);
+        a.binary_or(&b).unwrap();
     }
 
     #[test]
@@ -3879,7 +3936,7 @@ mod tests {
             data: vec![true, false, true],
             nulls: NullBitmap::new_valid(3),
         };
-        let result = col.unary_not();
+        let result = col.unary_not().unwrap();
         assert_eq!(result.get_value(0), Value::Bool(false));
         assert_eq!(result.get_value(1), Value::Bool(true));
         assert_eq!(result.get_value(2), Value::Bool(false));
@@ -3895,20 +3952,26 @@ mod tests {
             data: vec![true, false, false],
             nulls,
         };
-        let result = col.unary_not();
+        let result = col.unary_not().unwrap();
         assert_eq!(result.get_value(0), Value::Bool(false));
         assert_eq!(result.get_value(1), Value::Null);
         assert_eq!(result.get_value(2), Value::Bool(true));
     }
 
     #[test]
-    #[should_panic(expected = "unary_not: requires Bool column")]
     fn test_unary_not_non_bool() {
         let col = Column::Int64 {
             data: AVec::from_iter(64, vec![1]),
             nulls: NullBitmap::new_valid(1),
         };
-        col.unary_not();
+        let result = col.unary_not();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unary_not: requires Bool column")
+        );
     }
 
     #[test]
@@ -3917,7 +3980,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1, -2, 3]),
             nulls: NullBitmap::new_valid(3),
         };
-        let result = col.unary_neg();
+        let result = col.unary_neg().unwrap();
         assert_eq!(result.get_value(0), Value::Int64(-1));
         assert_eq!(result.get_value(1), Value::Int64(2));
         assert_eq!(result.get_value(2), Value::Int64(-3));
@@ -3929,7 +3992,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1.5, -2.5]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = col.unary_neg();
+        let result = col.unary_neg().unwrap();
         assert_eq!(result.get_value(0), Value::float64(-1.5));
         assert_eq!(result.get_value(1), Value::float64(2.5));
     }
@@ -3940,7 +4003,7 @@ mod tests {
             data: vec![Decimal::new(100, 2), Decimal::new(-200, 2)],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = col.unary_neg();
+        let result = col.unary_neg().unwrap();
         assert_eq!(result.get_value(0), Value::Numeric(Decimal::new(-100, 2)));
         assert_eq!(result.get_value(1), Value::Numeric(Decimal::new(200, 2)));
     }
@@ -3954,7 +4017,7 @@ mod tests {
             data: AVec::from_iter(64, vec![5, 0]),
             nulls,
         };
-        let result = col.unary_neg();
+        let result = col.unary_neg().unwrap();
         assert_eq!(result.get_value(0), Value::Int64(-5));
         assert_eq!(result.get_value(1), Value::Null);
     }
@@ -3966,7 +4029,7 @@ mod tests {
             data: vec!["a".to_string()],
             nulls: NullBitmap::new_valid(1),
         };
-        col.unary_neg();
+        col.unary_neg().unwrap();
     }
 
     #[test]
@@ -4090,7 +4153,7 @@ mod tests {
             data: AVec::from_iter(64, vec![0.0, 5.0]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4108,7 +4171,7 @@ mod tests {
             data: vec!["".to_string(), "test".to_string()],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4126,7 +4189,7 @@ mod tests {
             data: vec![false, true],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4144,7 +4207,7 @@ mod tests {
             data: vec![vec![], vec![1, 2]],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4167,7 +4230,7 @@ mod tests {
             data: vec![i1.clone(), i1],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4186,7 +4249,7 @@ mod tests {
             data: vec![d, d],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4205,7 +4268,7 @@ mod tests {
             data: vec![t, t],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4227,7 +4290,7 @@ mod tests {
             data: vec![dt, dt],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4246,7 +4309,7 @@ mod tests {
             data: vec![ts, ts],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_eq(&b);
+        let result = a.binary_eq(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4264,7 +4327,7 @@ mod tests {
             data: AVec::from_iter(64, vec![5.0, 5.0]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4282,7 +4345,7 @@ mod tests {
             data: vec!["z".to_string(), "z".to_string()],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4300,7 +4363,7 @@ mod tests {
             data: vec![vec![9], vec![9]],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4318,7 +4381,7 @@ mod tests {
             data: vec![Decimal::new(999, 2), Decimal::new(999, 2)],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4346,7 +4409,7 @@ mod tests {
             data: vec![i2.clone(), i2],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4366,7 +4429,7 @@ mod tests {
             data: vec![d2, d2],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4386,7 +4449,7 @@ mod tests {
             data: vec![t2, t2],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4412,7 +4475,7 @@ mod tests {
             data: vec![dt2, dt2],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4432,7 +4495,7 @@ mod tests {
             data: vec![ts2, ts2],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_lt(&b);
+        let result = a.binary_lt(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4450,7 +4513,7 @@ mod tests {
             data: AVec::from_iter(64, vec![5.0, 3.0]),
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4468,7 +4531,7 @@ mod tests {
             data: vec!["z".to_string(), "test".to_string()],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4486,7 +4549,7 @@ mod tests {
             data: vec![vec![9], vec![1, 2]],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4504,7 +4567,7 @@ mod tests {
             data: vec![Decimal::new(999, 2), Decimal::new(100, 2)],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4527,7 +4590,7 @@ mod tests {
             data: vec![i1.clone(), i1],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4546,7 +4609,7 @@ mod tests {
             data: vec![d, d],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4565,7 +4628,7 @@ mod tests {
             data: vec![t, t],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4587,7 +4650,7 @@ mod tests {
             data: vec![dt, dt],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }
@@ -4606,7 +4669,7 @@ mod tests {
             data: vec![ts, ts],
             nulls: NullBitmap::new_valid(2),
         };
-        let result = a.binary_le(&b);
+        let result = a.binary_le(&b).unwrap();
         assert_eq!(result.get_value(0), Value::Null);
         assert_eq!(result.get_value(1), Value::Bool(true));
     }

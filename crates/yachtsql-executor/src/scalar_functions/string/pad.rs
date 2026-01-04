@@ -12,8 +12,11 @@ pub fn fn_lpad(args: &[Value]) -> Result<Value> {
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::String(s), Value::Int64(n)) => {
-            let pad_str = args.get(2).and_then(|v| v.as_str()).unwrap_or(" ");
+            if *n < 0 {
+                return Ok(Value::String(String::new()));
+            }
             let n = *n as usize;
+            let pad_str = args.get(2).and_then(|v| v.as_str()).unwrap_or(" ");
             let s_chars: Vec<char> = s.chars().collect();
             if s_chars.len() >= n {
                 Ok(Value::String(s_chars[..n].iter().collect()))
@@ -44,8 +47,11 @@ pub fn fn_rpad(args: &[Value]) -> Result<Value> {
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::String(s), Value::Int64(n)) => {
-            let pad_str = args.get(2).and_then(|v| v.as_str()).unwrap_or(" ");
+            if *n < 0 {
+                return Ok(Value::String(String::new()));
+            }
             let n = *n as usize;
+            let pad_str = args.get(2).and_then(|v| v.as_str()).unwrap_or(" ");
             let s_chars: Vec<char> = s.chars().collect();
             if s_chars.len() >= n {
                 Ok(Value::String(s_chars[..n].iter().collect()))

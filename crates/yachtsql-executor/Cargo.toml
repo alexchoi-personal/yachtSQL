@@ -29,6 +29,7 @@ toml = "0.8"
 itertools = "0.13"
 indexmap = { version = "2.12", features = ["serde"] }
 hashbrown = "0.15"
+rustc-hash = "2.1"
 ordered-float = "4.5"
 natord = "1.0"
 log = "0.4"

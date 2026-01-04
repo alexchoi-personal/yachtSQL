@@ -1,12 +1,15 @@
 #![coverage(off)]
 
-use regex::Regex;
+use regex::RegexBuilder;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::Expr;
 use yachtsql_storage::{Column, Table};
 
 use crate::columnar_evaluator::ColumnarEvaluator;
+
+const MAX_PATTERN_LENGTH: usize = 10_000;
+const REGEX_SIZE_LIMIT: usize = 10 * 1024 * 1024;
 
 pub fn eval_like(
     evaluator: &ColumnarEvaluator,
@@ -29,8 +32,17 @@ pub fn eval_like(
         match (&s, &p) {
             (Value::Null, _) | (_, Value::Null) => results.push(Value::Null),
             (Value::String(s), Value::String(p)) => {
+                if p.len() > MAX_PATTERN_LENGTH {
+                    return Err(Error::InvalidQuery(format!(
+                        "LIKE pattern length {} exceeds maximum of {} characters",
+                        p.len(),
+                        MAX_PATTERN_LENGTH
+                    )));
+                }
                 let regex_pattern = like_to_regex(p, case_insensitive);
-                let re = Regex::new(&regex_pattern)
+                let re = RegexBuilder::new(&regex_pattern)
+                    .size_limit(REGEX_SIZE_LIMIT)
+                    .build()
                     .map_err(|e| Error::InvalidQuery(format!("Invalid pattern: {}", e)))?;
                 let matches = re.is_match(s);
                 results.push(Value::Bool(if negated { !matches } else { matches }));

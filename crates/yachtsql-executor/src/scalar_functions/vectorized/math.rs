@@ -12,7 +12,7 @@ pub fn abs(args: &[Column]) -> Result<Column> {
         Column::Int64 { data, nulls } => {
             let mut result_data = AVec::with_capacity(64, data.len());
             for &v in data.as_slice() {
-                result_data.push(v.abs());
+                result_data.push(v.saturating_abs());
             }
             Ok(Column::Int64 {
                 data: result_data,

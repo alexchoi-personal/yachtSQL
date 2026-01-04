@@ -10,7 +10,7 @@ mod logical;
 mod statistical;
 mod utils;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) use approximate::{
     ApproxQuantilesAccumulator, ApproxTopCountAccumulator, ApproxTopSumAccumulator,
@@ -57,7 +57,7 @@ pub(crate) enum Accumulator {
     },
     First(Option<Value>),
     Last(Option<Value>),
-    CountDistinct(Vec<Value>),
+    CountDistinct(HashSet<Value>),
     BitAnd(Option<i64>),
     BitOr(Option<i64>),
     BitXor(Option<i64>),
@@ -114,7 +114,7 @@ impl Accumulator {
             Some(func) => match func {
                 AggregateFunction::Count => {
                     if distinct {
-                        Accumulator::CountDistinct(Vec::new())
+                        Accumulator::CountDistinct(HashSet::new())
                     } else {
                         Accumulator::Count(0)
                     }
@@ -230,7 +230,9 @@ impl Accumulator {
                     is_sample: true,
                     stat_type: CovarianceStatType::Covariance,
                 },
-                AggregateFunction::ApproxCountDistinct => Accumulator::CountDistinct(Vec::new()),
+                AggregateFunction::ApproxCountDistinct => {
+                    Accumulator::CountDistinct(HashSet::new())
+                }
             },
             None => Accumulator::Count(0),
         }
@@ -304,8 +306,8 @@ impl Accumulator {
                 }
             }
             Accumulator::CountDistinct(values) => {
-                if !value.is_null() && !values.contains(value) {
-                    values.push(value.clone());
+                if !value.is_null() {
+                    values.insert(value.clone());
                 }
             }
             Accumulator::BitAnd(acc) => {
@@ -823,9 +825,7 @@ impl Accumulator {
             }
             (Accumulator::CountDistinct(a), Accumulator::CountDistinct(b)) => {
                 for v in b {
-                    if !a.contains(v) {
-                        a.push(v.clone());
-                    }
+                    a.insert(v.clone());
                 }
             }
             (Accumulator::BitAnd(a), Accumulator::BitAnd(b)) => {

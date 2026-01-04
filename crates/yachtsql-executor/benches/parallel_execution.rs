@@ -660,12 +660,129 @@ fn bench_large_join(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_optimizer_phases(c: &mut Criterion) {
+    let mut group = c.benchmark_group("optimizer_phases");
+    group.sample_size(10);
+
+    let rt = Runtime::new().unwrap();
+    let executor = AsyncQueryExecutor::new();
+    setup_ecommerce_schema(&executor, 1000, &rt);
+
+    let join_query = "
+        SELECT c.name, p.name, SUM(oi.quantity)
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.order_id
+        JOIN customers c ON o.customer_id = c.customer_id
+        JOIN products p ON oi.product_id = p.product_id
+        WHERE o.status = 'Completed'
+        GROUP BY c.name, p.name
+    ";
+
+    rt.block_on(async {
+        executor
+            .execute_sql("SET OPTIMIZER_JOIN_REORDER = true")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = true")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = true")
+            .await
+            .unwrap();
+    });
+    group.bench_function("all_on", |b| {
+        b.to_async(&rt)
+            .iter(|| async { executor.execute_sql(join_query).await.unwrap() });
+    });
+
+    rt.block_on(async {
+        executor
+            .execute_sql("SET OPTIMIZER_JOIN_REORDER = false")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = false")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = false")
+            .await
+            .unwrap();
+    });
+    group.bench_function("all_off", |b| {
+        b.to_async(&rt)
+            .iter(|| async { executor.execute_sql(join_query).await.unwrap() });
+    });
+
+    rt.block_on(async {
+        executor
+            .execute_sql("SET OPTIMIZER_JOIN_REORDER = true")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = false")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = false")
+            .await
+            .unwrap();
+    });
+    group.bench_function("join_reorder_only", |b| {
+        b.to_async(&rt)
+            .iter(|| async { executor.execute_sql(join_query).await.unwrap() });
+    });
+
+    rt.block_on(async {
+        executor
+            .execute_sql("SET OPTIMIZER_JOIN_REORDER = false")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = true")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = false")
+            .await
+            .unwrap();
+    });
+    group.bench_function("filter_pushdown_only", |b| {
+        b.to_async(&rt)
+            .iter(|| async { executor.execute_sql(join_query).await.unwrap() });
+    });
+
+    rt.block_on(async {
+        executor
+            .execute_sql("SET OPTIMIZER_JOIN_REORDER = false")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = false")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = true")
+            .await
+            .unwrap();
+    });
+    group.bench_function("projection_pushdown_only", |b| {
+        b.to_async(&rt)
+            .iter(|| async { executor.execute_sql(join_query).await.unwrap() });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_large_join,
     bench_complex_analytical_queries,
     bench_customer_lifetime_value,
     bench_revenue_with_window_functions,
-    bench_multi_cte_union
+    bench_multi_cte_union,
+    bench_optimizer_phases
 );
 criterion_main!(benches);

@@ -92,27 +92,38 @@ impl TableLockSet {
     }
 
     pub fn add_read_table(&self, name: String, table: Table) {
-        if let Ok(mut guard) = self.read_tables.lock() {
-            guard.insert(name, table);
+        match self.read_tables.lock() {
+            Ok(mut guard) => {
+                guard.insert(name, table);
+            }
+            Err(poisoned) => {
+                tracing::error!("read_tables mutex poisoned, recovering");
+                poisoned.into_inner().insert(name, table);
+            }
         }
     }
 
     pub fn add_write_table(&self, name: String, table: Table) {
-        if let Ok(mut guard) = self.write_tables.lock() {
-            guard.insert(name, table);
+        match self.write_tables.lock() {
+            Ok(mut guard) => {
+                guard.insert(name, table);
+            }
+            Err(poisoned) => {
+                tracing::error!("write_tables mutex poisoned, recovering");
+                poisoned.into_inner().insert(name, table);
+            }
         }
     }
 
     pub fn get_table(&self, name: &str) -> Option<Table> {
         let upper = name.to_uppercase();
-        if let Ok(guard) = self.write_tables.lock()
-            && let Some(table) = guard.get(&upper)
-        {
+        let write_guard = self.write_tables.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(table) = write_guard.get(&upper) {
             return Some(table.clone());
         }
-        if let Ok(guard) = self.read_tables.lock()
-            && let Some(table) = guard.get(&upper)
-        {
+        drop(write_guard);
+        let read_guard = self.read_tables.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(table) = read_guard.get(&upper) {
             return Some(table.clone());
         }
         None
@@ -245,31 +256,49 @@ impl ConcurrentCatalog {
         }
     }
 
-    pub fn begin_transaction(&self) {
+    pub fn begin_transaction(&self) -> Result<()> {
         let mut tables_snapshot = HashMap::new();
         for entry in self.tables.iter() {
-            if let Some(table) = entry.value().try_read() {
-                tables_snapshot.insert(entry.key().clone(), table.clone());
+            match entry.value().try_read() {
+                Some(table) => {
+                    tables_snapshot.insert(entry.key().clone(), table.clone());
+                }
+                None => {
+                    return Err(Error::InvalidQuery(format!(
+                        "Cannot begin transaction: table '{}' is currently locked by another operation",
+                        entry.key()
+                    )));
+                }
             }
         }
         *self.transaction_snapshot.write() = Some(TransactionSnapshot {
             tables: tables_snapshot,
         });
+        Ok(())
     }
 
-    pub fn begin_transaction_with_tables(&self, table_names: &[String]) {
+    pub fn begin_transaction_with_tables(&self, table_names: &[String]) -> Result<()> {
         let mut tables_snapshot = HashMap::new();
         for name in table_names {
             let key = name.to_uppercase();
-            if let Some(handle) = self.tables.get(&key)
-                && let Some(table) = handle.try_read()
-            {
-                tables_snapshot.insert(key, table.clone());
+            if let Some(handle) = self.tables.get(&key) {
+                match handle.try_read() {
+                    Some(table) => {
+                        tables_snapshot.insert(key, table.clone());
+                    }
+                    None => {
+                        return Err(Error::InvalidQuery(format!(
+                            "Cannot begin transaction: table '{}' is currently locked by another operation",
+                            name
+                        )));
+                    }
+                }
             }
         }
         *self.transaction_snapshot.write() = Some(TransactionSnapshot {
             tables: tables_snapshot,
         });
+        Ok(())
     }
 
     pub fn snapshot_table(&self, name: &str, table_data: Table) {

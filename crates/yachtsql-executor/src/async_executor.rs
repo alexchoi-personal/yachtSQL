@@ -10,7 +10,7 @@ use lru::LruCache;
 use regex::Regex;
 use tracing::{debug, info, instrument};
 use yachtsql_common::error::Result;
-use yachtsql_optimizer::OptimizedLogicalPlan;
+use yachtsql_optimizer::{OptimizedLogicalPlan, OptimizerSettings};
 use yachtsql_storage::Table;
 
 use crate::concurrent_catalog::ConcurrentCatalog;
@@ -112,6 +112,26 @@ impl AsyncQueryExecutor {
         }
     }
 
+    fn get_optimizer_settings(&self) -> OptimizerSettings {
+        OptimizerSettings {
+            join_reorder: self
+                .session
+                .get_variable("OPTIMIZER_JOIN_REORDER")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            filter_pushdown: self
+                .session
+                .get_variable("OPTIMIZER_FILTER_PUSHDOWN")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            projection_pushdown: self
+                .session
+                .get_variable("OPTIMIZER_PROJECTION_PUSHDOWN")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+        }
+    }
+
     #[instrument(skip(self), fields(sql_length = sql.len()))]
     pub async fn execute_sql(&self, sql: &str) -> Result<Table> {
         let sql = preprocess_range_types(sql);
@@ -126,7 +146,8 @@ impl AsyncQueryExecutor {
             Some(plan) => plan,
             None => {
                 let logical = yachtsql_parser::parse_and_plan(&sql, self)?;
-                let physical = yachtsql_optimizer::optimize(&logical)?;
+                let settings = self.get_optimizer_settings();
+                let physical = yachtsql_optimizer::optimize_with_settings(&logical, &settings)?;
 
                 if is_cacheable_plan(&physical) {
                     let mut cache = self.plan_cache.write().unwrap_or_else(|e| e.into_inner());

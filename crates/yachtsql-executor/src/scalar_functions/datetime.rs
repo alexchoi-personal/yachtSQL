@@ -9,12 +9,20 @@ fn add_interval_to_date(date: &NaiveDate, interval: &IntervalValue) -> Result<Na
     let mut result = *date;
     if interval.months != 0 {
         result = if interval.months > 0 {
+            let months_u32 = u32::try_from(interval.months)
+                .map_err(|_| Error::InvalidQuery("Interval months overflow".into()))?;
             result
-                .checked_add_months(Months::new(interval.months as u32))
+                .checked_add_months(Months::new(months_u32))
                 .ok_or_else(|| Error::InvalidQuery("Date overflow".into()))?
         } else {
+            let neg_months = interval
+                .months
+                .checked_neg()
+                .ok_or_else(|| Error::InvalidQuery("Interval months overflow".into()))?;
+            let months_u32 = u32::try_from(neg_months)
+                .map_err(|_| Error::InvalidQuery("Interval months overflow".into()))?;
             result
-                .checked_sub_months(Months::new((-interval.months) as u32))
+                .checked_sub_months(Months::new(months_u32))
                 .ok_or_else(|| Error::InvalidQuery("Date overflow".into()))?
         };
     }
@@ -29,12 +37,20 @@ fn add_interval_to_datetime(dt: &NaiveDateTime, interval: &IntervalValue) -> Res
     let mut result = *dt;
     if interval.months != 0 {
         result = if interval.months > 0 {
+            let months_u32 = u32::try_from(interval.months)
+                .map_err(|_| Error::InvalidQuery("Interval months overflow".into()))?;
             result
-                .checked_add_months(Months::new(interval.months as u32))
+                .checked_add_months(Months::new(months_u32))
                 .ok_or_else(|| Error::InvalidQuery("DateTime overflow".into()))?
         } else {
+            let neg_months = interval
+                .months
+                .checked_neg()
+                .ok_or_else(|| Error::InvalidQuery("Interval months overflow".into()))?;
+            let months_u32 = u32::try_from(neg_months)
+                .map_err(|_| Error::InvalidQuery("Interval months overflow".into()))?;
             result
-                .checked_sub_months(Months::new((-interval.months) as u32))
+                .checked_sub_months(Months::new(months_u32))
                 .ok_or_else(|| Error::InvalidQuery("DateTime overflow".into()))?
         };
     }

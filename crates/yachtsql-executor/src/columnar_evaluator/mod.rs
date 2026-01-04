@@ -331,8 +331,9 @@ impl<'a> ColumnarEvaluator<'a> {
             Literal::String(s) => Value::String(s.clone()),
             Literal::Bytes(b) => Value::Bytes(b.clone()),
             Literal::Date(d) => {
-                let date = chrono::NaiveDate::from_num_days_from_ce_opt(*d)
-                    .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.date_naive());
+                let date = chrono::NaiveDate::from_num_days_from_ce_opt(*d).ok_or_else(|| {
+                    Error::InvalidQuery(format!("Invalid date literal: {} days from CE", d))
+                })?;
                 Value::Date(date)
             }
             Literal::Time(t) => {
@@ -340,7 +341,9 @@ impl<'a> ColumnarEvaluator<'a> {
                 let secs = (nanos / 1_000_000_000) as u32;
                 let nsecs = (nanos % 1_000_000_000) as u32;
                 let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, nsecs)
-                    .unwrap_or(chrono::NaiveTime::MIN);
+                    .ok_or_else(|| {
+                        Error::InvalidQuery(format!("Invalid time literal: {} nanoseconds", t))
+                    })?;
                 Value::Time(time)
             }
             Literal::Timestamp(ts) => {
@@ -348,7 +351,9 @@ impl<'a> ColumnarEvaluator<'a> {
                     *ts / 1_000_000,
                     ((*ts % 1_000_000) * 1000) as u32,
                 )
-                .unwrap_or(chrono::DateTime::UNIX_EPOCH);
+                .ok_or_else(|| {
+                    Error::InvalidQuery(format!("Invalid timestamp literal: {} microseconds", ts))
+                })?;
                 Value::Timestamp(dt)
             }
             Literal::Datetime(dt) => {
@@ -357,7 +362,9 @@ impl<'a> ColumnarEvaluator<'a> {
                     ((*dt % 1_000_000) * 1000) as u32,
                 )
                 .map(|d| d.naive_utc())
-                .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH.naive_utc());
+                .ok_or_else(|| {
+                    Error::InvalidQuery(format!("Invalid datetime literal: {} microseconds", dt))
+                })?;
                 Value::DateTime(ndt)
             }
             Literal::Interval {
@@ -497,19 +504,19 @@ impl<'a> ColumnarEvaluator<'a> {
         let (left_col, right_col) = self.coerce_columns_for_op(left_col, right_col, op)?;
 
         match op {
-            BinaryOp::Add => Ok(left_col.binary_add(&right_col)),
-            BinaryOp::Sub => Ok(left_col.binary_sub(&right_col)),
-            BinaryOp::Mul => Ok(left_col.binary_mul(&right_col)),
-            BinaryOp::Div => Ok(left_col.binary_div(&right_col)),
+            BinaryOp::Add => left_col.binary_add(&right_col),
+            BinaryOp::Sub => left_col.binary_sub(&right_col),
+            BinaryOp::Mul => left_col.binary_mul(&right_col),
+            BinaryOp::Div => left_col.binary_div(&right_col),
             BinaryOp::Mod => self.eval_binary_mod(&left_col, &right_col),
-            BinaryOp::Eq => Ok(left_col.binary_eq(&right_col)),
-            BinaryOp::NotEq => Ok(left_col.binary_ne(&right_col)),
-            BinaryOp::Lt => Ok(left_col.binary_lt(&right_col)),
-            BinaryOp::LtEq => Ok(left_col.binary_le(&right_col)),
-            BinaryOp::Gt => Ok(left_col.binary_gt(&right_col)),
-            BinaryOp::GtEq => Ok(left_col.binary_ge(&right_col)),
-            BinaryOp::And => Ok(left_col.binary_and(&right_col)),
-            BinaryOp::Or => Ok(left_col.binary_or(&right_col)),
+            BinaryOp::Eq => left_col.binary_eq(&right_col),
+            BinaryOp::NotEq => left_col.binary_ne(&right_col),
+            BinaryOp::Lt => left_col.binary_lt(&right_col),
+            BinaryOp::LtEq => left_col.binary_le(&right_col),
+            BinaryOp::Gt => left_col.binary_gt(&right_col),
+            BinaryOp::GtEq => left_col.binary_ge(&right_col),
+            BinaryOp::And => left_col.binary_and(&right_col),
+            BinaryOp::Or => left_col.binary_or(&right_col),
             BinaryOp::Concat
             | BinaryOp::BitwiseAnd
             | BinaryOp::BitwiseOr
@@ -605,7 +612,7 @@ impl<'a> ColumnarEvaluator<'a> {
         match op {
             UnaryOp::Not => {
                 if matches!(col, Column::Bool { .. }) {
-                    Ok(col.unary_not())
+                    col.unary_not()
                 } else {
                     let n = col.len();
                     let mut results = Vec::with_capacity(n);
@@ -625,7 +632,7 @@ impl<'a> ColumnarEvaluator<'a> {
                     Ok(Column::from_values(&results))
                 }
             }
-            UnaryOp::Minus => Ok(col.unary_neg()),
+            UnaryOp::Minus => col.unary_neg(),
             UnaryOp::Plus => Ok(col),
             UnaryOp::BitwiseNot => eval_unary_op_ext(self, op, expr, table),
         }
@@ -677,7 +684,7 @@ impl<'a> ColumnarEvaluator<'a> {
             let result_col = self.evaluate(&wc.result, table)?;
 
             let condition_col = match &operand_col {
-                Some(op_col) => op_col.binary_eq(&condition_col),
+                Some(op_col) => op_col.binary_eq(&condition_col)?,
                 None => condition_col,
             };
 

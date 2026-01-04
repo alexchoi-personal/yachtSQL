@@ -1,19 +1,152 @@
 #![coverage(off)]
 
 use std::ffi::CString;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use ordered_float::OrderedFloat;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use yachtsql_common::types::Value;
 
+const PY_EXECUTION_TIMEOUT_MS: u64 = 5000;
+const PY_CODE_SIZE_LIMIT: usize = 1024 * 1024;
+const PY_RECURSION_LIMIT: i32 = 100;
+
+const ALLOWED_BUILTINS: &[&str] = &[
+    "abs",
+    "all",
+    "any",
+    "bin",
+    "bool",
+    "bytearray",
+    "bytes",
+    "callable",
+    "chr",
+    "complex",
+    "dict",
+    "divmod",
+    "enumerate",
+    "filter",
+    "float",
+    "format",
+    "frozenset",
+    "hasattr",
+    "hash",
+    "hex",
+    "int",
+    "isinstance",
+    "issubclass",
+    "iter",
+    "len",
+    "list",
+    "map",
+    "max",
+    "min",
+    "next",
+    "oct",
+    "ord",
+    "pow",
+    "print",
+    "range",
+    "repr",
+    "reversed",
+    "round",
+    "set",
+    "slice",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
+    "type",
+    "zip",
+    "None",
+    "True",
+    "False",
+    "Ellipsis",
+    "NotImplemented",
+    "Exception",
+    "BaseException",
+    "ValueError",
+    "TypeError",
+    "KeyError",
+    "IndexError",
+    "AttributeError",
+    "RuntimeError",
+    "StopIteration",
+    "ZeroDivisionError",
+    "OverflowError",
+    "ArithmeticError",
+    "LookupError",
+];
+
 pub fn evaluate_py_function(
     py_code: &str,
     param_names: &[String],
     args: &[Value],
 ) -> Result<Value, String> {
+    if py_code.len() > PY_CODE_SIZE_LIMIT {
+        return Err(format!(
+            "Python code size {} exceeds limit of {} bytes",
+            py_code.len(),
+            PY_CODE_SIZE_LIMIT
+        ));
+    }
+
+    let code = py_code.to_string();
+    let names = param_names.to_vec();
+    let arguments = args.to_vec();
+
+    let (tx, rx) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let result = execute_py_internal(&code, &names, &arguments);
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(Duration::from_millis(PY_EXECUTION_TIMEOUT_MS)) {
+        Ok(result) => {
+            let _ = handle.join();
+            result
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            "Python execution timed out after {}ms",
+            PY_EXECUTION_TIMEOUT_MS
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("Python execution thread panicked".to_string())
+        }
+    }
+}
+
+fn execute_py_internal(
+    py_code: &str,
+    param_names: &[String],
+    args: &[Value],
+) -> Result<Value, String> {
     Python::attach(|py| {
+        let sys = py
+            .import("sys")
+            .map_err(|e| format!("Failed to import sys: {}", e))?;
+        sys.call_method1("setrecursionlimit", (PY_RECURSION_LIMIT,))
+            .map_err(|e| format!("Failed to set recursion limit: {}", e))?;
+
+        let builtins = py
+            .import("builtins")
+            .map_err(|e| format!("Failed to import builtins: {}", e))?;
+        let restricted_builtins = PyDict::new(py);
+        for &name in ALLOWED_BUILTINS {
+            if let Ok(obj) = builtins.getattr(name) {
+                restricted_builtins
+                    .set_item(name, obj)
+                    .map_err(|e| format!("Failed to set builtin {}: {}", name, e))?;
+            }
+        }
+
         let globals = PyDict::new(py);
+        globals
+            .set_item("__builtins__", restricted_builtins)
+            .map_err(|e| format!("Failed to set __builtins__: {}", e))?;
 
         for (name, value) in param_names.iter().zip(args.iter()) {
             let py_value = value_to_py(py, value)?;

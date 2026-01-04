@@ -1,6 +1,8 @@
 #![coverage(off)]
 
-use yachtsql_ir::{BinaryOp, Expr};
+use std::collections::{HashMap, HashSet};
+
+use yachtsql_ir::{BinaryOp, Expr, JoinType};
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum PredicateSide {
@@ -195,4 +197,414 @@ pub fn adjust_predicate_indices(expr: &Expr, offset: usize) -> Expr {
         },
         other => other.clone(),
     }
+}
+
+pub fn collect_column_indices(expr: &Expr) -> HashSet<usize> {
+    let mut indices = HashSet::new();
+    collect_column_indices_into(expr, &mut indices);
+    indices
+}
+
+pub fn collect_column_indices_into(expr: &Expr, indices: &mut HashSet<usize>) {
+    match expr {
+        Expr::Column {
+            index: Some(idx), ..
+        } => {
+            indices.insert(*idx);
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_column_indices_into(left, indices);
+            collect_column_indices_into(right, indices);
+        }
+        Expr::UnaryOp { expr, .. } => {
+            collect_column_indices_into(expr, indices);
+        }
+        Expr::IsNull { expr, .. } => {
+            collect_column_indices_into(expr, indices);
+        }
+        Expr::IsDistinctFrom { left, right, .. } => {
+            collect_column_indices_into(left, indices);
+            collect_column_indices_into(right, indices);
+        }
+        Expr::ScalarFunction { args, .. } => {
+            for arg in args {
+                collect_column_indices_into(arg, indices);
+            }
+        }
+        Expr::Cast { expr, .. } => {
+            collect_column_indices_into(expr, indices);
+        }
+        Expr::Alias { expr, .. } => {
+            collect_column_indices_into(expr, indices);
+        }
+        Expr::Like { expr, pattern, .. } => {
+            collect_column_indices_into(expr, indices);
+            collect_column_indices_into(pattern, indices);
+        }
+        Expr::InList { expr, list, .. } => {
+            collect_column_indices_into(expr, indices);
+            for item in list {
+                collect_column_indices_into(item, indices);
+            }
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            collect_column_indices_into(expr, indices);
+            collect_column_indices_into(low, indices);
+            collect_column_indices_into(high, indices);
+        }
+        Expr::Case {
+            operand,
+            when_clauses,
+            else_result,
+            ..
+        } => {
+            if let Some(op) = operand {
+                collect_column_indices_into(op, indices);
+            }
+            for wc in when_clauses {
+                collect_column_indices_into(&wc.condition, indices);
+                collect_column_indices_into(&wc.result, indices);
+            }
+            if let Some(else_expr) = else_result {
+                collect_column_indices_into(else_expr, indices);
+            }
+        }
+        Expr::Extract { expr, .. } => {
+            collect_column_indices_into(expr, indices);
+        }
+        Expr::Substring {
+            expr,
+            start,
+            length,
+            ..
+        } => {
+            collect_column_indices_into(expr, indices);
+            if let Some(s) = start {
+                collect_column_indices_into(s, indices);
+            }
+            if let Some(l) = length {
+                collect_column_indices_into(l, indices);
+            }
+        }
+        Expr::Trim {
+            expr, trim_what, ..
+        } => {
+            collect_column_indices_into(expr, indices);
+            if let Some(tw) = trim_what {
+                collect_column_indices_into(tw, indices);
+            }
+        }
+        Expr::Position { substr, string } => {
+            collect_column_indices_into(substr, indices);
+            collect_column_indices_into(string, indices);
+        }
+        Expr::Overlay {
+            expr,
+            overlay_what,
+            overlay_from,
+            overlay_for,
+        } => {
+            collect_column_indices_into(expr, indices);
+            collect_column_indices_into(overlay_what, indices);
+            collect_column_indices_into(overlay_from, indices);
+            if let Some(f) = overlay_for {
+                collect_column_indices_into(f, indices);
+            }
+        }
+        Expr::ArrayAccess { array, index, .. } => {
+            collect_column_indices_into(array, indices);
+            collect_column_indices_into(index, indices);
+        }
+        Expr::StructAccess { expr, .. } => {
+            collect_column_indices_into(expr, indices);
+        }
+        Expr::Array { elements, .. } => {
+            for elem in elements {
+                collect_column_indices_into(elem, indices);
+            }
+        }
+        Expr::Struct { fields, .. } => {
+            for (_, field_expr) in fields {
+                collect_column_indices_into(field_expr, indices);
+            }
+        }
+        Expr::Aggregate {
+            args,
+            filter,
+            order_by,
+            ..
+        } => {
+            for arg in args {
+                collect_column_indices_into(arg, indices);
+            }
+            if let Some(f) = filter {
+                collect_column_indices_into(f, indices);
+            }
+            for ob in order_by {
+                collect_column_indices_into(&ob.expr, indices);
+            }
+        }
+        Expr::UserDefinedAggregate { args, filter, .. } => {
+            for arg in args {
+                collect_column_indices_into(arg, indices);
+            }
+            if let Some(f) = filter {
+                collect_column_indices_into(f, indices);
+            }
+        }
+        Expr::Window {
+            args,
+            partition_by,
+            order_by,
+            ..
+        } => {
+            for arg in args {
+                collect_column_indices_into(arg, indices);
+            }
+            for pb in partition_by {
+                collect_column_indices_into(pb, indices);
+            }
+            for ob in order_by {
+                collect_column_indices_into(&ob.expr, indices);
+            }
+        }
+        Expr::AggregateWindow {
+            args,
+            partition_by,
+            order_by,
+            ..
+        } => {
+            for arg in args {
+                collect_column_indices_into(arg, indices);
+            }
+            for pb in partition_by {
+                collect_column_indices_into(pb, indices);
+            }
+            for ob in order_by {
+                collect_column_indices_into(&ob.expr, indices);
+            }
+        }
+        Expr::AtTimeZone {
+            timestamp,
+            time_zone,
+        } => {
+            collect_column_indices_into(timestamp, indices);
+            collect_column_indices_into(time_zone, indices);
+        }
+        Expr::JsonAccess { expr, .. } => {
+            collect_column_indices_into(expr, indices);
+        }
+        Expr::InUnnest {
+            expr, array_expr, ..
+        } => {
+            collect_column_indices_into(expr, indices);
+            collect_column_indices_into(array_expr, indices);
+        }
+        Expr::InSubquery { expr, .. } => {
+            collect_column_indices_into(expr, indices);
+        }
+        Expr::Lambda { body, .. } => {
+            collect_column_indices_into(body, indices);
+        }
+        Expr::Interval { value, .. } => {
+            collect_column_indices_into(value, indices);
+        }
+        Expr::Column { index: None, .. }
+        | Expr::Literal(_)
+        | Expr::Parameter { .. }
+        | Expr::Variable { .. }
+        | Expr::Placeholder { .. }
+        | Expr::TypedString { .. }
+        | Expr::Wildcard { .. }
+        | Expr::Default
+        | Expr::Subquery(_)
+        | Expr::ScalarSubquery(_)
+        | Expr::ArraySubquery(_)
+        | Expr::Exists { .. } => {}
+    }
+}
+
+pub fn classify_predicates_for_join(
+    join_type: JoinType,
+    predicates: &[Expr],
+    left_schema_len: usize,
+) -> (Vec<Expr>, Vec<Expr>, Vec<Expr>) {
+    let mut pushable_left = Vec::new();
+    let mut pushable_right = Vec::new();
+    let mut post_join = Vec::new();
+
+    for pred in predicates {
+        let side = classify_predicate_side(pred, left_schema_len);
+
+        match (join_type, side) {
+            (JoinType::Inner, Some(PredicateSide::Left)) => {
+                pushable_left.push(pred.clone());
+            }
+            (JoinType::Inner, Some(PredicateSide::Right)) => {
+                pushable_right.push(adjust_predicate_indices(pred, left_schema_len));
+            }
+            (JoinType::Left, Some(PredicateSide::Left)) => {
+                pushable_left.push(pred.clone());
+            }
+            (JoinType::Right, Some(PredicateSide::Right)) => {
+                pushable_right.push(adjust_predicate_indices(pred, left_schema_len));
+            }
+            _ => {
+                post_join.push(pred.clone());
+            }
+        }
+    }
+
+    (pushable_left, pushable_right, post_join)
+}
+
+pub fn build_aggregate_output_to_input_map(group_by: &[Expr]) -> HashMap<usize, usize> {
+    let mut map = HashMap::new();
+    for (output_idx, expr) in group_by.iter().enumerate() {
+        if let Expr::Column {
+            index: Some(input_idx),
+            ..
+        } = expr
+        {
+            map.insert(output_idx, *input_idx);
+        }
+    }
+    map
+}
+
+pub fn remap_predicate_indices(
+    expr: &Expr,
+    output_to_input: &HashMap<usize, usize>,
+) -> Option<Expr> {
+    match expr {
+        Expr::Column {
+            table,
+            name,
+            index: Some(idx),
+        } => output_to_input.get(idx).map(|&new_idx| Expr::Column {
+            table: table.clone(),
+            name: name.clone(),
+            index: Some(new_idx),
+        }),
+        Expr::Column { index: None, .. } => Some(expr.clone()),
+        Expr::Literal(_) => Some(expr.clone()),
+        Expr::BinaryOp { left, op, right } => {
+            let new_left = remap_predicate_indices(left, output_to_input)?;
+            let new_right = remap_predicate_indices(right, output_to_input)?;
+            Some(Expr::BinaryOp {
+                left: Box::new(new_left),
+                op: *op,
+                right: Box::new(new_right),
+            })
+        }
+        Expr::UnaryOp { op, expr } => {
+            let new_expr = remap_predicate_indices(expr, output_to_input)?;
+            Some(Expr::UnaryOp {
+                op: *op,
+                expr: Box::new(new_expr),
+            })
+        }
+        Expr::IsNull { expr, negated } => {
+            let new_expr = remap_predicate_indices(expr, output_to_input)?;
+            Some(Expr::IsNull {
+                expr: Box::new(new_expr),
+                negated: *negated,
+            })
+        }
+        Expr::IsDistinctFrom {
+            left,
+            right,
+            negated,
+        } => {
+            let new_left = remap_predicate_indices(left, output_to_input)?;
+            let new_right = remap_predicate_indices(right, output_to_input)?;
+            Some(Expr::IsDistinctFrom {
+                left: Box::new(new_left),
+                right: Box::new(new_right),
+                negated: *negated,
+            })
+        }
+        Expr::Cast {
+            expr,
+            data_type,
+            safe,
+        } => {
+            let new_expr = remap_predicate_indices(expr, output_to_input)?;
+            Some(Expr::Cast {
+                expr: Box::new(new_expr),
+                data_type: data_type.clone(),
+                safe: *safe,
+            })
+        }
+        Expr::Like {
+            expr,
+            pattern,
+            negated,
+            case_insensitive,
+        } => {
+            let new_expr = remap_predicate_indices(expr, output_to_input)?;
+            let new_pattern = remap_predicate_indices(pattern, output_to_input)?;
+            Some(Expr::Like {
+                expr: Box::new(new_expr),
+                pattern: Box::new(new_pattern),
+                negated: *negated,
+                case_insensitive: *case_insensitive,
+            })
+        }
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } => {
+            let new_expr = remap_predicate_indices(expr, output_to_input)?;
+            let new_list: Option<Vec<_>> = list
+                .iter()
+                .map(|e| remap_predicate_indices(e, output_to_input))
+                .collect();
+            Some(Expr::InList {
+                expr: Box::new(new_expr),
+                list: new_list?,
+                negated: *negated,
+            })
+        }
+        Expr::Between {
+            expr,
+            low,
+            high,
+            negated,
+        } => {
+            let new_expr = remap_predicate_indices(expr, output_to_input)?;
+            let new_low = remap_predicate_indices(low, output_to_input)?;
+            let new_high = remap_predicate_indices(high, output_to_input)?;
+            Some(Expr::Between {
+                expr: Box::new(new_expr),
+                low: Box::new(new_low),
+                high: Box::new(new_high),
+                negated: *negated,
+            })
+        }
+        Expr::ScalarFunction { name, args } => {
+            let new_args: Option<Vec<_>> = args
+                .iter()
+                .map(|a| remap_predicate_indices(a, output_to_input))
+                .collect();
+            Some(Expr::ScalarFunction {
+                name: name.clone(),
+                args: new_args?,
+            })
+        }
+        _ => None,
+    }
+}
+
+pub fn can_push_through_aggregate(predicate: &Expr, num_group_by_cols: usize) -> bool {
+    let pred_columns = collect_column_indices(predicate);
+    pred_columns.iter().all(|&idx| idx < num_group_by_cols)
+}
+
+pub fn can_push_through_window(predicate: &Expr, input_schema_len: usize) -> bool {
+    let pred_columns = collect_column_indices(predicate);
+    pred_columns.iter().all(|&idx| idx < input_schema_len)
 }
