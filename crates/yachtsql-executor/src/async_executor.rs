@@ -113,6 +113,7 @@ impl AsyncQueryExecutor {
     }
 
     fn get_optimizer_settings(&self) -> OptimizerSettings {
+        let table_stats = self.catalog.collect_table_stats();
         OptimizerSettings {
             join_reorder: self
                 .session
@@ -129,6 +130,7 @@ impl AsyncQueryExecutor {
                 .get_variable("OPTIMIZER_PROJECTION_PUSHDOWN")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true),
+            table_stats,
         }
     }
 

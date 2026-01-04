@@ -1,8 +1,8 @@
-#![coverage(off)]
-
 use std::collections::{HashMap, HashSet};
 
-use yachtsql_ir::{BinaryOp, Expr, JoinType};
+use yachtsql_ir::{BinaryOp, Expr, JoinType, Literal};
+
+use crate::join_order::CostModel;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum PredicateSide {
@@ -607,4 +607,459 @@ pub fn can_push_through_aggregate(predicate: &Expr, num_group_by_cols: usize) ->
 pub fn can_push_through_window(predicate: &Expr, input_schema_len: usize) -> bool {
     let pred_columns = collect_column_indices(predicate);
     pred_columns.iter().all(|&idx| idx < input_schema_len)
+}
+
+#[allow(dead_code)]
+pub fn estimate_predicate_selectivity(expr: &Expr, _cost_model: &CostModel) -> f64 {
+    match expr {
+        Expr::BinaryOp { left, op, right } => {
+            estimate_binary_op_selectivity(left, *op, right, _cost_model)
+        }
+        Expr::IsNull { negated, .. } => {
+            if *negated {
+                0.99
+            } else {
+                0.01
+            }
+        }
+        Expr::InList { list, negated, .. } => {
+            let base_selectivity = (list.len() as f64 * 0.1).min(0.5);
+            if *negated {
+                1.0 - base_selectivity
+            } else {
+                base_selectivity
+            }
+        }
+        Expr::Like {
+            pattern, negated, ..
+        } => {
+            let base_selectivity = estimate_like_selectivity(pattern);
+            if *negated {
+                1.0 - base_selectivity
+            } else {
+                base_selectivity
+            }
+        }
+        Expr::Between { negated, .. } => {
+            let base_selectivity = 0.25;
+            if *negated {
+                1.0 - base_selectivity
+            } else {
+                base_selectivity
+            }
+        }
+        Expr::UnaryOp { expr, .. } => estimate_predicate_selectivity(expr, _cost_model),
+        _ => 0.5,
+    }
+}
+
+#[allow(dead_code)]
+fn estimate_binary_op_selectivity(
+    _left: &Expr,
+    op: BinaryOp,
+    _right: &Expr,
+    _cost_model: &CostModel,
+) -> f64 {
+    match op {
+        BinaryOp::Eq => 0.1,
+        BinaryOp::NotEq => 0.9,
+        BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => 0.3,
+        BinaryOp::And => {
+            let left_sel = estimate_predicate_selectivity(_left, _cost_model);
+            let right_sel = estimate_predicate_selectivity(_right, _cost_model);
+            left_sel * right_sel
+        }
+        BinaryOp::Or => {
+            let left_sel = estimate_predicate_selectivity(_left, _cost_model);
+            let right_sel = estimate_predicate_selectivity(_right, _cost_model);
+            (left_sel + right_sel - left_sel * right_sel).min(1.0)
+        }
+        BinaryOp::Add
+        | BinaryOp::Sub
+        | BinaryOp::Mul
+        | BinaryOp::Div
+        | BinaryOp::Mod
+        | BinaryOp::Concat
+        | BinaryOp::BitwiseAnd
+        | BinaryOp::BitwiseOr
+        | BinaryOp::BitwiseXor
+        | BinaryOp::ShiftLeft
+        | BinaryOp::ShiftRight => 0.5,
+    }
+}
+
+#[allow(dead_code)]
+fn estimate_like_selectivity(pattern: &Expr) -> f64 {
+    match pattern {
+        Expr::Literal(Literal::String(s)) => {
+            if s.starts_with('%') {
+                0.5
+            } else {
+                0.1
+            }
+        }
+        _ => 0.5,
+    }
+}
+
+#[allow(dead_code)]
+pub fn combine_predicates_ordered(
+    mut predicates: Vec<Expr>,
+    cost_model: &CostModel,
+) -> Option<Expr> {
+    if predicates.is_empty() {
+        return None;
+    }
+
+    predicates.sort_by(|a, b| {
+        let sel_a = estimate_predicate_selectivity(a, cost_model);
+        let sel_b = estimate_predicate_selectivity(b, cost_model);
+        sel_a
+            .partial_cmp(&sel_b)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut result = predicates.remove(0);
+    for pred in predicates {
+        result = Expr::BinaryOp {
+            left: Box::new(result),
+            op: BinaryOp::And,
+            right: Box::new(pred),
+        };
+    }
+    Some(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_eq_predicate(col_name: &str, value: i64) -> Expr {
+        Expr::BinaryOp {
+            left: Box::new(Expr::Column {
+                table: None,
+                name: col_name.to_string(),
+                index: Some(0),
+            }),
+            op: BinaryOp::Eq,
+            right: Box::new(Expr::Literal(Literal::Int64(value))),
+        }
+    }
+
+    fn make_lt_predicate(col_name: &str, value: i64) -> Expr {
+        Expr::BinaryOp {
+            left: Box::new(Expr::Column {
+                table: None,
+                name: col_name.to_string(),
+                index: Some(0),
+            }),
+            op: BinaryOp::Lt,
+            right: Box::new(Expr::Literal(Literal::Int64(value))),
+        }
+    }
+
+    fn make_is_null_predicate(col_name: &str) -> Expr {
+        Expr::IsNull {
+            expr: Box::new(Expr::Column {
+                table: None,
+                name: col_name.to_string(),
+                index: Some(0),
+            }),
+            negated: false,
+        }
+    }
+
+    fn make_is_not_null_predicate(col_name: &str) -> Expr {
+        Expr::IsNull {
+            expr: Box::new(Expr::Column {
+                table: None,
+                name: col_name.to_string(),
+                index: Some(0),
+            }),
+            negated: true,
+        }
+    }
+
+    fn make_in_list_predicate(col_name: &str, values: Vec<i64>) -> Expr {
+        Expr::InList {
+            expr: Box::new(Expr::Column {
+                table: None,
+                name: col_name.to_string(),
+                index: Some(0),
+            }),
+            list: values
+                .into_iter()
+                .map(|v| Expr::Literal(Literal::Int64(v)))
+                .collect(),
+            negated: false,
+        }
+    }
+
+    fn make_like_predicate(col_name: &str, pattern: &str) -> Expr {
+        Expr::Like {
+            expr: Box::new(Expr::Column {
+                table: None,
+                name: col_name.to_string(),
+                index: Some(0),
+            }),
+            pattern: Box::new(Expr::Literal(Literal::String(pattern.to_string()))),
+            negated: false,
+            case_insensitive: false,
+        }
+    }
+
+    fn make_between_predicate(col_name: &str, low: i64, high: i64) -> Expr {
+        Expr::Between {
+            expr: Box::new(Expr::Column {
+                table: None,
+                name: col_name.to_string(),
+                index: Some(0),
+            }),
+            low: Box::new(Expr::Literal(Literal::Int64(low))),
+            high: Box::new(Expr::Literal(Literal::Int64(high))),
+            negated: false,
+        }
+    }
+
+    #[test]
+    fn test_estimate_selectivity_equality() {
+        let cost_model = CostModel::new();
+        let pred = make_eq_predicate("id", 42);
+        let selectivity = estimate_predicate_selectivity(&pred, &cost_model);
+        assert!((selectivity - 0.1).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_estimate_selectivity_range() {
+        let cost_model = CostModel::new();
+        let pred = make_lt_predicate("price", 100);
+        let selectivity = estimate_predicate_selectivity(&pred, &cost_model);
+        assert!((selectivity - 0.3).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_estimate_selectivity_is_null() {
+        let cost_model = CostModel::new();
+        let pred = make_is_null_predicate("optional_col");
+        let selectivity = estimate_predicate_selectivity(&pred, &cost_model);
+        assert!((selectivity - 0.01).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_estimate_selectivity_is_not_null() {
+        let cost_model = CostModel::new();
+        let pred = make_is_not_null_predicate("optional_col");
+        let selectivity = estimate_predicate_selectivity(&pred, &cost_model);
+        assert!((selectivity - 0.99).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_estimate_selectivity_in_list() {
+        let cost_model = CostModel::new();
+        let pred = make_in_list_predicate("status", vec![1, 2, 3]);
+        let selectivity = estimate_predicate_selectivity(&pred, &cost_model);
+        assert!((selectivity - 0.3).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_estimate_selectivity_in_list_capped() {
+        let cost_model = CostModel::new();
+        let pred = make_in_list_predicate("status", vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let selectivity = estimate_predicate_selectivity(&pred, &cost_model);
+        assert!((selectivity - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_estimate_selectivity_like_prefix() {
+        let cost_model = CostModel::new();
+        let pred = make_like_predicate("name", "John%");
+        let selectivity = estimate_predicate_selectivity(&pred, &cost_model);
+        assert!((selectivity - 0.1).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_estimate_selectivity_like_no_prefix() {
+        let cost_model = CostModel::new();
+        let pred = make_like_predicate("name", "%Smith%");
+        let selectivity = estimate_predicate_selectivity(&pred, &cost_model);
+        assert!((selectivity - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_estimate_selectivity_between() {
+        let cost_model = CostModel::new();
+        let pred = make_between_predicate("age", 18, 30);
+        let selectivity = estimate_predicate_selectivity(&pred, &cost_model);
+        assert!((selectivity - 0.25).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_combine_predicates_ordered_empty() {
+        let cost_model = CostModel::new();
+        let result = combine_predicates_ordered(vec![], &cost_model);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_combine_predicates_ordered_single() {
+        let cost_model = CostModel::new();
+        let pred = make_eq_predicate("id", 42);
+        let result = combine_predicates_ordered(vec![pred.clone()], &cost_model);
+        assert_eq!(result, Some(pred));
+    }
+
+    #[test]
+    fn test_combine_predicates_ordered_most_selective_first() {
+        let cost_model = CostModel::new();
+
+        let is_null_pred = make_is_null_predicate("optional_col");
+        let eq_pred = make_eq_predicate("id", 42);
+        let range_pred = make_lt_predicate("price", 100);
+        let like_no_prefix = make_like_predicate("name", "%Smith%");
+
+        let predicates = vec![
+            like_no_prefix.clone(),
+            range_pred.clone(),
+            eq_pred.clone(),
+            is_null_pred.clone(),
+        ];
+
+        let result = combine_predicates_ordered(predicates, &cost_model).unwrap();
+
+        if let Expr::BinaryOp { left, op, right } = &result {
+            assert_eq!(*op, BinaryOp::And);
+
+            if let Expr::BinaryOp {
+                left: inner_left, ..
+            } = left.as_ref()
+            {
+                if let Expr::BinaryOp {
+                    left: innermost, ..
+                } = inner_left.as_ref()
+                {
+                    assert_eq!(innermost.as_ref(), &is_null_pred);
+                } else {
+                    panic!("Expected innermost to be BinaryOp");
+                }
+            } else {
+                panic!("Expected inner_left to be BinaryOp");
+            }
+
+            assert_eq!(right.as_ref(), &like_no_prefix);
+        } else {
+            panic!("Expected BinaryOp");
+        }
+    }
+
+    #[test]
+    fn test_combine_predicates_ordered_ordering() {
+        let cost_model = CostModel::new();
+
+        let is_null = make_is_null_predicate("a");
+        let eq = make_eq_predicate("b", 1);
+        let between = make_between_predicate("c", 1, 10);
+        let lt = make_lt_predicate("d", 100);
+        let like_no_prefix = make_like_predicate("e", "%x%");
+        let is_not_null = make_is_not_null_predicate("f");
+
+        let predicates = vec![
+            is_not_null.clone(),
+            like_no_prefix.clone(),
+            lt.clone(),
+            between.clone(),
+            eq.clone(),
+            is_null.clone(),
+        ];
+
+        let result = combine_predicates_ordered(predicates, &cost_model).unwrap();
+
+        let mut collected = Vec::new();
+        fn collect_predicates(expr: &Expr, collected: &mut Vec<Expr>) {
+            match expr {
+                Expr::BinaryOp {
+                    left,
+                    op: BinaryOp::And,
+                    right,
+                } => {
+                    collect_predicates(left, collected);
+                    collected.push(right.as_ref().clone());
+                }
+                other => collected.push(other.clone()),
+            }
+        }
+        collect_predicates(&result, &mut collected);
+
+        assert_eq!(collected.len(), 6);
+        assert_eq!(collected[0], is_null);
+        assert_eq!(collected[1], eq);
+        assert_eq!(collected[2], between);
+        assert_eq!(collected[3], lt);
+        assert_eq!(collected[4], like_no_prefix);
+        assert_eq!(collected[5], is_not_null);
+    }
+
+    #[test]
+    fn test_original_combine_predicates_still_works() {
+        let pred1 = make_eq_predicate("a", 1);
+        let pred2 = make_eq_predicate("b", 2);
+        let pred3 = make_eq_predicate("c", 3);
+
+        let result = combine_predicates(vec![pred1.clone(), pred2.clone(), pred3.clone()]);
+
+        assert!(result.is_some());
+        let combined = result.unwrap();
+
+        if let Expr::BinaryOp { left, op, right } = &combined {
+            assert_eq!(*op, BinaryOp::And);
+            assert_eq!(right.as_ref(), &pred3);
+
+            if let Expr::BinaryOp {
+                left: inner_left,
+                op: inner_op,
+                right: inner_right,
+            } = left.as_ref()
+            {
+                assert_eq!(*inner_op, BinaryOp::And);
+                assert_eq!(inner_left.as_ref(), &pred1);
+                assert_eq!(inner_right.as_ref(), &pred2);
+            } else {
+                panic!("Expected inner BinaryOp");
+            }
+        } else {
+            panic!("Expected BinaryOp");
+        }
+    }
+
+    #[test]
+    fn test_estimate_selectivity_and_combines() {
+        let cost_model = CostModel::new();
+        let eq1 = make_eq_predicate("a", 1);
+        let eq2 = make_eq_predicate("b", 2);
+
+        let combined = Expr::BinaryOp {
+            left: Box::new(eq1),
+            op: BinaryOp::And,
+            right: Box::new(eq2),
+        };
+
+        let selectivity = estimate_predicate_selectivity(&combined, &cost_model);
+        assert!((selectivity - 0.01).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_estimate_selectivity_or_combines() {
+        let cost_model = CostModel::new();
+        let eq1 = make_eq_predicate("a", 1);
+        let eq2 = make_eq_predicate("b", 2);
+
+        let combined = Expr::BinaryOp {
+            left: Box::new(eq1),
+            op: BinaryOp::Or,
+            right: Box::new(eq2),
+        };
+
+        let selectivity = estimate_predicate_selectivity(&combined, &cost_model);
+        let expected = 0.1 + 0.1 - 0.1 * 0.1;
+        assert!((selectivity - expected).abs() < 0.0001);
+    }
 }

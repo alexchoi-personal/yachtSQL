@@ -10,11 +10,13 @@ mod test_utils;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
+
 pub use join_order::{
     CostModel, GreedyJoinReorderer, JoinEdge, JoinGraph, JoinRelation, PredicateCollector,
 };
 pub use optimized_logical_plan::{OptimizedLogicalPlan, SampleType};
-pub use planner::{PhysicalPlanner, ProjectionPushdown};
+pub use planner::{PhysicalPlanner, ProjectionPushdown, fold_constants};
 pub use stats::{ColumnStats, TableStats};
 use yachtsql_common::error::Result;
 use yachtsql_ir::LogicalPlan;
@@ -24,6 +26,7 @@ pub struct OptimizerSettings {
     pub join_reorder: bool,
     pub filter_pushdown: bool,
     pub projection_pushdown: bool,
+    pub table_stats: HashMap<String, TableStats>,
 }
 
 impl Default for OptimizerSettings {
@@ -38,6 +41,7 @@ impl OptimizerSettings {
             join_reorder: true,
             filter_pushdown: true,
             projection_pushdown: true,
+            table_stats: HashMap::new(),
         }
     }
 
@@ -46,7 +50,13 @@ impl OptimizerSettings {
             join_reorder: false,
             filter_pushdown: false,
             projection_pushdown: false,
+            table_stats: HashMap::new(),
         }
+    }
+
+    pub fn with_table_stats(mut self, stats: HashMap<String, TableStats>) -> Self {
+        self.table_stats = stats;
+        self
     }
 }
 
@@ -59,7 +69,7 @@ pub fn optimize_with_settings(
     settings: &OptimizerSettings,
 ) -> Result<OptimizedLogicalPlan> {
     let reordered = if settings.join_reorder {
-        maybe_reorder_joins(logical)
+        maybe_reorder_joins(logical, &settings.table_stats)
     } else {
         None
     };
@@ -75,8 +85,15 @@ pub fn optimize_with_settings(
     }
 }
 
-fn maybe_reorder_joins(plan: &LogicalPlan) -> Option<LogicalPlan> {
-    let cost_model = CostModel::new();
+fn maybe_reorder_joins(
+    plan: &LogicalPlan,
+    table_stats: &HashMap<String, TableStats>,
+) -> Option<LogicalPlan> {
+    let cost_model = if table_stats.is_empty() {
+        CostModel::new()
+    } else {
+        CostModel::with_stats(table_stats.clone())
+    };
     let graph = PredicateCollector::build_join_graph(plan, &cost_model)?;
 
     if graph.relations().len() < 2 {
