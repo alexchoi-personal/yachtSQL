@@ -685,6 +685,7 @@ fn bench_optimizer_phases(c: &mut Criterion) {
     ";
 
     rt.block_on(async {
+        executor.clear_plan_cache();
         executor
             .execute_sql("SET OPTIMIZER_JOIN_REORDER = true")
             .await
@@ -704,6 +705,7 @@ fn bench_optimizer_phases(c: &mut Criterion) {
     });
 
     rt.block_on(async {
+        executor.clear_plan_cache();
         executor
             .execute_sql("SET OPTIMIZER_JOIN_REORDER = false")
             .await
@@ -715,6 +717,7 @@ fn bench_optimizer_phases(c: &mut Criterion) {
     });
 
     rt.block_on(async {
+        executor.clear_plan_cache();
         executor
             .execute_sql("SET OPTIMIZER_JOIN_REORDER = false")
             .await
@@ -734,6 +737,7 @@ fn bench_optimizer_phases(c: &mut Criterion) {
     });
 
     rt.block_on(async {
+        executor.clear_plan_cache();
         executor
             .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = false")
             .await

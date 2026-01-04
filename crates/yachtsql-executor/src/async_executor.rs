@@ -134,6 +134,11 @@ impl AsyncQueryExecutor {
         }
     }
 
+    pub fn clear_plan_cache(&self) {
+        let mut cache = self.plan_cache.write().unwrap_or_else(|e| e.into_inner());
+        cache.clear();
+    }
+
     #[instrument(skip(self), fields(sql_length = sql.len()))]
     pub async fn execute_sql(&self, sql: &str) -> Result<Table> {
         let sql = preprocess_range_types(sql);
