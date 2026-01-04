@@ -288,16 +288,20 @@ impl ConcurrentPlanExecutor {
             .map(|(_, c)| c.as_ref())
             .collect();
 
-        let sort_keys: Vec<Vec<Value>> = (0..n)
-            .map(|idx| {
-                let values: Vec<Value> = columns.iter().map(|c| c.get_value(idx)).collect();
-                let record = Record::from_values(values);
-                sort_exprs
-                    .iter()
-                    .map(|se| evaluator.evaluate(&se.expr, &record).unwrap_or(Value::Null))
-                    .collect()
-            })
-            .collect();
+        let sort_keys: Vec<Vec<Value>> = {
+            let mut row_values: Vec<Value> = Vec::with_capacity(columns.len());
+            (0..n)
+                .map(|idx| {
+                    row_values.clear();
+                    row_values.extend(columns.iter().map(|c| c.get_value(idx)));
+                    let record = Record::from_slice(&row_values);
+                    sort_exprs
+                        .iter()
+                        .map(|se| evaluator.evaluate(&se.expr, &record).unwrap_or(Value::Null))
+                        .collect()
+                })
+                .collect()
+        };
 
         let mut indices: Vec<usize> = (0..n).collect();
         indices.sort_by(|&a, &b| {
@@ -387,7 +391,8 @@ impl ConcurrentPlanExecutor {
             .collect();
         for row_idx in 0..n {
             let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-            if seen.insert(values.clone()) {
+            if !seen.contains(&values) {
+                seen.insert(values.clone());
                 result.push_row(values)?;
             }
         }

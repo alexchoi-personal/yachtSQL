@@ -3,6 +3,22 @@
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 
+const MAX_PAD_LENGTH: usize = 10_000_000;
+
+fn validated_length(n: i64) -> Result<usize> {
+    if n < 0 {
+        return Ok(0);
+    }
+    let len = n as usize;
+    if len > MAX_PAD_LENGTH {
+        return Err(Error::InvalidQuery(format!(
+            "Requested length {} exceeds maximum allowed length {}",
+            len, MAX_PAD_LENGTH
+        )));
+    }
+    Ok(len)
+}
+
 pub fn fn_lpad(args: &[Value]) -> Result<Value> {
     if args.len() < 2 {
         return Err(Error::InvalidQuery(
@@ -12,10 +28,10 @@ pub fn fn_lpad(args: &[Value]) -> Result<Value> {
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::String(s), Value::Int64(n)) => {
-            if *n < 0 {
+            let n = validated_length(*n)?;
+            if n == 0 {
                 return Ok(Value::String(String::new()));
             }
-            let n = *n as usize;
             let pad_str = args.get(2).and_then(|v| v.as_str()).unwrap_or(" ");
             let s_chars: Vec<char> = s.chars().collect();
             if s_chars.len() >= n {
@@ -47,10 +63,10 @@ pub fn fn_rpad(args: &[Value]) -> Result<Value> {
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::String(s), Value::Int64(n)) => {
-            if *n < 0 {
+            let n = validated_length(*n)?;
+            if n == 0 {
                 return Ok(Value::String(String::new()));
             }
-            let n = *n as usize;
             let pad_str = args.get(2).and_then(|v| v.as_str()).unwrap_or(" ");
             let s_chars: Vec<char> = s.chars().collect();
             if s_chars.len() >= n {

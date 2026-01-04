@@ -36,7 +36,7 @@ pub(crate) fn compute_window(
         .iter()
         .map(|(_, c)| c.as_ref())
         .collect();
-    let mut all_window_results: Vec<Vec<Value>> = vec![Vec::new(); window_exprs.len()];
+    let mut all_window_results: Vec<Vec<Value>> = vec![vec![Value::Null; n]; window_exprs.len()];
 
     for (expr_idx, window_expr) in window_exprs.iter().enumerate() {
         let (partition_by, order_by, frame, func_type) = extract_window_spec(window_expr)?;
@@ -57,9 +57,6 @@ pub(crate) fn compute_window(
             )?;
 
             for (local_idx, row_idx) in indices.iter().enumerate() {
-                while all_window_results[expr_idx].len() <= *row_idx {
-                    all_window_results[expr_idx].push(Value::Null);
-                }
                 all_window_results[expr_idx][*row_idx] = partition_results[local_idx].clone();
             }
         }
@@ -68,12 +65,8 @@ pub(crate) fn compute_window(
     let mut result = Table::empty(result_schema);
     for row_idx in 0..n {
         let mut new_row: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-        for window_result in &all_window_results {
-            if row_idx < window_result.len() {
-                new_row.push(window_result[row_idx].clone());
-            } else {
-                new_row.push(Value::Null);
-            }
+        for window_result in &mut all_window_results {
+            new_row.push(std::mem::take(&mut window_result[row_idx]));
         }
         result.push_row(new_row)?;
     }

@@ -43,11 +43,12 @@ pub fn fn_round(args: &[Value]) -> Result<Value> {
         ));
     }
     let precision = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0);
+    let clamped_precision = precision.clamp(-308, 308) as i32;
     match &args[0] {
         Value::Null => Ok(Value::Null),
         Value::Int64(n) => Ok(Value::Int64(*n)),
         Value::Float64(f) => {
-            let mult = 10f64.powi(precision as i32);
+            let mult = 10f64.powi(clamped_precision);
             Ok(Value::Float64(OrderedFloat((f.0 * mult).round() / mult)))
         }
         Value::Numeric(d) => Ok(Value::Numeric(d.round_dp(precision.max(0) as u32))),

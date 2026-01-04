@@ -89,16 +89,20 @@ impl ConcurrentPlanExecutor {
                         combined_values
                             .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
 
-                        let combined_record = Record::from_values(combined_values.clone());
-
-                        let matches = condition
-                            .map(|c| evaluator.evaluate(c, &combined_record))
-                            .transpose()?
-                            .map(|v| v.as_bool().unwrap_or(false))
-                            .unwrap_or(true);
+                        let matches = match condition {
+                            Some(c) => {
+                                let combined_record = Record::from_slice(&combined_values);
+                                evaluator
+                                    .evaluate(c, &combined_record)?
+                                    .as_bool()
+                                    .unwrap_or(false)
+                            }
+                            None => true,
+                        };
 
                         if matches {
-                            result.push_row(combined_values.clone())?;
+                            result.push_row(std::mem::take(&mut combined_values))?;
+                            combined_values = Vec::with_capacity(left_width + right_width);
                         }
                     }
                 }
@@ -114,24 +118,29 @@ impl ConcurrentPlanExecutor {
                         combined_values
                             .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
 
-                        let combined_record = Record::from_values(combined_values.clone());
-
-                        let matches = condition
-                            .map(|c| evaluator.evaluate(c, &combined_record))
-                            .transpose()?
-                            .map(|v| v.as_bool().unwrap_or(false))
-                            .unwrap_or(true);
+                        let matches = match condition {
+                            Some(c) => {
+                                let combined_record = Record::from_slice(&combined_values);
+                                evaluator
+                                    .evaluate(c, &combined_record)?
+                                    .as_bool()
+                                    .unwrap_or(false)
+                            }
+                            None => true,
+                        };
 
                         if matches {
                             found_match = true;
-                            result.push_row(combined_values.clone())?;
+                            result.push_row(std::mem::take(&mut combined_values))?;
+                            combined_values = Vec::with_capacity(left_width + right_width);
                         }
                     }
                     if !found_match {
                         combined_values.clear();
                         combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
                         combined_values.extend(std::iter::repeat_n(Value::Null, right_width));
-                        result.push_row(combined_values.clone())?;
+                        result.push_row(std::mem::take(&mut combined_values))?;
+                        combined_values = Vec::with_capacity(left_width + right_width);
                     }
                 }
             }
@@ -146,17 +155,21 @@ impl ConcurrentPlanExecutor {
                         combined_values
                             .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
 
-                        let combined_record = Record::from_values(combined_values.clone());
-
-                        let matches = condition
-                            .map(|c| evaluator.evaluate(c, &combined_record))
-                            .transpose()?
-                            .map(|v| v.as_bool().unwrap_or(false))
-                            .unwrap_or(true);
+                        let matches = match condition {
+                            Some(c) => {
+                                let combined_record = Record::from_slice(&combined_values);
+                                evaluator
+                                    .evaluate(c, &combined_record)?
+                                    .as_bool()
+                                    .unwrap_or(false)
+                            }
+                            None => true,
+                        };
 
                         if matches {
                             found_match = true;
-                            result.push_row(combined_values.clone())?;
+                            result.push_row(std::mem::take(&mut combined_values))?;
+                            combined_values = Vec::with_capacity(left_width + right_width);
                         }
                     }
                     if !found_match {
@@ -164,7 +177,8 @@ impl ConcurrentPlanExecutor {
                         combined_values.extend(std::iter::repeat_n(Value::Null, left_width));
                         combined_values
                             .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
-                        result.push_row(combined_values.clone())?;
+                        result.push_row(std::mem::take(&mut combined_values))?;
+                        combined_values = Vec::with_capacity(left_width + right_width);
                     }
                 }
             }
@@ -180,25 +194,30 @@ impl ConcurrentPlanExecutor {
                         combined_values
                             .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
 
-                        let combined_record = Record::from_values(combined_values.clone());
-
-                        let matches = condition
-                            .map(|c| evaluator.evaluate(c, &combined_record))
-                            .transpose()?
-                            .map(|v| v.as_bool().unwrap_or(false))
-                            .unwrap_or(true);
+                        let matches = match condition {
+                            Some(c) => {
+                                let combined_record = Record::from_slice(&combined_values);
+                                evaluator
+                                    .evaluate(c, &combined_record)?
+                                    .as_bool()
+                                    .unwrap_or(false)
+                            }
+                            None => true,
+                        };
 
                         if matches {
                             found_match = true;
                             matched_right.insert(right_idx);
-                            result.push_row(combined_values.clone())?;
+                            result.push_row(std::mem::take(&mut combined_values))?;
+                            combined_values = Vec::with_capacity(left_width + right_width);
                         }
                     }
                     if !found_match {
                         combined_values.clear();
                         combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
                         combined_values.extend(std::iter::repeat_n(Value::Null, right_width));
-                        result.push_row(combined_values.clone())?;
+                        result.push_row(std::mem::take(&mut combined_values))?;
+                        combined_values = Vec::with_capacity(left_width + right_width);
                     }
                 }
                 for right_idx in 0..right_n {
@@ -207,7 +226,8 @@ impl ConcurrentPlanExecutor {
                         combined_values.extend(std::iter::repeat_n(Value::Null, left_width));
                         combined_values
                             .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
-                        result.push_row(combined_values.clone())?;
+                        result.push_row(std::mem::take(&mut combined_values))?;
+                        combined_values = Vec::with_capacity(left_width + right_width);
                     }
                 }
             }
@@ -220,7 +240,8 @@ impl ConcurrentPlanExecutor {
                         combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
                         combined_values
                             .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
-                        result.push_row(combined_values.clone())?;
+                        result.push_row(std::mem::take(&mut combined_values))?;
+                        combined_values = Vec::with_capacity(left_width + right_width);
                     }
                 }
             }

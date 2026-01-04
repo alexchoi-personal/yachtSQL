@@ -25,6 +25,12 @@ impl Record {
         Self { values }
     }
 
+    pub fn from_slice(values: &[Value]) -> Self {
+        Self {
+            values: values.to_vec(),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.values.len()
     }
