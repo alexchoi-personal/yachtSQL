@@ -116,14 +116,14 @@ impl ConcurrentPlanExecutor {
                 .map(|(_, c)| c.as_ref())
                 .collect();
 
+            let mut record = Record::with_capacity(columns.len());
             for row_idx in 0..n {
-                let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-                let record = Record::from_values(values);
+                record.set_from_columns(&columns, row_idx);
                 let val = self
                     .eval_expr_with_subqueries(predicate, &schema, &record)
                     .await?;
                 if val.as_bool().unwrap_or(false) {
-                    result.push_row(record.into_values())?;
+                    result.push_row(record.values().to_vec())?;
                 }
             }
             Ok(result)
@@ -144,12 +144,12 @@ impl ConcurrentPlanExecutor {
                 .map(|(_, c)| c.as_ref())
                 .collect();
 
+            let mut record = Record::with_capacity(columns.len());
             for row_idx in 0..n {
-                let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-                let record = Record::from_values(values);
+                record.set_from_columns(&columns, row_idx);
                 let val = evaluator.evaluate(predicate, &record)?;
                 if val.as_bool().unwrap_or(false) {
-                    result.push_row(record.into_values())?;
+                    result.push_row(record.values().to_vec())?;
                 }
             }
             Ok(result)
@@ -475,8 +475,8 @@ impl ConcurrentPlanExecutor {
         for row_idx in 0..n {
             let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
             if !seen.contains(&values) {
-                result.push_row(values.clone())?;
-                seen.insert(values);
+                seen.insert(values.clone());
+                result.push_row(values)?;
             }
         }
 

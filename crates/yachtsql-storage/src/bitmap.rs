@@ -140,6 +140,25 @@ impl NullBitmap {
         &self.data
     }
 
+    pub fn from_words(data: Vec<u64>, len: usize) -> Self {
+        Self { data, len }
+    }
+
+    pub fn union(&self, other: &NullBitmap) -> NullBitmap {
+        let len = self.len.max(other.len);
+        if len == 0 {
+            return NullBitmap::new();
+        }
+        let num_words = len.div_ceil(64);
+        let mut data = vec![0u64; num_words];
+        for (i, word) in data.iter_mut().enumerate() {
+            let lw = self.data.get(i).copied().unwrap_or(0);
+            let rw = other.data.get(i).copied().unwrap_or(0);
+            *word = lw | rw;
+        }
+        NullBitmap { data, len }
+    }
+
     pub fn gather(&self, indices: &[usize]) -> NullBitmap {
         let len = indices.len();
         if len == 0 {

@@ -871,15 +871,13 @@ impl Column {
         Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
+                let result_nulls = ln.union(rn);
                 let mut result_data = Vec::with_capacity(len);
-                let mut result_nulls = NullBitmap::new();
                 for i in 0..len {
-                    if ln.is_null(i) || rn.is_null(i) {
+                    if result_nulls.is_null(i) {
                         result_data.push(false);
-                        result_nulls.push(true);
                     } else {
                         result_data.push(l[i] == r[i]);
-                        result_nulls.push(false);
                     }
                 }
                 Column::Bool {
@@ -889,15 +887,13 @@ impl Column {
             }
             (Column::Float64 { data: l, nulls: ln }, Column::Float64 { data: r, nulls: rn }) => {
                 let len = l.len();
+                let result_nulls = ln.union(rn);
                 let mut result_data = Vec::with_capacity(len);
-                let mut result_nulls = NullBitmap::new();
                 for i in 0..len {
-                    if ln.is_null(i) || rn.is_null(i) {
+                    if result_nulls.is_null(i) {
                         result_data.push(false);
-                        result_nulls.push(true);
                     } else {
                         result_data.push(l[i] == r[i]);
-                        result_nulls.push(false);
                     }
                 }
                 Column::Bool {
@@ -907,15 +903,13 @@ impl Column {
             }
             (Column::String { data: l, nulls: ln }, Column::String { data: r, nulls: rn }) => {
                 let len = l.len();
+                let result_nulls = ln.union(rn);
                 let mut result_data = Vec::with_capacity(len);
-                let mut result_nulls = NullBitmap::new();
                 for i in 0..len {
-                    if ln.is_null(i) || rn.is_null(i) {
+                    if result_nulls.is_null(i) {
                         result_data.push(false);
-                        result_nulls.push(true);
                     } else {
                         result_data.push(l[i] == r[i]);
-                        result_nulls.push(false);
                     }
                 }
                 Column::Bool {
@@ -925,15 +919,13 @@ impl Column {
             }
             (Column::Bool { data: l, nulls: ln }, Column::Bool { data: r, nulls: rn }) => {
                 let len = l.len();
+                let result_nulls = ln.union(rn);
                 let mut result_data = Vec::with_capacity(len);
-                let mut result_nulls = NullBitmap::new();
                 for i in 0..len {
-                    if ln.is_null(i) || rn.is_null(i) {
+                    if result_nulls.is_null(i) {
                         result_data.push(false);
-                        result_nulls.push(true);
                     } else {
                         result_data.push(l[i] == r[i]);
-                        result_nulls.push(false);
                     }
                 }
                 Column::Bool {
@@ -943,15 +935,13 @@ impl Column {
             }
             (Column::Bytes { data: l, nulls: ln }, Column::Bytes { data: r, nulls: rn }) => {
                 let len = l.len();
+                let result_nulls = ln.union(rn);
                 let mut result_data = Vec::with_capacity(len);
-                let mut result_nulls = NullBitmap::new();
                 for i in 0..len {
-                    if ln.is_null(i) || rn.is_null(i) {
+                    if result_nulls.is_null(i) {
                         result_data.push(false);
-                        result_nulls.push(true);
                     } else {
                         result_data.push(l[i] == r[i]);
-                        result_nulls.push(false);
                     }
                 }
                 Column::Bool {
@@ -961,15 +951,13 @@ impl Column {
             }
             (Column::Interval { data: l, nulls: ln }, Column::Interval { data: r, nulls: rn }) => {
                 let len = l.len();
+                let result_nulls = ln.union(rn);
                 let mut result_data = Vec::with_capacity(len);
-                let mut result_nulls = NullBitmap::new();
                 for i in 0..len {
-                    if ln.is_null(i) || rn.is_null(i) {
+                    if result_nulls.is_null(i) {
                         result_data.push(false);
-                        result_nulls.push(true);
                     } else {
                         result_data.push(l[i] == r[i]);
-                        result_nulls.push(false);
                     }
                 }
                 Column::Bool {
@@ -979,15 +967,13 @@ impl Column {
             }
             (Column::Date { data: l, nulls: ln }, Column::Date { data: r, nulls: rn }) => {
                 let len = l.len();
+                let result_nulls = ln.union(rn);
                 let mut result_data = Vec::with_capacity(len);
-                let mut result_nulls = NullBitmap::new();
                 for i in 0..len {
-                    if ln.is_null(i) || rn.is_null(i) {
+                    if result_nulls.is_null(i) {
                         result_data.push(false);
-                        result_nulls.push(true);
                     } else {
                         result_data.push(l[i] == r[i]);
-                        result_nulls.push(false);
                     }
                 }
                 Column::Bool {
@@ -997,15 +983,13 @@ impl Column {
             }
             (Column::Time { data: l, nulls: ln }, Column::Time { data: r, nulls: rn }) => {
                 let len = l.len();
+                let result_nulls = ln.union(rn);
                 let mut result_data = Vec::with_capacity(len);
-                let mut result_nulls = NullBitmap::new();
                 for i in 0..len {
-                    if ln.is_null(i) || rn.is_null(i) {
+                    if result_nulls.is_null(i) {
                         result_data.push(false);
-                        result_nulls.push(true);
                     } else {
                         result_data.push(l[i] == r[i]);
-                        result_nulls.push(false);
                     }
                 }
                 Column::Bool {
@@ -1015,15 +999,13 @@ impl Column {
             }
             (Column::DateTime { data: l, nulls: ln }, Column::DateTime { data: r, nulls: rn }) => {
                 let len = l.len();
+                let result_nulls = ln.union(rn);
                 let mut result_data = Vec::with_capacity(len);
-                let mut result_nulls = NullBitmap::new();
                 for i in 0..len {
-                    if ln.is_null(i) || rn.is_null(i) {
+                    if result_nulls.is_null(i) {
                         result_data.push(false);
-                        result_nulls.push(true);
                     } else {
                         result_data.push(l[i] == r[i]);
-                        result_nulls.push(false);
                     }
                 }
                 Column::Bool {
@@ -1036,15 +1018,13 @@ impl Column {
                 Column::Timestamp { data: r, nulls: rn },
             ) => {
                 let len = l.len();
+                let result_nulls = ln.union(rn);
                 let mut result_data = Vec::with_capacity(len);
-                let mut result_nulls = NullBitmap::new();
                 for i in 0..len {
-                    if ln.is_null(i) || rn.is_null(i) {
+                    if result_nulls.is_null(i) {
                         result_data.push(false);
-                        result_nulls.push(true);
                     } else {
                         result_data.push(l[i] == r[i]);
-                        result_nulls.push(false);
                     }
                 }
                 Column::Bool {
