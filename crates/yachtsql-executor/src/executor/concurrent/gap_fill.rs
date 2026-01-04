@@ -96,7 +96,7 @@ impl ConcurrentPlanExecutor {
 
         for row_idx in 0..n {
             let row_values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-            let ts_val = &row_values[ts_idx];
+            let ts_val = row_values.get(ts_idx).unwrap_or(&Value::Null);
 
             let ts_millis = match ts_val {
                 Value::DateTime(d) => d.and_utc().timestamp_millis(),
@@ -110,12 +110,12 @@ impl ConcurrentPlanExecutor {
 
             let partition_key: Vec<Value> = partition_indices
                 .iter()
-                .map(|&idx| row_values[idx].clone())
+                .map(|&idx| row_values.get(idx).cloned().unwrap_or(Value::Null))
                 .collect();
 
             let values_for_row: Vec<Value> = value_col_indices
                 .iter()
-                .map(|(idx, _)| row_values[*idx].clone())
+                .map(|(idx, _)| row_values.get(*idx).cloned().unwrap_or(Value::Null))
                 .collect();
 
             partitions
@@ -209,7 +209,12 @@ impl ConcurrentPlanExecutor {
                         .collect()
                 };
 
-                let ts_value = match &input_schema.fields[ts_idx].data_type {
+                let ts_data_type = input_schema
+                    .fields
+                    .get(ts_idx)
+                    .map(|f| &f.data_type)
+                    .unwrap_or(&DataType::DateTime);
+                let ts_value = match ts_data_type {
                     DataType::DateTime => {
                         let dt = chrono::DateTime::from_timestamp_millis(bucket)
                             .map(|d| d.naive_utc())

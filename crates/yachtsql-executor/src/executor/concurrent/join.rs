@@ -376,7 +376,7 @@ impl ConcurrentPlanExecutor {
                     hash_table.entry(key_values).or_default().push(build_idx);
                 }
 
-                if parallel && probe_n >= 10000 {
+                if parallel && probe_n >= 2000 {
                     let num_threads = std::thread::available_parallelism()
                         .map(|n| n.get())
                         .unwrap_or(4);

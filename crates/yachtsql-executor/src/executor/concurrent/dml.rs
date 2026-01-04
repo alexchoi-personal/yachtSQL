@@ -40,6 +40,7 @@ impl ConcurrentPlanExecutor {
                 if let Some(defaults) = self.catalog.get_table_defaults(table_name) {
                     for default in defaults {
                         if let Some(idx) = target_schema.field_index(&default.column_name)
+                            && idx < default_values.len()
                             && let Ok(val) =
                                 evaluator.evaluate(&default.default_expr, &empty_record)
                         {
@@ -61,9 +62,12 @@ impl ConcurrentPlanExecutor {
                 if columns.is_empty() {
                     let mut coerced_row = Vec::with_capacity(target_schema.field_count());
                     for (i, expr) in row_exprs.iter().enumerate() {
-                        if i < fields.len() {
+                        if let Some(field) = fields.get(i) {
                             let final_val = match expr {
-                                Expr::Default => default_values[i].clone().unwrap_or(Value::Null),
+                                Expr::Default => default_values
+                                    .get(i)
+                                    .and_then(|v| v.clone())
+                                    .unwrap_or(Value::Null),
                                 _ if Self::expr_contains_subquery(expr) => {
                                     self.eval_expr_with_subqueries(expr, &empty_schema, &empty_rec)
                                         .await?
@@ -79,7 +83,7 @@ impl ConcurrentPlanExecutor {
                                     values_evaluator.evaluate(expr, &empty_rec)?
                                 }
                             };
-                            coerced_row.push(coerce_value(final_val, &fields[i].data_type)?);
+                            coerced_row.push(coerce_value(final_val, &field.data_type)?);
                         } else if Self::expr_contains_subquery(expr) {
                             coerced_row.push(
                                 self.eval_expr_with_subqueries(expr, &empty_schema, &empty_rec)

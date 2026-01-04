@@ -247,25 +247,26 @@ pub fn compute_window_function(
                 if order_by.is_empty() {
                     results = vec![Value::Int64(1); partition_size];
                 } else {
-                    let mut rank = 1i64;
-                    let mut prev_values: Option<Vec<Value>> = None;
-                    for (i, &idx) in sorted_indices.iter().enumerate() {
-                        let curr_values: Vec<Value> = order_by
-                            .iter()
-                            .map(|ob| {
-                                evaluator
-                                    .evaluate(&ob.expr, &rows[idx])
-                                    .unwrap_or(Value::Null)
-                            })
-                            .collect();
+                    let precomputed_keys: Vec<Vec<Value>> = sorted_indices
+                        .iter()
+                        .map(|&idx| {
+                            order_by
+                                .iter()
+                                .map(|ob| {
+                                    evaluator
+                                        .evaluate(&ob.expr, &rows[idx])
+                                        .unwrap_or(Value::Null)
+                                })
+                                .collect()
+                        })
+                        .collect();
 
-                        if let Some(prev) = &prev_values
-                            && curr_values != *prev
-                        {
+                    let mut rank = 1i64;
+                    for (i, curr_values) in precomputed_keys.iter().enumerate() {
+                        if i > 0 && curr_values != &precomputed_keys[i - 1] {
                             rank = (i + 1) as i64;
                         }
                         results.push(Value::Int64(rank));
-                        prev_values = Some(curr_values);
                     }
                 }
             }
@@ -273,25 +274,26 @@ pub fn compute_window_function(
                 if order_by.is_empty() {
                     results = vec![Value::Int64(1); partition_size];
                 } else {
-                    let mut rank = 1i64;
-                    let mut prev_values: Option<Vec<Value>> = None;
-                    for &idx in sorted_indices {
-                        let curr_values: Vec<Value> = order_by
-                            .iter()
-                            .map(|ob| {
-                                evaluator
-                                    .evaluate(&ob.expr, &rows[idx])
-                                    .unwrap_or(Value::Null)
-                            })
-                            .collect();
+                    let precomputed_keys: Vec<Vec<Value>> = sorted_indices
+                        .iter()
+                        .map(|&idx| {
+                            order_by
+                                .iter()
+                                .map(|ob| {
+                                    evaluator
+                                        .evaluate(&ob.expr, &rows[idx])
+                                        .unwrap_or(Value::Null)
+                                })
+                                .collect()
+                        })
+                        .collect();
 
-                        if let Some(prev) = &prev_values
-                            && curr_values != *prev
-                        {
+                    let mut rank = 1i64;
+                    for (i, curr_values) in precomputed_keys.iter().enumerate() {
+                        if i > 0 && curr_values != &precomputed_keys[i - 1] {
                             rank += 1;
                         }
                         results.push(Value::Int64(rank));
-                        prev_values = Some(curr_values);
                     }
                 }
             }

@@ -371,10 +371,96 @@ impl ConcurrentPlanExecutor {
         sort_exprs: &[SortExpr],
         limit: usize,
     ) -> Result<Table> {
-        let sorted = self.execute_sort(input, sort_exprs).await?;
-        let n = sorted.row_count();
-        let indices: Vec<usize> = (0..limit.min(n)).collect();
-        sorted.gather_rows(&indices)
+        let input_table = self.execute_plan(input).await?;
+        let n = input_table.row_count();
+
+        if limit == 0 {
+            return Ok(Table::empty(input_table.schema().clone()));
+        }
+
+        let schema = input_table.schema().clone();
+        let vars = self.get_variables();
+        let sys_vars = self.get_system_variables();
+        let udf = self.get_user_functions();
+        let evaluator = ValueEvaluator::new(&schema)
+            .with_variables(&vars)
+            .with_system_variables(&sys_vars)
+            .with_user_functions(&udf);
+
+        let columns: Vec<&Column> = input_table
+            .columns()
+            .iter()
+            .map(|(_, c)| c.as_ref())
+            .collect();
+
+        let sort_keys: Vec<Vec<Value>> = {
+            let mut row_values: Vec<Value> = Vec::with_capacity(columns.len());
+            (0..n)
+                .map(|idx| {
+                    row_values.clear();
+                    row_values.extend(columns.iter().map(|c| c.get_value(idx)));
+                    let record = Record::from_slice(&row_values);
+                    sort_exprs
+                        .iter()
+                        .map(|se| evaluator.evaluate(&se.expr, &record).unwrap_or(Value::Null))
+                        .collect()
+                })
+                .collect()
+        };
+
+        let compare = |a: &usize, b: &usize| -> std::cmp::Ordering {
+            let keys_a = &sort_keys[*a];
+            let keys_b = &sort_keys[*b];
+            for (i, sort_expr) in sort_exprs.iter().enumerate() {
+                let val_a = &keys_a[i];
+                let val_b = &keys_b[i];
+
+                let ordering = compare_values_for_sort(val_a, val_b);
+                let ordering = if !sort_expr.asc {
+                    ordering.reverse()
+                } else {
+                    ordering
+                };
+
+                match (val_a.is_null(), val_b.is_null()) {
+                    (true, true) => {}
+                    (true, false) => {
+                        return if sort_expr.nulls_first {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Greater
+                        };
+                    }
+                    (false, true) => {
+                        return if sort_expr.nulls_first {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Less
+                        };
+                    }
+                    (false, false) => {}
+                }
+
+                if ordering != std::cmp::Ordering::Equal {
+                    return ordering;
+                }
+            }
+            std::cmp::Ordering::Equal
+        };
+
+        let actual_limit = limit.min(n);
+        let mut indices: Vec<usize> = (0..n).collect();
+
+        if actual_limit < n / 4 {
+            indices.select_nth_unstable_by(actual_limit, compare);
+            indices.truncate(actual_limit);
+            indices.sort_by(compare);
+        } else {
+            indices.sort_by(compare);
+            indices.truncate(actual_limit);
+        }
+
+        input_table.gather_rows(&indices)
     }
 
     pub(crate) async fn execute_distinct(&self, input: &PhysicalPlan) -> Result<Table> {
@@ -391,8 +477,7 @@ impl ConcurrentPlanExecutor {
             .collect();
         for row_idx in 0..n {
             let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-            if !seen.contains(&values) {
-                seen.insert(values.clone());
+            if seen.insert(values.clone()) {
                 result.push_row(values)?;
             }
         }
