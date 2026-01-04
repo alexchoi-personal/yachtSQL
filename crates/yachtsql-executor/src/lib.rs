@@ -26,6 +26,7 @@ mod concurrent_catalog;
 mod concurrent_session;
 mod metrics;
 mod physical_planner;
+mod plan_cache;
 
 use std::num::NonZeroUsize;
 
