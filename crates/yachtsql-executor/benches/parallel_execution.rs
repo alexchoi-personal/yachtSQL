@@ -666,10 +666,10 @@ fn bench_optimizer_phases(c: &mut Criterion) {
 
     let rt = Runtime::new().unwrap();
     let executor = AsyncQueryExecutor::new();
-    setup_ecommerce_schema(&executor, 5000, &rt);
+    setup_ecommerce_schema(&executor, 10000, &rt);
 
     let join_reorder_query = "
-        SELECT o.order_id, c.name, p.name as product_name, oi.quantity
+        SELECT COUNT(*)
         FROM order_items oi
         JOIN orders o ON oi.order_id = o.order_id
         JOIN customers c ON o.customer_id = c.customer_id
@@ -677,10 +677,10 @@ fn bench_optimizer_phases(c: &mut Criterion) {
     ";
 
     let filter_pushdown_query = "
-        SELECT c.name, o.order_id, oi.quantity
-        FROM order_items oi
-        JOIN orders o ON oi.order_id = o.order_id
-        JOIN customers c ON o.customer_id = c.customer_id
+        SELECT c.name, o.order_id
+        FROM customers c
+        JOIN orders o ON c.customer_id = o.customer_id
+        JOIN order_items oi ON o.order_id = oi.order_id
         WHERE c.customer_id = 1
     ";
 
@@ -690,11 +690,11 @@ fn bench_optimizer_phases(c: &mut Criterion) {
             .await
             .unwrap();
         executor
-            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = true")
+            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = false")
             .await
             .unwrap();
         executor
-            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = true")
+            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = false")
             .await
             .unwrap();
     });
@@ -721,6 +721,10 @@ fn bench_optimizer_phases(c: &mut Criterion) {
             .unwrap();
         executor
             .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = true")
+            .await
+            .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = false")
             .await
             .unwrap();
     });
