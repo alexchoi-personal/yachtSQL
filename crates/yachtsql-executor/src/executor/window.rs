@@ -696,6 +696,58 @@ pub(crate) fn sort_partition_columnar(
     Ok(())
 }
 
+fn compute_peer_group_boundaries(
+    columns: &[&Column],
+    sorted_indices: &[usize],
+    order_by: &[SortExpr],
+    evaluator: &ValueEvaluator,
+) -> (Vec<usize>, Vec<usize>) {
+    let n = sorted_indices.len();
+    if n == 0 {
+        return (vec![], vec![]);
+    }
+
+    let order_by_values = precompute_order_by_values(columns, sorted_indices, order_by, evaluator);
+
+    let mut peer_group_starts = vec![0; n];
+    let mut current_start = 0;
+    for i in 0..n {
+        if i > 0 && order_by_values[i] != order_by_values[i - 1] {
+            current_start = i;
+        }
+        peer_group_starts[i] = current_start;
+    }
+
+    let mut peer_group_ends = vec![n - 1; n];
+    let mut current_end = n - 1;
+    for i in (0..n).rev() {
+        if i < n - 1 && order_by_values[i] != order_by_values[i + 1] {
+            current_end = i;
+        }
+        peer_group_ends[i] = current_end;
+    }
+
+    (peer_group_starts, peer_group_ends)
+}
+
+fn precompute_order_by_values(
+    columns: &[&Column],
+    sorted_indices: &[usize],
+    order_by: &[SortExpr],
+    evaluator: &ValueEvaluator,
+) -> Vec<Vec<Value>> {
+    sorted_indices
+        .iter()
+        .map(|&idx| {
+            let record = get_record_from_columns(columns, idx);
+            order_by
+                .iter()
+                .map(|ob| evaluator.evaluate(&ob.expr, &record).unwrap_or(Value::Null))
+                .collect()
+        })
+        .collect()
+}
+
 pub(crate) fn compute_window_function_columnar(
     columns: &[&Column],
     sorted_indices: &[usize],
@@ -719,22 +771,14 @@ pub(crate) fn compute_window_function_columnar(
                 if order_by.is_empty() {
                     results = vec![Value::Int64(1); partition_size];
                 } else {
+                    let order_by_values =
+                        precompute_order_by_values(columns, sorted_indices, order_by, evaluator);
                     let mut rank = 1i64;
-                    let mut prev_values: Option<Vec<Value>> = None;
-                    for (i, &idx) in sorted_indices.iter().enumerate() {
-                        let record = get_record_from_columns(columns, idx);
-                        let curr_values: Vec<Value> = order_by
-                            .iter()
-                            .map(|ob| evaluator.evaluate(&ob.expr, &record).unwrap_or(Value::Null))
-                            .collect();
-
-                        if let Some(prev) = &prev_values
-                            && curr_values != *prev
-                        {
+                    for i in 0..partition_size {
+                        if i > 0 && order_by_values[i] != order_by_values[i - 1] {
                             rank = (i + 1) as i64;
                         }
                         results.push(Value::Int64(rank));
-                        prev_values = Some(curr_values);
                     }
                 }
             }
@@ -742,22 +786,14 @@ pub(crate) fn compute_window_function_columnar(
                 if order_by.is_empty() {
                     results = vec![Value::Int64(1); partition_size];
                 } else {
+                    let order_by_values =
+                        precompute_order_by_values(columns, sorted_indices, order_by, evaluator);
                     let mut rank = 1i64;
-                    let mut prev_values: Option<Vec<Value>> = None;
-                    for &idx in sorted_indices {
-                        let record = get_record_from_columns(columns, idx);
-                        let curr_values: Vec<Value> = order_by
-                            .iter()
-                            .map(|ob| evaluator.evaluate(&ob.expr, &record).unwrap_or(Value::Null))
-                            .collect();
-
-                        if let Some(prev) = &prev_values
-                            && curr_values != *prev
-                        {
+                    for i in 0..partition_size {
+                        if i > 0 && order_by_values[i] != order_by_values[i - 1] {
                             rank += 1;
                         }
                         results.push(Value::Int64(rank));
-                        prev_values = Some(curr_values);
                     }
                 }
             }
@@ -865,55 +901,30 @@ pub(crate) fn compute_window_function_columnar(
                     results =
                         vec![Value::Float64(ordered_float::OrderedFloat(0.0)); partition_size];
                 } else {
-                    let mut prev_values: Option<Vec<Value>> = None;
+                    let order_by_values =
+                        precompute_order_by_values(columns, sorted_indices, order_by, evaluator);
                     let mut rank = 0i64;
-                    for (i, &idx) in sorted_indices.iter().enumerate() {
-                        let record = get_record_from_columns(columns, idx);
-                        let curr_values: Vec<Value> = order_by
-                            .iter()
-                            .map(|ob| evaluator.evaluate(&ob.expr, &record).unwrap_or(Value::Null))
-                            .collect();
-
-                        if i == 0 || prev_values.as_ref().is_some_and(|p| *p != curr_values) {
+                    for i in 0..partition_size {
+                        if i == 0 || order_by_values[i] != order_by_values[i - 1] {
                             rank = i as i64;
                         }
                         let pct = rank as f64 / (partition_size - 1) as f64;
                         results.push(Value::Float64(ordered_float::OrderedFloat(pct)));
-                        prev_values = Some(curr_values);
                     }
                 }
             }
             WindowFunction::CumeDist => {
-                let mut prev_values: Option<Vec<Value>> = None;
-                let mut count_less_or_equal = 0usize;
-                for (i, &idx) in sorted_indices.iter().enumerate() {
-                    let record = get_record_from_columns(columns, idx);
-                    let curr_values: Vec<Value> = order_by
-                        .iter()
-                        .map(|ob| evaluator.evaluate(&ob.expr, &record).unwrap_or(Value::Null))
-                        .collect();
-
-                    if i == 0 || prev_values.as_ref().is_some_and(|p| *p != curr_values) {
-                        count_less_or_equal = sorted_indices
-                            .iter()
-                            .enumerate()
-                            .filter(|(_j, jdx)| {
-                                let j_record = get_record_from_columns(columns, **jdx);
-                                let j_values: Vec<Value> = order_by
-                                    .iter()
-                                    .map(|ob| {
-                                        evaluator
-                                            .evaluate(&ob.expr, &j_record)
-                                            .unwrap_or(Value::Null)
-                                    })
-                                    .collect();
-                                j_values <= curr_values
-                            })
-                            .count();
-                    }
+                let (peer_group_starts, peer_group_ends) =
+                    compute_peer_group_boundaries(columns, sorted_indices, order_by, evaluator);
+                let is_asc = order_by.first().is_none_or(|ob| ob.asc);
+                for i in 0..partition_size {
+                    let count_less_or_equal = if is_asc {
+                        peer_group_ends[i] + 1
+                    } else {
+                        partition_size - peer_group_starts[i]
+                    };
                     let cume = count_less_or_equal as f64 / partition_size as f64;
                     results.push(Value::Float64(ordered_float::OrderedFloat(cume)));
-                    prev_values = Some(curr_values);
                 }
             }
         },

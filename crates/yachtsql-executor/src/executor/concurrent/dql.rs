@@ -209,7 +209,6 @@ impl ConcurrentPlanExecutor {
                 .with_system_variables(&sys_vars)
                 .with_user_functions(&udf);
 
-            let mut result = Table::empty(result_schema);
             let n = input_table.row_count();
             let columns: Vec<&Column> = input_table
                 .columns()
@@ -217,6 +216,7 @@ impl ConcurrentPlanExecutor {
                 .map(|(_, c)| c.as_ref())
                 .collect();
 
+            let mut all_rows: Vec<Vec<Value>> = Vec::with_capacity(n);
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
                 let record = Record::from_values(values);
@@ -225,8 +225,10 @@ impl ConcurrentPlanExecutor {
                     let val = evaluator.evaluate(expr, &record)?;
                     new_row.push(val);
                 }
-                result.push_row(new_row)?;
+                all_rows.push(new_row);
             }
+            let mut result = Table::empty(result_schema);
+            result.push_rows(all_rows)?;
             Ok(result)
         }
     }

@@ -109,6 +109,35 @@ impl Table {
         Ok(())
     }
 
+    pub fn push_rows(&mut self, rows: Vec<Vec<Value>>) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let num_rows = rows.len();
+        let num_cols = self.columns.len();
+
+        let mut columns_data: Vec<Vec<Value>> = vec![Vec::with_capacity(num_rows); num_cols];
+
+        for row in rows {
+            for (col_idx, value) in row.into_iter().enumerate() {
+                if col_idx < num_cols {
+                    columns_data[col_idx].push(value);
+                }
+            }
+        }
+
+        for (col, values) in self.columns.values_mut().zip(columns_data.into_iter()) {
+            let col_mut = Arc::make_mut(col);
+            for value in values {
+                col_mut.push(value)?;
+            }
+        }
+
+        self.row_count += num_rows;
+        Ok(())
+    }
+
     pub fn get_row(&self, index: usize) -> Result<Record> {
         if index >= self.row_count {
             return Err(yachtsql_common::error::Error::invalid_query(format!(
@@ -142,9 +171,7 @@ impl Table {
 
     pub fn from_values(schema: Schema, values: Vec<Vec<Value>>) -> Result<Self> {
         let mut table = Self::new(schema);
-        for row in values {
-            table.push_row(row)?;
-        }
+        table.push_rows(values)?;
         Ok(table)
     }
 

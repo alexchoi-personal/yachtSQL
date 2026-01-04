@@ -4,7 +4,7 @@ use std::fmt;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     ParseError(String),
     InvalidQuery(String),
