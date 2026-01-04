@@ -561,9 +561,9 @@ mod tests {
     fn test_push_int64_from_string() {
         let mut col = Column::new(&DataType::Int64);
         col.push(Value::String("123".to_string())).unwrap();
-        col.push(Value::String("invalid".to_string())).unwrap();
         assert_eq!(col.get(0).unwrap(), Value::Int64(123));
-        assert_eq!(col.get(1).unwrap(), Value::Int64(0));
+        let result = col.push(Value::String("invalid".to_string()));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2063,16 +2063,16 @@ mod tests {
     #[test]
     fn test_push_numeric_from_float64_special_values() {
         let mut col = Column::new(&DataType::Numeric(None));
-        col.push(Value::float64(f64::INFINITY)).unwrap();
-        assert_eq!(col.get(0).unwrap(), Value::Numeric(Decimal::ZERO));
+        let result = col.push(Value::float64(f64::INFINITY));
+        assert!(result.is_err());
 
         let mut col2 = Column::new(&DataType::Numeric(None));
-        col2.push(Value::float64(f64::NEG_INFINITY)).unwrap();
-        assert_eq!(col2.get(0).unwrap(), Value::Numeric(Decimal::ZERO));
+        let result = col2.push(Value::float64(f64::NEG_INFINITY));
+        assert!(result.is_err());
 
         let mut col3 = Column::new(&DataType::Numeric(None));
-        col3.push(Value::float64(f64::NAN)).unwrap();
-        assert_eq!(col3.get(0).unwrap(), Value::Numeric(Decimal::ZERO));
+        let result = col3.push(Value::float64(f64::NAN));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2346,16 +2346,15 @@ mod tests {
     #[test]
     fn test_push_int64_from_string_with_whitespace() {
         let mut col = Column::new(&DataType::Int64);
-        col.push(Value::String("  123  ".to_string())).unwrap();
-        assert_eq!(col.get(0).unwrap(), Value::Int64(0));
+        let result = col.push(Value::String("  123  ".to_string()));
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_push_int64_from_string_overflow() {
         let mut col = Column::new(&DataType::Int64);
-        col.push(Value::String("99999999999999999999999".to_string()))
-            .unwrap();
-        assert_eq!(col.get(0).unwrap(), Value::Int64(0));
+        let result = col.push(Value::String("99999999999999999999999".to_string()));
+        assert!(result.is_err());
     }
 
     #[test]
