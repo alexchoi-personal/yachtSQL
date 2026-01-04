@@ -138,7 +138,7 @@ impl<'a> ValueEvaluator<'a> {
                 let pat = self.evaluate(pattern, record)?;
                 match (&val, &pat) {
                     (Value::String(s), Value::String(p)) => {
-                        let matches = like_match(s, p, *case_insensitive);
+                        let matches = like_match(s, p, *case_insensitive)?;
                         Ok(Value::Bool(if *negated { !matches } else { matches }))
                     }
                     (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
@@ -1431,7 +1431,7 @@ thread_local! {
         RefCell::new(LruCache::new(NonZeroUsize::new(256).unwrap()));
 }
 
-fn like_match(s: &str, pattern: &str, case_insensitive: bool) -> bool {
+fn like_match(s: &str, pattern: &str, case_insensitive: bool) -> Result<bool> {
     let s_cow: Cow<str> = if case_insensitive {
         Cow::Owned(s.to_lowercase())
     } else {
@@ -1446,12 +1446,18 @@ fn like_match(s: &str, pattern: &str, case_insensitive: bool) -> bool {
 
     LIKE_REGEX_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let re = cache.get_or_insert((pattern_key.clone(), case_insensitive), || {
-            let regex_pattern = pattern_key.replace('%', ".*").replace('_', ".");
-            regex::Regex::new(&format!("^{}$", regex_pattern))
-                .unwrap_or_else(|_| regex::Regex::new("^$").unwrap())
-        });
-        re.is_match(&s_cow)
+        if let Some(re) = cache.get(&(pattern_key.clone(), case_insensitive)) {
+            return Ok(re.is_match(&s_cow));
+        }
+        let regex_pattern = pattern_key.replace('%', ".*").replace('_', ".");
+        let re =
+            regex::Regex::new(&format!("^{}$", regex_pattern)).map_err(|e| Error::RegexError {
+                pattern: pattern.to_string(),
+                reason: e.to_string(),
+            })?;
+        let result = re.is_match(&s_cow);
+        cache.put((pattern_key, case_insensitive), re);
+        Ok(result)
     })
 }
 

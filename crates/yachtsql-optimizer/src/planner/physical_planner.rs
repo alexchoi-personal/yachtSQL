@@ -9,7 +9,7 @@ use super::predicate::{
     classify_predicates_for_join, combine_predicates, remap_predicate_indices,
     split_and_predicates,
 };
-use crate::optimized_logical_plan::{OptimizedLogicalPlan, SampleType};
+use crate::optimized_logical_plan::OptimizedLogicalPlan;
 
 pub struct PhysicalPlanner {
     filter_pushdown_enabled: bool,
@@ -47,13 +47,9 @@ impl PhysicalPlanner {
                 sample_value,
             } => {
                 let input = self.plan(input)?;
-                let phys_sample_type = match sample_type {
-                    yachtsql_ir::SampleType::Rows => SampleType::Rows,
-                    yachtsql_ir::SampleType::Percent => SampleType::Percent,
-                };
                 Ok(OptimizedLogicalPlan::Sample {
                     input: Box::new(input),
-                    sample_type: phys_sample_type,
+                    sample_type: *sample_type,
                     sample_value: *sample_value,
                 })
             }

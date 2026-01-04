@@ -97,13 +97,37 @@ impl NullBitmap {
         if index >= self.len {
             return;
         }
-        for i in index..self.len - 1 {
-            let next_null = self.is_null(i + 1);
-            self.set(i, next_null);
+        if self.len == 1 {
+            self.len = 0;
+            return;
+        }
+        let start_word = index / 64;
+        let start_bit = index % 64;
+        let last_word_idx = (self.len - 1) / 64;
+        if start_word == last_word_idx {
+            let word = self.data[start_word];
+            let low_mask = (1u64 << start_bit) - 1;
+            let low_bits = word & low_mask;
+            let high_bits = word >> (start_bit + 1);
+            self.data[start_word] = low_bits | (high_bits << start_bit);
+        } else {
+            {
+                let word = self.data[start_word];
+                let low_mask = (1u64 << start_bit) - 1;
+                let low_bits = word & low_mask;
+                let high_bits = word >> (start_bit + 1);
+                let carry_in = (self.data[start_word + 1] & 1) << 63;
+                self.data[start_word] = low_bits | (high_bits << start_bit) | carry_in;
+            }
+            for w in (start_word + 1)..last_word_idx {
+                let carry_in = (self.data[w + 1] & 1) << 63;
+                self.data[w] = (self.data[w] >> 1) | carry_in;
+            }
+            self.data[last_word_idx] >>= 1;
         }
         self.len -= 1;
-        let num_words = self.len.div_ceil(64);
-        self.data.truncate(num_words.max(1));
+        let num_words = self.len.div_ceil(64).max(1);
+        self.data.truncate(num_words);
     }
 
     pub fn clear(&mut self) {

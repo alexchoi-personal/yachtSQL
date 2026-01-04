@@ -23,7 +23,7 @@ use yachtsql_common::types::DataType;
 use crate::expr::{Expr, SortExpr};
 use crate::schema::{Assignment, ColumnDef, EMPTY_SCHEMA, PlanSchema};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SampleType {
     Rows,
     Percent,

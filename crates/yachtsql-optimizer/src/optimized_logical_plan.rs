@@ -2,17 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 use yachtsql_common::types::DataType;
+pub use yachtsql_ir::SampleType;
 use yachtsql_ir::{
     AlterTableOp, Assignment, ColumnDef, CteDefinition, DclResourceType, ExportOptions, Expr,
     FunctionArg, FunctionBody, GapFillColumn, JoinType, LoadOptions, MergeClause, PlanSchema,
     ProcedureArg, RaiseLevel, SortExpr, UnnestColumn,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum SampleType {
-    Rows,
-    Percent,
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OptimizedLogicalPlan {

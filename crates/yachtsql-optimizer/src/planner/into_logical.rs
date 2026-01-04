@@ -2,7 +2,7 @@
 
 use yachtsql_ir::{BinaryOp, Expr, JoinType, LogicalPlan, SetOperationType};
 
-use crate::optimized_logical_plan::{OptimizedLogicalPlan, SampleType};
+use crate::optimized_logical_plan::OptimizedLogicalPlan;
 
 impl OptimizedLogicalPlan {
     pub fn into_logical(self) -> LogicalPlan {
@@ -20,17 +20,11 @@ impl OptimizedLogicalPlan {
                 input,
                 sample_type,
                 sample_value,
-            } => {
-                let logical_sample_type = match sample_type {
-                    SampleType::Rows => yachtsql_ir::SampleType::Rows,
-                    SampleType::Percent => yachtsql_ir::SampleType::Percent,
-                };
-                LogicalPlan::Sample {
-                    input: Box::new(input.into_logical()),
-                    sample_type: logical_sample_type,
-                    sample_value,
-                }
-            }
+            } => LogicalPlan::Sample {
+                input: Box::new(input.into_logical()),
+                sample_type,
+                sample_value,
+            },
             OptimizedLogicalPlan::Filter { input, predicate } => LogicalPlan::Filter {
                 input: Box::new(input.into_logical()),
                 predicate,
