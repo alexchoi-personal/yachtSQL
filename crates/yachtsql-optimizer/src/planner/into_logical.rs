@@ -82,20 +82,18 @@ impl OptimizedLogicalPlan {
                     }
                 };
                 let condition = if left_keys.len() == 1 {
+                    let mut left_iter = left_keys.into_iter();
+                    let mut right_iter = right_keys.into_iter();
+                    let left_key = left_iter.next().unwrap_or_else(|| {
+                        panic!("invariant violation: left_keys.len() == 1 but iterator empty")
+                    });
+                    let right_key = right_iter.next().unwrap_or_else(|| {
+                        panic!("invariant violation: right_keys must match left_keys length")
+                    });
                     Some(Expr::BinaryOp {
-                        left: Box::new(
-                            left_keys
-                                .into_iter()
-                                .next()
-                                .expect("invariant: left_keys.len() == 1"),
-                        ),
+                        left: Box::new(left_key),
                         op: BinaryOp::Eq,
-                        right: Box::new(restore_right_index(
-                            right_keys
-                                .into_iter()
-                                .next()
-                                .expect("invariant: right_keys.len() == left_keys.len()"),
-                        )),
+                        right: Box::new(restore_right_index(right_key)),
                     })
                 } else {
                     let equalities: Vec<Expr> = left_keys
@@ -168,10 +166,10 @@ impl OptimizedLogicalPlan {
                 schema,
             } => {
                 let mut iter = inputs.into_iter();
-                let first = iter
-                    .next()
-                    .expect("invariant: UNION must have at least one input")
-                    .into_logical();
+                let first = iter.next().unwrap_or_else(|| {
+                    panic!("invariant violation: UNION must have at least one input")
+                });
+                let first = first.into_logical();
                 iter.fold(first, |acc, plan| LogicalPlan::SetOperation {
                     left: Box::new(acc),
                     right: Box::new(plan.into_logical()),

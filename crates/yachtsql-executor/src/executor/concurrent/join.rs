@@ -1,5 +1,8 @@
 #![coverage(off)]
 
+use std::hash::{Hash, Hasher};
+
+use bloomfilter::Bloom;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
@@ -35,6 +38,56 @@ fn extract_key_values_direct(
         .iter()
         .map(|&idx| cols[idx].get_value(row_idx))
         .collect()
+}
+
+fn hash_key_values(key_values: &[Value]) -> u64 {
+    let mut hasher = rustc_hash::FxHasher::default();
+    for value in key_values {
+        match value {
+            Value::Null => 0u8.hash(&mut hasher),
+            Value::Bool(b) => b.hash(&mut hasher),
+            Value::Int64(i) => i.hash(&mut hasher),
+            Value::Float64(f) => f.to_bits().hash(&mut hasher),
+            Value::Numeric(n) => n.to_string().hash(&mut hasher),
+            Value::BigNumeric(n) => n.to_string().hash(&mut hasher),
+            Value::String(s) => s.hash(&mut hasher),
+            Value::Bytes(b) => b.hash(&mut hasher),
+            Value::Date(d) => d.hash(&mut hasher),
+            Value::Time(t) => t.hash(&mut hasher),
+            Value::DateTime(dt) => dt.hash(&mut hasher),
+            Value::Timestamp(ts) => ts.hash(&mut hasher),
+            Value::Json(j) => j.to_string().hash(&mut hasher),
+            Value::Array(a) => {
+                for v in a {
+                    hash_key_values(std::slice::from_ref(v)).hash(&mut hasher);
+                }
+            }
+            Value::Struct(s) => {
+                for (k, v) in s {
+                    k.hash(&mut hasher);
+                    hash_key_values(std::slice::from_ref(v)).hash(&mut hasher);
+                }
+            }
+            Value::Geography(g) => g.to_string().hash(&mut hasher),
+            Value::Interval(i) => {
+                i.months.hash(&mut hasher);
+                i.days.hash(&mut hasher);
+                i.nanos.hash(&mut hasher);
+            }
+            Value::Range(r) => {
+                r.start
+                    .as_ref()
+                    .map(|v| hash_key_values(std::slice::from_ref(v.as_ref())))
+                    .hash(&mut hasher);
+                r.end
+                    .as_ref()
+                    .map(|v| hash_key_values(std::slice::from_ref(v.as_ref())))
+                    .hash(&mut hasher);
+            }
+            Value::Default => 1u8.hash(&mut hasher),
+        }
+    }
+    hasher.finish()
 }
 
 impl ConcurrentPlanExecutor {
@@ -380,12 +433,21 @@ impl ConcurrentPlanExecutor {
                 let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
                     FxHashMap::with_capacity_and_hasher(build_n, Default::default());
 
+                let bloom_items = build_n.max(1000);
+                let bloom_fp_rate = 0.01;
+                let mut bloom_filter: Bloom<u64> =
+                    Bloom::new_for_fp_rate(bloom_items, bloom_fp_rate).unwrap_or_else(|_| {
+                        panic!("invariant violation: failed to create bloom filter")
+                    });
+
                 if let Some(ref indices) = build_key_indices {
                     for build_idx in 0..build_n {
                         let key_values = extract_key_values_direct(build_cols, build_idx, indices);
                         if key_values.iter().any(|v| matches!(v, Value::Null)) {
                             continue;
                         }
+                        let key_hash = hash_key_values(&key_values);
+                        bloom_filter.set(&key_hash);
                         hash_table.entry(key_values).or_default().push(build_idx);
                     }
                 } else {
@@ -406,6 +468,8 @@ impl ConcurrentPlanExecutor {
                         if key_values.iter().any(|v| matches!(v, Value::Null)) {
                             continue;
                         }
+                        let key_hash = hash_key_values(&key_values);
+                        bloom_filter.set(&key_hash);
                         hash_table.entry(key_values).or_default().push(build_idx);
                     }
                 }
@@ -422,6 +486,7 @@ impl ConcurrentPlanExecutor {
                             .map(|chunk_start| {
                                 let chunk_end = (chunk_start + chunk_size).min(probe_n);
                                 let hash_table = &hash_table;
+                                let bloom_filter = &bloom_filter;
                                 let vars = &vars;
                                 let sys_vars = &sys_vars;
                                 let udf = &udf;
@@ -436,6 +501,10 @@ impl ConcurrentPlanExecutor {
                                                 probe_cols, probe_idx, indices,
                                             );
                                             if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                                                continue;
+                                            }
+                                            let key_hash = hash_key_values(&key_values);
+                                            if !bloom_filter.check(&key_hash) {
                                                 continue;
                                             }
                                             if let Some(matching_indices) =
@@ -495,6 +564,10 @@ impl ConcurrentPlanExecutor {
                                                 })
                                                 .collect::<Result<Vec<_>>>()?;
                                             if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                                                continue;
+                                            }
+                                            let key_hash = hash_key_values(&key_values);
+                                            if !bloom_filter.check(&key_hash) {
                                                 continue;
                                             }
                                             if let Some(matching_indices) =
@@ -563,6 +636,10 @@ impl ConcurrentPlanExecutor {
                             if key_values.iter().any(|v| matches!(v, Value::Null)) {
                                 continue;
                             }
+                            let key_hash = hash_key_values(&key_values);
+                            if !bloom_filter.check(&key_hash) {
+                                continue;
+                            }
                             if let Some(matching_indices) = hash_table.get(&key_values) {
                                 for &build_idx in matching_indices {
                                     combined.clear();
@@ -604,6 +681,11 @@ impl ConcurrentPlanExecutor {
                             .collect::<Result<Vec<_>>>()?;
 
                         if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                            continue;
+                        }
+
+                        let key_hash = hash_key_values(&key_values);
+                        if !bloom_filter.check(&key_hash) {
                             continue;
                         }
 
