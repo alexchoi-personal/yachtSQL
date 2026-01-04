@@ -1256,11 +1256,12 @@ impl<'a> Tokenizer<'a> {
                         return Ok(Some(Token::Period));
                     }
 
-                    // Parse exponent as number
                     let mut exponent_part = String::new();
                     if chars.peek() == Some(&'e') || chars.peek() == Some(&'E') {
                         let mut char_clone = chars.peekable.clone();
-                        exponent_part.push(char_clone.next().unwrap());
+                        if let Some(c) = char_clone.next() {
+                            exponent_part.push(c);
+                        }
 
                         // Optional sign
                         match char_clone.peek() {

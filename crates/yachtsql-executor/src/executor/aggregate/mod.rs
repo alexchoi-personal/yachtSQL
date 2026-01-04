@@ -3,7 +3,7 @@
 mod accumulator;
 
 use accumulator::Accumulator;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 type GroupMap<V> = FxHashMap<Vec<Value>, V>;
 use ordered_float::OrderedFloat;
@@ -85,7 +85,8 @@ pub(crate) fn compute_aggregate(
         result.push_row(row)?;
     } else if let Some(sets) = grouping_sets {
         for grouping_set in sets {
-            let active_indices: Vec<usize> = grouping_set.clone();
+            let active_indices_vec: Vec<usize> = grouping_set.clone();
+            let active_indices_set: FxHashSet<usize> = active_indices_vec.iter().copied().collect();
             let mut group_map: GroupMap<(Vec<Accumulator>, Vec<usize>)> = FxHashMap::default();
 
             let mut record = Record::with_capacity(columns.len());
@@ -93,7 +94,7 @@ pub(crate) fn compute_aggregate(
                 fill_record_from_columns(&mut record, &columns, i);
                 let mut group_key_values = Vec::new();
                 for (idx, group_expr) in group_by.iter().enumerate() {
-                    if active_indices.contains(&idx) {
+                    if active_indices_set.contains(&idx) {
                         let val = evaluator.evaluate(group_expr, &record)?;
                         group_key_values.push(val);
                     } else {
@@ -101,27 +102,33 @@ pub(crate) fn compute_aggregate(
                     }
                 }
 
-                let entry = group_map.entry(group_key_values).or_insert_with_key(|key| {
-                    let mut accs: Vec<Accumulator> =
-                        aggregates.iter().map(Accumulator::from_expr).collect();
-                    for (acc, agg_expr) in accs.iter_mut().zip(aggregates.iter()) {
-                        match acc {
-                            Accumulator::Grouping { .. } => {
-                                let col_idx = get_grouping_column_index(agg_expr, group_by);
-                                let is_active = col_idx
-                                    .map(|idx| active_indices.contains(&idx))
-                                    .unwrap_or(true);
-                                acc.set_grouping_value(if is_active { 0 } else { 1 });
+                let entry = group_map
+                    .entry(group_key_values)
+                    .or_insert_with_key(|_key| {
+                        let mut accs: Vec<Accumulator> =
+                            aggregates.iter().map(Accumulator::from_expr).collect();
+                        for (acc, agg_expr) in accs.iter_mut().zip(aggregates.iter()) {
+                            match acc {
+                                Accumulator::Grouping { .. } => {
+                                    let col_idx = get_grouping_column_index(agg_expr, group_by);
+                                    let is_active = col_idx
+                                        .map(|idx| active_indices_set.contains(&idx))
+                                        .unwrap_or(true);
+                                    acc.set_grouping_value(if is_active { 0 } else { 1 });
+                                }
+                                Accumulator::GroupingId { .. } => {
+                                    let gid = compute_grouping_id(
+                                        agg_expr,
+                                        group_by,
+                                        &active_indices_set,
+                                    );
+                                    acc.set_grouping_value(gid);
+                                }
+                                _ => {}
                             }
-                            Accumulator::GroupingId { .. } => {
-                                let gid = compute_grouping_id(agg_expr, group_by, &active_indices);
-                                acc.set_grouping_value(gid);
-                            }
-                            _ => {}
                         }
-                    }
-                    (accs, active_indices.clone())
-                });
+                        (accs, active_indices_vec.clone())
+                    });
 
                 for (acc, agg_expr) in entry.0.iter_mut().zip(aggregates.iter()) {
                     if matches!(
@@ -819,7 +826,11 @@ fn exprs_match(a: &Expr, b: &Expr) -> bool {
     }
 }
 
-fn compute_grouping_id(agg_expr: &Expr, group_by: &[Expr], active_indices: &[usize]) -> i64 {
+fn compute_grouping_id(
+    agg_expr: &Expr,
+    group_by: &[Expr],
+    active_indices: &FxHashSet<usize>,
+) -> i64 {
     let args = match agg_expr {
         Expr::Aggregate { args, .. } => args,
         Expr::Alias { expr, .. } => {

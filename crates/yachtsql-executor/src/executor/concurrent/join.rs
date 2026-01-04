@@ -555,6 +555,7 @@ impl ConcurrentPlanExecutor {
                     Ok(result)
                 } else {
                     let mut result = Table::empty(result_schema);
+                    let mut combined: Vec<Value> = Vec::with_capacity(left_width + right_width);
                     if let Some(ref indices) = probe_key_indices {
                         for probe_idx in 0..probe_n {
                             let key_values =
@@ -564,8 +565,7 @@ impl ConcurrentPlanExecutor {
                             }
                             if let Some(matching_indices) = hash_table.get(&key_values) {
                                 for &build_idx in matching_indices {
-                                    let mut combined: Vec<Value> =
-                                        Vec::with_capacity(left_width + right_width);
+                                    combined.clear();
                                     if build_on_right {
                                         combined.extend(
                                             probe_cols.iter().map(|c| c.get_value(probe_idx)),
@@ -581,7 +581,8 @@ impl ConcurrentPlanExecutor {
                                             probe_cols.iter().map(|c| c.get_value(probe_idx)),
                                         );
                                     }
-                                    result.push_row(combined)?;
+                                    result.push_row(std::mem::take(&mut combined))?;
+                                    combined = Vec::with_capacity(left_width + right_width);
                                 }
                             }
                         }
@@ -608,8 +609,7 @@ impl ConcurrentPlanExecutor {
 
                         if let Some(matching_indices) = hash_table.get(&key_values) {
                             for &build_idx in matching_indices {
-                                let mut combined: Vec<Value> =
-                                    Vec::with_capacity(left_width + right_width);
+                                combined.clear();
                                 if build_on_right {
                                     combined
                                         .extend(probe_cols.iter().map(|c| c.get_value(probe_idx)));
@@ -621,7 +621,8 @@ impl ConcurrentPlanExecutor {
                                     combined
                                         .extend(probe_cols.iter().map(|c| c.get_value(probe_idx)));
                                 }
-                                result.push_row(combined)?;
+                                result.push_row(std::mem::take(&mut combined))?;
+                                combined = Vec::with_capacity(left_width + right_width);
                             }
                         }
                     }

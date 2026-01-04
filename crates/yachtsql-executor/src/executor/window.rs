@@ -1010,17 +1010,81 @@ pub(crate) fn compute_window_function_columnar(
                 }
                 peer_groups.push((group_start, partition_size - 1));
 
-                for (group_start, group_end) in &peer_groups {
-                    let running_indices: Vec<usize> = sorted_indices[..=*group_end].to_vec();
-                    let agg_result = compute_aggregate_columnar(
-                        func,
-                        expr,
-                        columns,
-                        &running_indices,
-                        evaluator,
-                    )?;
-                    for _ in *group_start..=*group_end {
-                        results.push(agg_result.clone());
+                let has_args = match expr {
+                    Expr::Window { args, .. } | Expr::AggregateWindow { args, .. } => {
+                        !args.is_empty() && !matches!(args.first(), Some(Expr::Wildcard { .. }))
+                    }
+                    _ => false,
+                };
+
+                match func {
+                    AggregateFunction::Sum | AggregateFunction::Avg | AggregateFunction::Count => {
+                        let mut running_sum = 0f64;
+                        let mut running_count = 0i64;
+                        let mut prev_group_end: Option<usize> = None;
+
+                        for (group_start, group_end) in &peer_groups {
+                            let start_from = prev_group_end.map(|e| e + 1).unwrap_or(0);
+                            let new_rows = *group_end + 1 - start_from;
+
+                            if !has_args {
+                                running_count += new_rows as i64;
+                            } else {
+                                for &idx in
+                                    sorted_indices.iter().take(*group_end + 1).skip(start_from)
+                                {
+                                    fill_record_from_columns(&mut record, columns, idx);
+                                    let v = extract_window_arg(expr, 0, evaluator, &record)
+                                        .unwrap_or(Value::Null);
+                                    if !v.is_null() {
+                                        running_count += 1;
+                                        if let Some(n) = v.as_f64() {
+                                            running_sum += n;
+                                        } else if let Some(n) = v.as_i64() {
+                                            running_sum += n as f64;
+                                        }
+                                    }
+                                }
+                            }
+                            prev_group_end = Some(*group_end);
+
+                            let agg_result = match func {
+                                AggregateFunction::Count => Value::Int64(running_count),
+                                AggregateFunction::Sum => {
+                                    Value::Float64(ordered_float::OrderedFloat(running_sum))
+                                }
+                                AggregateFunction::Avg => {
+                                    if running_count > 0 {
+                                        Value::Float64(ordered_float::OrderedFloat(
+                                            running_sum / running_count as f64,
+                                        ))
+                                    } else {
+                                        Value::Null
+                                    }
+                                }
+                                _ => Value::Null,
+                            };
+
+                            for _ in *group_start..=*group_end {
+                                results.push(agg_result.clone());
+                            }
+                        }
+                    }
+                    _ => {
+                        for (group_start, group_end) in &peer_groups {
+                            let running_indices: Vec<usize> =
+                                sorted_indices[..=*group_end].to_vec();
+                            let agg_result = compute_aggregate_columnar(
+                                func,
+                                expr,
+                                columns,
+                                &running_indices,
+                                evaluator,
+                            )?;
+                            for _ in *group_start..=*group_end {
+                                results.push(agg_result.clone());
+                            }
+                        }
                     }
                 }
             } else {

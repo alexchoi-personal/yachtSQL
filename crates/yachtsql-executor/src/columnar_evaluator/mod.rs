@@ -158,6 +158,8 @@ impl<'a> ColumnarEvaluator<'a> {
             BinaryOp::Add
                 | BinaryOp::Sub
                 | BinaryOp::Mul
+                | BinaryOp::Div
+                | BinaryOp::Mod
                 | BinaryOp::Eq
                 | BinaryOp::NotEq
                 | BinaryOp::Lt
