@@ -1,7 +1,8 @@
 #![coverage(off)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
+use rustc_hash::FxHashMap;
 use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
@@ -377,8 +378,8 @@ impl ConcurrentPlanExecutor {
                 let build_key_indices = extract_column_indices(build_keys, build_schema);
                 let probe_key_indices = extract_column_indices(probe_keys, probe_schema);
 
-                let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
-                    HashMap::with_capacity(build_n);
+                let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
+                    FxHashMap::with_capacity_and_hasher(build_n, Default::default());
 
                 if let Some(ref indices) = build_key_indices {
                     for build_idx in 0..build_n {
@@ -634,8 +635,8 @@ impl ConcurrentPlanExecutor {
                     .with_system_variables(&sys_vars)
                     .with_user_functions(&udf);
 
-                let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
-                    HashMap::with_capacity(right_n);
+                let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
+                    FxHashMap::with_capacity_and_hasher(right_n, Default::default());
                 let mut right_record = Record::with_capacity(right_cols.len());
                 let mut right_values: Vec<Value> = Vec::with_capacity(right_cols.len());
                 for right_idx in 0..right_n {
@@ -705,8 +706,8 @@ impl ConcurrentPlanExecutor {
                     .with_system_variables(&sys_vars)
                     .with_user_functions(&udf);
 
-                let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
-                    HashMap::with_capacity(left_n);
+                let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
+                    FxHashMap::with_capacity_and_hasher(left_n, Default::default());
                 let mut left_record = Record::with_capacity(left_cols.len());
                 let mut left_values: Vec<Value> = Vec::with_capacity(left_cols.len());
                 for left_idx in 0..left_n {
@@ -776,8 +777,8 @@ impl ConcurrentPlanExecutor {
                     .with_system_variables(&sys_vars)
                     .with_user_functions(&udf);
 
-                let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
-                    HashMap::with_capacity(right_n);
+                let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
+                    FxHashMap::with_capacity_and_hasher(right_n, Default::default());
                 let mut right_record = Record::with_capacity(right_cols.len());
                 let mut right_values: Vec<Value> = Vec::with_capacity(right_cols.len());
                 for right_idx in 0..right_n {

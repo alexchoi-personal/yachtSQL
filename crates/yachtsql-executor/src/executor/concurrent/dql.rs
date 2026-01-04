@@ -1,9 +1,8 @@
 #![coverage(off)]
 
-use std::collections::HashSet;
-
 use rand::Rng;
 use rand::seq::SliceRandom;
+use rustc_hash::FxHashSet;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{Expr, PlanSchema, SortExpr};
@@ -217,9 +216,9 @@ impl ConcurrentPlanExecutor {
                 .collect();
 
             let mut result = Table::empty(result_schema);
+            let mut record = Record::with_capacity(columns.len());
             for row_idx in 0..n {
-                let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-                let record = Record::from_values(values);
+                record.set_from_columns(&columns, row_idx);
                 let mut new_row = Vec::with_capacity(expressions.len());
                 for expr in expressions {
                     let val = evaluator.evaluate(expr, &record)?;
@@ -465,7 +464,7 @@ impl ConcurrentPlanExecutor {
         let input_table = self.execute_plan(input).await?;
         let schema = input_table.schema().clone();
         let mut result = Table::empty(schema);
-        let mut seen: HashSet<Vec<Value>> = HashSet::new();
+        let mut seen: FxHashSet<Vec<Value>> = FxHashSet::default();
 
         let n = input_table.row_count();
         let columns: Vec<&Column> = input_table
@@ -475,8 +474,9 @@ impl ConcurrentPlanExecutor {
             .collect();
         for row_idx in 0..n {
             let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-            if seen.insert(values.clone()) {
-                result.push_row(values)?;
+            if !seen.contains(&values) {
+                result.push_row(values.clone())?;
+                seen.insert(values);
             }
         }
 

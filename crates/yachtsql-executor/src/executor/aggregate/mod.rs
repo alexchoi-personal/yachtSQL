@@ -52,8 +52,9 @@ pub(crate) fn compute_aggregate(
         let mut accumulators: Vec<Accumulator> =
             aggregates.iter().map(Accumulator::from_expr).collect();
 
+        let mut record = Record::with_capacity(columns.len());
         for i in 0..n {
-            let record = get_record_from_columns(&columns, i);
+            fill_record_from_columns(&mut record, &columns, i);
             for (acc, agg_expr) in accumulators.iter_mut().zip(aggregates.iter()) {
                 if matches!(
                     acc,
@@ -89,8 +90,9 @@ pub(crate) fn compute_aggregate(
             let active_indices: Vec<usize> = grouping_set.clone();
             let mut group_map: GroupMap<(Vec<Accumulator>, Vec<usize>)> = FxHashMap::default();
 
+            let mut record = Record::with_capacity(columns.len());
             for i in 0..n {
-                let record = get_record_from_columns(&columns, i);
+                fill_record_from_columns(&mut record, &columns, i);
                 let mut group_key_values = Vec::new();
                 for (idx, group_expr) in group_by.iter().enumerate() {
                     if active_indices.contains(&idx) {
@@ -185,9 +187,10 @@ pub(crate) fn compute_aggregate(
                                 .with_variables(variables)
                                 .with_user_functions(user_function_defs);
                             let mut local_groups: GroupMap<Vec<Accumulator>> = FxHashMap::default();
+                            let mut record = Record::with_capacity(columns_ref.len());
 
                             for &idx in &chunk_indices {
-                                let record = get_record_from_columns(columns_ref, idx);
+                                fill_record_from_columns(&mut record, columns_ref, idx);
                                 let group_key_values: Vec<Value> = group_by
                                     .iter()
                                     .map(|e| evaluator.evaluate(e, &record))
@@ -255,9 +258,10 @@ pub(crate) fn compute_aggregate(
             }
         } else {
             let mut groups: GroupMap<Vec<Accumulator>> = FxHashMap::default();
+            let mut record = Record::with_capacity(columns.len());
 
             for i in 0..n {
-                let record = get_record_from_columns(&columns, i);
+                fill_record_from_columns(&mut record, &columns, i);
                 let group_key_values: Vec<Value> = group_by
                     .iter()
                     .map(|e| evaluator.evaluate(e, &record))
@@ -464,6 +468,10 @@ fn execute_columnar_aggregate(
 fn get_record_from_columns(columns: &[&Column], idx: usize) -> Record {
     let values: Vec<Value> = columns.iter().map(|c| c.get_value(idx)).collect();
     Record::from_values(values)
+}
+
+fn fill_record_from_columns(record: &mut Record, columns: &[&Column], idx: usize) {
+    record.set_from_columns(columns, idx);
 }
 
 fn extract_agg_arg(

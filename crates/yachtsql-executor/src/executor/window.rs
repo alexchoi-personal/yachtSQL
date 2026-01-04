@@ -17,6 +17,10 @@ pub(crate) fn get_record_from_columns(columns: &[&Column], idx: usize) -> Record
     Record::from_values(values)
 }
 
+pub(crate) fn fill_record_from_columns(record: &mut Record, columns: &[&Column], idx: usize) {
+    record.set_from_columns(columns, idx);
+}
+
 pub(crate) fn compute_window(
     input_table: &Table,
     window_exprs: &[Expr],
@@ -663,8 +667,9 @@ pub(crate) fn partition_rows_columnar(
         return Ok(partitions);
     }
 
+    let mut record = Record::with_capacity(columns.len());
     for idx in 0..n {
-        let record = get_record_from_columns(columns, idx);
+        fill_record_from_columns(&mut record, columns, idx);
         let key: Vec<Value> = partition_by
             .iter()
             .map(|e| evaluator.evaluate(e, &record).unwrap_or(Value::Null))
@@ -687,8 +692,9 @@ pub(crate) fn sort_partition_columnar(
 
     let max_idx = indices.iter().copied().max().unwrap_or(0);
     let mut precomputed: Vec<Vec<Value>> = Vec::with_capacity(max_idx + 1);
+    let mut record = Record::with_capacity(columns.len());
     for idx in 0..=max_idx {
-        let record = get_record_from_columns(columns, idx);
+        fill_record_from_columns(&mut record, columns, idx);
         let values: Vec<Value> = order_by
             .iter()
             .map(|sort_expr| {
@@ -763,10 +769,11 @@ fn precompute_order_by_values(
     order_by: &[SortExpr],
     evaluator: &ValueEvaluator,
 ) -> Vec<Vec<Value>> {
+    let mut record = Record::with_capacity(columns.len());
     sorted_indices
         .iter()
         .map(|&idx| {
-            let record = get_record_from_columns(columns, idx);
+            fill_record_from_columns(&mut record, columns, idx);
             order_by
                 .iter()
                 .map(|ob| evaluator.evaluate(&ob.expr, &record).unwrap_or(Value::Null))
@@ -973,10 +980,11 @@ pub(crate) fn compute_window_function_columnar(
                     results.push(agg_result);
                 }
             } else if has_order_by {
+                let mut record = Record::with_capacity(columns.len());
                 let precomputed_order_values: Vec<Vec<Value>> = sorted_indices
                     .iter()
                     .map(|&idx| {
-                        let record = get_record_from_columns(columns, idx);
+                        fill_record_from_columns(&mut record, columns, idx);
                         order_by
                             .iter()
                             .map(|ob| evaluator.evaluate(&ob.expr, &record).unwrap_or(Value::Null))
@@ -1044,8 +1052,9 @@ fn compute_aggregate_columnar(
         AggregateFunction::Count => {
             let count = if has_args {
                 let mut cnt = 0;
+                let mut record = Record::with_capacity(columns.len());
                 for &idx in indices {
-                    let record = get_record_from_columns(columns, idx);
+                    fill_record_from_columns(&mut record, columns, idx);
                     let v = extract_window_arg(expr, 0, evaluator, &record).unwrap_or(Value::Null);
                     if !v.is_null() {
                         cnt += 1;
@@ -1059,8 +1068,9 @@ fn compute_aggregate_columnar(
         }
         AggregateFunction::Sum => {
             let mut sum = 0f64;
+            let mut record = Record::with_capacity(columns.len());
             for &idx in indices {
-                let record = get_record_from_columns(columns, idx);
+                fill_record_from_columns(&mut record, columns, idx);
                 let v = extract_window_arg(expr, 0, evaluator, &record).unwrap_or(Value::Null);
                 if let Some(n) = v.as_f64() {
                     sum += n;
@@ -1073,8 +1083,9 @@ fn compute_aggregate_columnar(
         AggregateFunction::Avg => {
             let mut sum = 0f64;
             let mut count = 0;
+            let mut record = Record::with_capacity(columns.len());
             for &idx in indices {
-                let record = get_record_from_columns(columns, idx);
+                fill_record_from_columns(&mut record, columns, idx);
                 let v = extract_window_arg(expr, 0, evaluator, &record).unwrap_or(Value::Null);
                 if let Some(n) = v.as_f64() {
                     sum += n;
@@ -1094,8 +1105,9 @@ fn compute_aggregate_columnar(
         }
         AggregateFunction::Min => {
             let mut min: Option<Value> = None;
+            let mut record = Record::with_capacity(columns.len());
             for &idx in indices {
-                let record = get_record_from_columns(columns, idx);
+                fill_record_from_columns(&mut record, columns, idx);
                 let v = extract_window_arg(expr, 0, evaluator, &record).unwrap_or(Value::Null);
                 if !v.is_null() {
                     min = Some(match min {
@@ -1109,8 +1121,9 @@ fn compute_aggregate_columnar(
         }
         AggregateFunction::Max => {
             let mut max: Option<Value> = None;
+            let mut record = Record::with_capacity(columns.len());
             for &idx in indices {
-                let record = get_record_from_columns(columns, idx);
+                fill_record_from_columns(&mut record, columns, idx);
                 let v = extract_window_arg(expr, 0, evaluator, &record).unwrap_or(Value::Null);
                 if !v.is_null() {
                     max = Some(match max {

@@ -36,6 +36,14 @@ impl Record {
         self.values.extend_from_slice(values);
     }
 
+    pub fn set_from_columns(&mut self, columns: &[&Column], row_index: usize) {
+        self.values.clear();
+        self.values.reserve(columns.len());
+        for col in columns {
+            self.values.push(col.get_value(row_index));
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.values.len()
     }
