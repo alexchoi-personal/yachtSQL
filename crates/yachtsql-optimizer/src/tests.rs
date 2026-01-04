@@ -240,8 +240,8 @@ mod join_order_tests {
         #[test]
         fn estimate_base_cardinality_with_stats() {
             let mut stats = HashMap::new();
-            stats.insert("users".to_string(), TableStats::new(5000));
-            stats.insert("orders".to_string(), TableStats::new(10000));
+            stats.insert("USERS".to_string(), TableStats::new(5000));
+            stats.insert("ORDERS".to_string(), TableStats::new(10000));
 
             let cost_model = CostModel::with_stats(stats);
 
@@ -775,8 +775,8 @@ mod join_order_tests {
             );
 
             let mut stats = HashMap::new();
-            stats.insert("t1".to_string(), TableStats::new(5000));
-            stats.insert("t2".to_string(), TableStats::new(500));
+            stats.insert("T1".to_string(), TableStats::new(5000));
+            stats.insert("T2".to_string(), TableStats::new(500));
 
             let cost_model = CostModel::with_stats(stats);
             let graph = PredicateCollector::build_join_graph(&plan, &cost_model);

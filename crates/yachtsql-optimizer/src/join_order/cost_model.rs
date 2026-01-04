@@ -39,19 +39,22 @@ impl CostModel {
     }
 
     pub fn estimate_base_cardinality(&self, table_name: &str) -> usize {
+        let key = table_name.to_uppercase();
         self.table_stats
-            .get(table_name)
+            .get(&key)
             .map(|s| s.row_count)
             .unwrap_or(self.default_row_count)
     }
 
     pub fn get_table_stats(&self, table_name: &str) -> Option<&TableStats> {
-        self.table_stats.get(table_name)
+        let key = table_name.to_uppercase();
+        self.table_stats.get(&key)
     }
 
     pub fn get_column_stats(&self, table_name: &str, column_name: &str) -> Option<&ColumnStats> {
+        let key = table_name.to_uppercase();
         self.table_stats
-            .get(table_name)
+            .get(&key)
             .and_then(|ts| ts.column_stats.get(column_name))
     }
 
@@ -193,7 +196,7 @@ mod tests {
                 max_value: None,
             },
         );
-        table_stats.insert("orders".to_string(), orders_stats);
+        table_stats.insert("ORDERS".to_string(), orders_stats);
 
         let mut customers_stats = TableStats::new(1000);
         customers_stats.column_stats.insert(
@@ -205,7 +208,7 @@ mod tests {
                 max_value: None,
             },
         );
-        table_stats.insert("customers".to_string(), customers_stats);
+        table_stats.insert("CUSTOMERS".to_string(), customers_stats);
 
         CostModel::with_stats(table_stats)
     }

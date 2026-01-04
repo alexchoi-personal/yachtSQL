@@ -89,18 +89,57 @@ fn maybe_reorder_joins(
     plan: &LogicalPlan,
     table_stats: &HashMap<String, TableStats>,
 ) -> Option<LogicalPlan> {
-    let cost_model = if table_stats.is_empty() {
-        CostModel::new()
-    } else {
-        CostModel::with_stats(table_stats.clone())
-    };
-    let graph = PredicateCollector::build_join_graph(plan, &cost_model)?;
+    if table_stats.is_empty() {
+        return None;
+    }
+
+    let join_subtree = PredicateCollector::find_join_subtree(plan);
+
+    let cost_model = CostModel::with_stats(table_stats.clone());
+    let graph = PredicateCollector::build_join_graph(join_subtree, &cost_model)?;
 
     if graph.relations().len() < 2 {
         return None;
     }
 
-    let original_schema = plan.schema().clone();
+    let original_schema = join_subtree.schema().clone();
     let reorderer = GreedyJoinReorderer::new(cost_model);
-    Some(reorderer.reorder(&graph, &original_schema))
+    let reordered_joins = reorderer.reorder(&graph, &original_schema);
+
+    Some(wrap_with_outer_nodes(plan, reordered_joins))
+}
+
+fn wrap_with_outer_nodes(original: &LogicalPlan, reordered_inner: LogicalPlan) -> LogicalPlan {
+    match original {
+        LogicalPlan::Project {
+            input,
+            expressions,
+            schema,
+        } => LogicalPlan::Project {
+            input: Box::new(wrap_with_outer_nodes(input, reordered_inner)),
+            expressions: expressions.clone(),
+            schema: schema.clone(),
+        },
+        LogicalPlan::Sort { input, sort_exprs } => LogicalPlan::Sort {
+            input: Box::new(wrap_with_outer_nodes(input, reordered_inner)),
+            sort_exprs: sort_exprs.clone(),
+        },
+        LogicalPlan::Limit {
+            input,
+            limit,
+            offset,
+        } => LogicalPlan::Limit {
+            input: Box::new(wrap_with_outer_nodes(input, reordered_inner)),
+            limit: *limit,
+            offset: *offset,
+        },
+        LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
+            input: Box::new(wrap_with_outer_nodes(input, reordered_inner)),
+        },
+        LogicalPlan::Filter { input, predicate } => LogicalPlan::Filter {
+            input: Box::new(wrap_with_outer_nodes(input, reordered_inner)),
+            predicate: predicate.clone(),
+        },
+        _ => reordered_inner,
+    }
 }

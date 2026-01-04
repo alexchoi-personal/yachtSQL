@@ -177,6 +177,16 @@ impl PredicateCollector {
         }
     }
 
+    pub fn find_join_subtree(plan: &LogicalPlan) -> &LogicalPlan {
+        match plan {
+            LogicalPlan::Project { input, .. }
+            | LogicalPlan::Sort { input, .. }
+            | LogicalPlan::Limit { input, .. }
+            | LogicalPlan::Distinct { input, .. } => Self::find_join_subtree(input),
+            _ => plan,
+        }
+    }
+
     fn extract_predicates(expr: &Expr, predicates: &mut Vec<Expr>) {
         match expr {
             Expr::BinaryOp {
@@ -226,6 +236,11 @@ impl PredicateCollector {
                 if rel.table_name.as_ref() == Some(table_name) {
                     return Some(idx);
                 }
+                for field in &rel.schema.fields {
+                    if field.table.as_ref() == Some(table_name) {
+                        return Some(idx);
+                    }
+                }
             }
         }
         None
@@ -261,7 +276,7 @@ mod tests {
                 max_value: None,
             },
         );
-        table_stats.insert("orders".to_string(), orders_stats);
+        table_stats.insert("ORDERS".to_string(), orders_stats);
 
         let mut customers_stats = TableStats::new(100);
         customers_stats.column_stats.insert(
@@ -273,7 +288,7 @@ mod tests {
                 max_value: None,
             },
         );
-        table_stats.insert("customers".to_string(), customers_stats);
+        table_stats.insert("CUSTOMERS".to_string(), customers_stats);
 
         CostModel::with_stats(table_stats)
     }
@@ -702,7 +717,7 @@ mod tests {
                 max_value: None,
             },
         );
-        table_stats.insert("empty".to_string(), empty_table);
+        table_stats.insert("EMPTY".to_string(), empty_table);
         let cost_model = CostModel::with_stats(table_stats);
 
         let expr = Expr::Column {
