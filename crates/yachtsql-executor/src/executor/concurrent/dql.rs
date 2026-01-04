@@ -263,7 +263,7 @@ impl ConcurrentPlanExecutor {
             }
         };
 
-        Ok(input_table.gather_rows(&indices))
+        input_table.gather_rows(&indices)
     }
 
     pub(crate) async fn execute_sort(
@@ -340,7 +340,7 @@ impl ConcurrentPlanExecutor {
             std::cmp::Ordering::Equal
         });
 
-        Ok(input_table.gather_rows(&indices))
+        input_table.gather_rows(&indices)
     }
 
     pub(crate) async fn execute_limit(
@@ -358,7 +358,7 @@ impl ConcurrentPlanExecutor {
         let end = (offset + limit).min(n);
         let indices: Vec<usize> = (start..end).collect();
 
-        Ok(input_table.gather_rows(&indices))
+        input_table.gather_rows(&indices)
     }
 
     pub(crate) async fn execute_topn(
@@ -370,7 +370,7 @@ impl ConcurrentPlanExecutor {
         let sorted = self.execute_sort(input, sort_exprs).await?;
         let n = sorted.row_count();
         let indices: Vec<usize> = (0..limit.min(n)).collect();
-        Ok(sorted.gather_rows(&indices))
+        sorted.gather_rows(&indices)
     }
 
     pub(crate) async fn execute_distinct(&self, input: &PhysicalPlan) -> Result<Table> {

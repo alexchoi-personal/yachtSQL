@@ -206,7 +206,7 @@ impl ConcurrentPlanExecutor {
             }
         }
 
-        Ok(input.gather_rows(&matching_indices))
+        input.gather_rows(&matching_indices)
     }
 
     fn evaluate_qualify_predicate(

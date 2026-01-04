@@ -103,8 +103,17 @@ impl Column {
         }
     }
 
-    pub fn gather(&self, indices: &[usize]) -> Self {
-        match self {
+    pub fn gather(&self, indices: &[usize]) -> Result<Self> {
+        let len = self.len();
+        if let Some(&max_idx) = indices.iter().max()
+            && max_idx >= len
+        {
+            return Err(Error::internal(format!(
+                "gather: index {} out of bounds for column of length {}",
+                max_idx, len
+            )));
+        }
+        Ok(match self {
             Column::Bool { data, nulls } => {
                 let mut new_data = Vec::with_capacity(indices.len());
                 let mut new_nulls = NullBitmap::new();
@@ -312,7 +321,7 @@ impl Column {
                     element_type: element_type.clone(),
                 }
             }
-        }
+        })
     }
 
     pub fn filter_by_mask(&self, mask: &Column) -> Result<Self> {
@@ -332,7 +341,7 @@ impl Column {
                 indices.push(i);
             }
         }
-        Ok(self.gather(&indices))
+        self.gather(&indices)
     }
 
     pub fn from_values(values: &[Value]) -> Self {
@@ -585,7 +594,20 @@ impl Column {
 }
 
 impl Column {
+    fn validate_binary_op_lengths(&self, other: &Column, op_name: &str) -> Result<()> {
+        if self.len() != other.len() {
+            return Err(Error::internal(format!(
+                "{}: column length mismatch ({} vs {})",
+                op_name,
+                self.len(),
+                other.len()
+            )));
+        }
+        Ok(())
+    }
+
     pub fn binary_add(&self, other: &Column) -> Result<Self> {
+        self.validate_binary_op_lengths(other, "binary_add")?;
         Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
@@ -660,6 +682,7 @@ impl Column {
     }
 
     pub fn binary_sub(&self, other: &Column) -> Result<Self> {
+        self.validate_binary_op_lengths(other, "binary_sub")?;
         Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
@@ -734,6 +757,7 @@ impl Column {
     }
 
     pub fn binary_mul(&self, other: &Column) -> Result<Self> {
+        self.validate_binary_op_lengths(other, "binary_mul")?;
         Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
@@ -808,6 +832,7 @@ impl Column {
     }
 
     pub fn binary_div(&self, other: &Column) -> Result<Self> {
+        self.validate_binary_op_lengths(other, "binary_div")?;
         Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
@@ -874,6 +899,7 @@ impl Column {
     }
 
     pub fn binary_eq(&self, other: &Column) -> Result<Self> {
+        self.validate_binary_op_lengths(other, "binary_eq")?;
         Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
@@ -1074,6 +1100,7 @@ impl Column {
     }
 
     pub fn binary_lt(&self, other: &Column) -> Result<Self> {
+        self.validate_binary_op_lengths(other, "binary_lt")?;
         Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
@@ -1271,6 +1298,7 @@ impl Column {
     }
 
     pub fn binary_le(&self, other: &Column) -> Result<Self> {
+        self.validate_binary_op_lengths(other, "binary_le")?;
         Ok(match (self, other) {
             (Column::Int64 { data: l, nulls: ln }, Column::Int64 { data: r, nulls: rn }) => {
                 let len = l.len();
@@ -1476,6 +1504,7 @@ impl Column {
     }
 
     pub fn binary_and(&self, other: &Column) -> Result<Self> {
+        self.validate_binary_op_lengths(other, "binary_and")?;
         let (left, right) = match (self, other) {
             (Column::Bool { data: l, nulls: ln }, Column::Bool { data: r, nulls: rn }) => {
                 (Some((l, ln)), Some((r, rn)))
@@ -1530,6 +1559,7 @@ impl Column {
     }
 
     pub fn binary_or(&self, other: &Column) -> Result<Self> {
+        self.validate_binary_op_lengths(other, "binary_or")?;
         let (left, right) = match (self, other) {
             (Column::Bool { data: l, nulls: ln }, Column::Bool { data: r, nulls: rn }) => {
                 (Some((l, ln)), Some((r, rn)))
@@ -1909,7 +1939,7 @@ mod tests {
             data: AVec::from_iter(64, vec![10, 20, 30, 40, 50]),
             nulls: NullBitmap::new_valid(5),
         };
-        let gathered = col.gather(&[4, 2, 0]);
+        let gathered = col.gather(&[4, 2, 0]).unwrap();
         assert_eq!(gathered.len(), 3);
         assert_eq!(gathered.get_value(0), Value::Int64(50));
         assert_eq!(gathered.get_value(1), Value::Int64(30));
@@ -1922,7 +1952,7 @@ mod tests {
             data: vec![true, false, true, false],
             nulls: NullBitmap::new_valid(4),
         };
-        let gathered = col.gather(&[3, 1]);
+        let gathered = col.gather(&[3, 1]).unwrap();
         assert_eq!(gathered.len(), 2);
         assert_eq!(gathered.get_value(0), Value::Bool(false));
         assert_eq!(gathered.get_value(1), Value::Bool(false));
@@ -1934,7 +1964,7 @@ mod tests {
             data: AVec::from_iter(64, vec![1.1, 2.2, 3.3]),
             nulls: NullBitmap::new_valid(3),
         };
-        let gathered = col.gather(&[2, 0]);
+        let gathered = col.gather(&[2, 0]).unwrap();
         assert_eq!(gathered.len(), 2);
         assert_eq!(gathered.get_value(0), Value::float64(3.3));
         assert_eq!(gathered.get_value(1), Value::float64(1.1));
@@ -1946,7 +1976,7 @@ mod tests {
             data: vec![Decimal::new(100, 2), Decimal::new(200, 2)],
             nulls: NullBitmap::new_valid(2),
         };
-        let gathered = col.gather(&[1, 0, 1]);
+        let gathered = col.gather(&[1, 0, 1]).unwrap();
         assert_eq!(gathered.len(), 3);
         assert_eq!(gathered.get_value(0), Value::Numeric(Decimal::new(200, 2)));
     }
@@ -1957,7 +1987,7 @@ mod tests {
             data: vec!["a".to_string(), "b".to_string(), "c".to_string()],
             nulls: NullBitmap::new_valid(3),
         };
-        let gathered = col.gather(&[2, 0]);
+        let gathered = col.gather(&[2, 0]).unwrap();
         assert_eq!(gathered.len(), 2);
         assert_eq!(gathered.get_value(0), Value::String("c".to_string()));
         assert_eq!(gathered.get_value(1), Value::String("a".to_string()));
@@ -1969,7 +1999,7 @@ mod tests {
             data: vec![vec![1], vec![2], vec![3]],
             nulls: NullBitmap::new_valid(3),
         };
-        let gathered = col.gather(&[1]);
+        let gathered = col.gather(&[1]).unwrap();
         assert_eq!(gathered.len(), 1);
         assert_eq!(gathered.get_value(0), Value::Bytes(vec![2]));
     }
@@ -1982,7 +2012,7 @@ mod tests {
             data: vec![d1, d2],
             nulls: NullBitmap::new_valid(2),
         };
-        let gathered = col.gather(&[1, 0]);
+        let gathered = col.gather(&[1, 0]).unwrap();
         assert_eq!(gathered.get_value(0), Value::Date(d2));
         assert_eq!(gathered.get_value(1), Value::Date(d1));
     }
@@ -1995,7 +2025,7 @@ mod tests {
             data: vec![t1, t2],
             nulls: NullBitmap::new_valid(2),
         };
-        let gathered = col.gather(&[1]);
+        let gathered = col.gather(&[1]).unwrap();
         assert_eq!(gathered.get_value(0), Value::Time(t2));
     }
 
@@ -2009,7 +2039,7 @@ mod tests {
             data: vec![dt],
             nulls: NullBitmap::new_valid(1),
         };
-        let gathered = col.gather(&[0]);
+        let gathered = col.gather(&[0]).unwrap();
         assert_eq!(gathered.get_value(0), Value::DateTime(dt));
     }
 
@@ -2020,7 +2050,7 @@ mod tests {
             data: vec![ts],
             nulls: NullBitmap::new_valid(1),
         };
-        let gathered = col.gather(&[0]);
+        let gathered = col.gather(&[0]).unwrap();
         assert_eq!(gathered.get_value(0), Value::Timestamp(ts));
     }
 
@@ -2032,7 +2062,7 @@ mod tests {
             data: vec![j1.clone(), j2.clone()],
             nulls: NullBitmap::new_valid(2),
         };
-        let gathered = col.gather(&[1, 0]);
+        let gathered = col.gather(&[1, 0]).unwrap();
         assert_eq!(gathered.get_value(0), Value::Json(j2));
         assert_eq!(gathered.get_value(1), Value::Json(j1));
     }
@@ -2046,7 +2076,7 @@ mod tests {
             nulls: NullBitmap::new_valid(2),
             element_type: DataType::Int64,
         };
-        let gathered = col.gather(&[1]);
+        let gathered = col.gather(&[1]).unwrap();
         assert_eq!(gathered.get_value(0), Value::Array(arr2));
     }
 
@@ -2059,7 +2089,7 @@ mod tests {
             nulls: NullBitmap::new_valid(2),
             fields: vec![("x".to_string(), DataType::Int64)],
         };
-        let gathered = col.gather(&[0, 1]);
+        let gathered = col.gather(&[0, 1]).unwrap();
         assert_eq!(gathered.get_value(0), Value::Struct(s1));
         assert_eq!(gathered.get_value(1), Value::Struct(s2));
     }
@@ -2070,7 +2100,7 @@ mod tests {
             data: vec!["POINT(0 0)".to_string(), "POINT(1 1)".to_string()],
             nulls: NullBitmap::new_valid(2),
         };
-        let gathered = col.gather(&[1]);
+        let gathered = col.gather(&[1]).unwrap();
         assert_eq!(
             gathered.get_value(0),
             Value::Geography("POINT(1 1)".to_string())
@@ -2093,7 +2123,7 @@ mod tests {
             data: vec![i1.clone(), i2.clone()],
             nulls: NullBitmap::new_valid(2),
         };
-        let gathered = col.gather(&[1, 0]);
+        let gathered = col.gather(&[1, 0]).unwrap();
         assert_eq!(gathered.get_value(0), Value::Interval(i2));
         assert_eq!(gathered.get_value(1), Value::Interval(i1));
     }
@@ -2107,7 +2137,7 @@ mod tests {
             nulls: NullBitmap::new_valid(2),
             element_type: DataType::Int64,
         };
-        let gathered = col.gather(&[1]);
+        let gathered = col.gather(&[1]).unwrap();
         assert_eq!(gathered.get_value(0), Value::Range(r2));
     }
 
@@ -2121,7 +2151,7 @@ mod tests {
             data: AVec::from_iter(64, vec![10, 0, 30]),
             nulls,
         };
-        let gathered = col.gather(&[1, 2, 0]);
+        let gathered = col.gather(&[1, 2, 0]).unwrap();
         assert_eq!(gathered.get_value(0), Value::Null);
         assert_eq!(gathered.get_value(1), Value::Int64(30));
         assert_eq!(gathered.get_value(2), Value::Int64(10));

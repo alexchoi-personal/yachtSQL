@@ -32,29 +32,30 @@ impl CostModel {
     }
 
     pub fn with_stats(table_stats: HashMap<String, TableStats>) -> Self {
+        let normalized: HashMap<String, TableStats> = table_stats
+            .into_iter()
+            .map(|(k, v)| (k.to_uppercase(), v))
+            .collect();
         Self {
-            table_stats,
+            table_stats: normalized,
             default_row_count: 1000,
         }
     }
 
     pub fn estimate_base_cardinality(&self, table_name: &str) -> usize {
-        let key = table_name.to_uppercase();
         self.table_stats
-            .get(&key)
+            .get(&table_name.to_uppercase())
             .map(|s| s.row_count)
             .unwrap_or(self.default_row_count)
     }
 
     pub fn get_table_stats(&self, table_name: &str) -> Option<&TableStats> {
-        let key = table_name.to_uppercase();
-        self.table_stats.get(&key)
+        self.table_stats.get(&table_name.to_uppercase())
     }
 
     pub fn get_column_stats(&self, table_name: &str, column_name: &str) -> Option<&ColumnStats> {
-        let key = table_name.to_uppercase();
         self.table_stats
-            .get(&key)
+            .get(&table_name.to_uppercase())
             .and_then(|ts| ts.column_stats.get(column_name))
     }
 

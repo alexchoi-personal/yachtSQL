@@ -597,23 +597,22 @@ impl Table {
                 indices.push(i);
             }
         }
-        Ok(self.gather_rows(&indices))
+        self.gather_rows(&indices)
     }
 
-    pub fn gather_rows(&self, indices: &[usize]) -> Self {
-        let new_columns: IndexMap<String, Arc<Column>> = self
-            .columns
-            .iter()
-            .map(|(name, col)| (name.clone(), Arc::new(col.gather(indices))))
-            .collect();
-        Self {
+    pub fn gather_rows(&self, indices: &[usize]) -> Result<Self> {
+        let mut new_columns: IndexMap<String, Arc<Column>> = IndexMap::new();
+        for (name, col) in &self.columns {
+            new_columns.insert(name.clone(), Arc::new(col.gather(indices)?));
+        }
+        Ok(Self {
             schema: self.schema.clone(),
             columns: new_columns,
             row_count: indices.len(),
-        }
+        })
     }
 
-    pub fn reorder_by_indices(&self, indices: &[usize]) -> Self {
+    pub fn reorder_by_indices(&self, indices: &[usize]) -> Result<Self> {
         self.gather_rows(indices)
     }
 
@@ -1266,7 +1265,7 @@ mod tests {
     #[test]
     fn test_gather_rows() {
         let table = create_test_table();
-        let gathered = table.gather_rows(&[2, 0]);
+        let gathered = table.gather_rows(&[2, 0]).unwrap();
         assert_eq!(gathered.row_count(), 2);
         let row0 = gathered.get_row(0).unwrap();
         assert_eq!(row0.values()[0], Value::Int64(3));
@@ -1277,7 +1276,7 @@ mod tests {
     #[test]
     fn test_reorder_by_indices() {
         let table = create_test_table();
-        let reordered = table.reorder_by_indices(&[1, 2, 0]);
+        let reordered = table.reorder_by_indices(&[1, 2, 0]).unwrap();
         assert_eq!(reordered.row_count(), 3);
         let row0 = reordered.get_row(0).unwrap();
         assert_eq!(row0.values()[0], Value::Int64(2));
@@ -1457,7 +1456,7 @@ mod tests {
     #[test]
     fn test_gather_rows_empty() {
         let table = create_test_table();
-        let gathered = table.gather_rows(&[]);
+        let gathered = table.gather_rows(&[]).unwrap();
         assert_eq!(gathered.row_count(), 0);
         assert_eq!(gathered.num_columns(), 3);
     }
@@ -1465,7 +1464,7 @@ mod tests {
     #[test]
     fn test_gather_rows_duplicate_indices() {
         let table = create_test_table();
-        let gathered = table.gather_rows(&[0, 0, 1, 1]);
+        let gathered = table.gather_rows(&[0, 0, 1, 1]).unwrap();
         assert_eq!(gathered.row_count(), 4);
         let row0 = gathered.get_row(0).unwrap();
         let row1 = gathered.get_row(1).unwrap();
@@ -1701,7 +1700,7 @@ mod tests {
     #[test]
     fn test_reorder_by_indices_empty() {
         let table = create_test_table();
-        let reordered = table.reorder_by_indices(&[]);
+        let reordered = table.reorder_by_indices(&[]).unwrap();
         assert!(reordered.is_empty());
     }
 
