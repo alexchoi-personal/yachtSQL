@@ -95,6 +95,10 @@ fn maybe_reorder_joins(
 
     let join_subtree = PredicateCollector::find_join_subtree(plan);
 
+    if PredicateCollector::has_non_equality_join_predicates(join_subtree) {
+        return None;
+    }
+
     let cost_model = CostModel::with_stats(table_stats.clone());
     let graph = PredicateCollector::build_join_graph(join_subtree, &cost_model)?;
 

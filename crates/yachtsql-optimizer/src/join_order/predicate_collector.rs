@@ -226,24 +226,92 @@ impl PredicateCollector {
         None
     }
 
+    pub fn has_non_equality_join_predicates(plan: &LogicalPlan) -> bool {
+        let mut predicates = Vec::new();
+        Self::collect_join_predicates(plan, &mut predicates);
+        predicates.iter().any(|p| !Self::is_equality_predicate(p))
+    }
+
+    fn collect_join_predicates(plan: &LogicalPlan, predicates: &mut Vec<Expr>) {
+        match plan {
+            LogicalPlan::Join {
+                left,
+                right,
+                condition,
+                ..
+            } => {
+                if let Some(cond) = condition {
+                    Self::extract_predicates(cond, predicates);
+                }
+                Self::collect_join_predicates(left, predicates);
+                Self::collect_join_predicates(right, predicates);
+            }
+            LogicalPlan::Filter { input, .. } => {
+                Self::collect_join_predicates(input, predicates);
+            }
+            _ => {}
+        }
+    }
+
+    fn is_equality_predicate(expr: &Expr) -> bool {
+        matches!(
+            expr,
+            Expr::BinaryOp {
+                op: BinaryOp::Eq,
+                ..
+            }
+        )
+    }
+
     fn find_relation_for_expr(graph: &JoinGraph, expr: &Expr) -> Option<usize> {
-        if let Expr::Column {
-            table: Some(table_name),
-            ..
-        } = expr
-        {
+        let mut columns = Vec::new();
+        Self::collect_column_refs(expr, &mut columns);
+
+        for table_name in columns {
             for (idx, rel) in graph.relations().iter().enumerate() {
-                if rel.table_name.as_ref() == Some(table_name) {
+                if rel.table_name.as_ref() == Some(&table_name) {
                     return Some(idx);
                 }
                 for field in &rel.schema.fields {
-                    if field.table.as_ref() == Some(table_name) {
+                    if field.table.as_ref() == Some(&table_name) {
                         return Some(idx);
                     }
                 }
             }
         }
         None
+    }
+
+    fn collect_column_refs(expr: &Expr, tables: &mut Vec<String>) {
+        match expr {
+            Expr::Column {
+                table: Some(table_name),
+                ..
+            } => {
+                tables.push(table_name.clone());
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                Self::collect_column_refs(left, tables);
+                Self::collect_column_refs(right, tables);
+            }
+            Expr::UnaryOp { expr, .. } => {
+                Self::collect_column_refs(expr, tables);
+            }
+            Expr::ScalarFunction { args, .. } => {
+                for arg in args {
+                    Self::collect_column_refs(arg, tables);
+                }
+            }
+            Expr::Cast { expr, .. } => {
+                Self::collect_column_refs(expr, tables);
+            }
+            Expr::Aggregate { args, .. } => {
+                for arg in args {
+                    Self::collect_column_refs(arg, tables);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
