@@ -38,8 +38,20 @@ fn apply_binary_op_ext(left: &Value, op: BinaryOp, right: &Value) -> Value {
         (Value::Int64(l), BinaryOp::BitwiseAnd, Value::Int64(r)) => Value::Int64(l & r),
         (Value::Int64(l), BinaryOp::BitwiseOr, Value::Int64(r)) => Value::Int64(l | r),
         (Value::Int64(l), BinaryOp::BitwiseXor, Value::Int64(r)) => Value::Int64(l ^ r),
-        (Value::Int64(l), BinaryOp::ShiftLeft, Value::Int64(r)) => Value::Int64(l << r),
-        (Value::Int64(l), BinaryOp::ShiftRight, Value::Int64(r)) => Value::Int64(l >> r),
+        (Value::Int64(l), BinaryOp::ShiftLeft, Value::Int64(r)) => {
+            if *r >= 0 && *r < 64 {
+                Value::Int64(l << r)
+            } else {
+                Value::Null
+            }
+        }
+        (Value::Int64(l), BinaryOp::ShiftRight, Value::Int64(r)) => {
+            if *r >= 0 && *r < 64 {
+                Value::Int64(l >> r)
+            } else {
+                Value::Null
+            }
+        }
         _ => Value::Null,
     }
 }

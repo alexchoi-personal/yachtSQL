@@ -1,8 +1,6 @@
 #![coverage(off)]
 
-use std::collections::HashSet;
-
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
@@ -207,7 +205,8 @@ impl ConcurrentPlanExecutor {
                 }
             }
             JoinType::Full => {
-                let mut matched_right: HashSet<usize> = HashSet::with_capacity(right_n);
+                let mut matched_right: FxHashSet<usize> =
+                    FxHashSet::with_capacity_and_hasher(right_n, Default::default());
 
                 for left_idx in 0..left_n {
                     let mut found_match = false;
@@ -802,7 +801,8 @@ impl ConcurrentPlanExecutor {
                     .with_system_variables(&sys_vars)
                     .with_user_functions(&udf);
 
-                let mut matched_right: HashSet<usize> = HashSet::with_capacity(right_n);
+                let mut matched_right: FxHashSet<usize> =
+                    FxHashSet::with_capacity_and_hasher(right_n, Default::default());
                 let mut result = Table::empty(result_schema);
                 let mut combined: Vec<Value> = Vec::with_capacity(left_width + right_width);
                 let mut left_record = Record::with_capacity(left_cols.len());
