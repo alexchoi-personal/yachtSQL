@@ -393,10 +393,12 @@ impl ConcurrentPlanExecutor {
                         .with_variables(&vars)
                         .with_system_variables(&sys_vars)
                         .with_user_functions(&udf);
+                    let mut build_record = Record::with_capacity(build_cols.len());
+                    let mut build_values: Vec<Value> = Vec::with_capacity(build_cols.len());
                     for build_idx in 0..build_n {
-                        let build_record = Record::from_values(
-                            build_cols.iter().map(|c| c.get_value(build_idx)).collect(),
-                        );
+                        build_values.clear();
+                        build_values.extend(build_cols.iter().map(|c| c.get_value(build_idx)));
+                        build_record.set_from_slice(&build_values);
                         let key_values: Vec<Value> = build_keys
                             .iter()
                             .map(|expr| build_evaluator.evaluate(expr, &build_record))
@@ -476,13 +478,16 @@ impl ConcurrentPlanExecutor {
                                             .with_variables(vars)
                                             .with_system_variables(sys_vars)
                                             .with_user_functions(udf);
+                                        let mut probe_record =
+                                            Record::with_capacity(probe_cols.len());
+                                        let mut probe_values: Vec<Value> =
+                                            Vec::with_capacity(probe_cols.len());
                                         for &probe_idx in chunk {
-                                            let probe_record = Record::from_values(
-                                                probe_cols
-                                                    .iter()
-                                                    .map(|c| c.get_value(probe_idx))
-                                                    .collect(),
+                                            probe_values.clear();
+                                            probe_values.extend(
+                                                probe_cols.iter().map(|c| c.get_value(probe_idx)),
                                             );
+                                            probe_record.set_from_slice(&probe_values);
                                             let key_values: Vec<Value> = probe_keys
                                                 .iter()
                                                 .map(|expr| {
@@ -586,10 +591,12 @@ impl ConcurrentPlanExecutor {
                         .with_variables(&vars)
                         .with_system_variables(&sys_vars)
                         .with_user_functions(&udf);
+                    let mut probe_record = Record::with_capacity(probe_cols.len());
+                    let mut probe_values: Vec<Value> = Vec::with_capacity(probe_cols.len());
                     for probe_idx in 0..probe_n {
-                        let probe_record = Record::from_values(
-                            probe_cols.iter().map(|c| c.get_value(probe_idx)).collect(),
-                        );
+                        probe_values.clear();
+                        probe_values.extend(probe_cols.iter().map(|c| c.get_value(probe_idx)));
+                        probe_record.set_from_slice(&probe_values);
                         let key_values: Vec<Value> = probe_keys
                             .iter()
                             .map(|expr| probe_evaluator.evaluate(expr, &probe_record))
@@ -629,10 +636,12 @@ impl ConcurrentPlanExecutor {
 
                 let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
                     HashMap::with_capacity(right_n);
+                let mut right_record = Record::with_capacity(right_cols.len());
+                let mut right_values: Vec<Value> = Vec::with_capacity(right_cols.len());
                 for right_idx in 0..right_n {
-                    let right_record = Record::from_values(
-                        right_cols.iter().map(|c| c.get_value(right_idx)).collect(),
-                    );
+                    right_values.clear();
+                    right_values.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                    right_record.set_from_slice(&right_values);
                     let key_values: Vec<Value> = right_keys
                         .iter()
                         .map(|expr| right_evaluator.evaluate(expr, &right_record))
@@ -652,11 +661,13 @@ impl ConcurrentPlanExecutor {
 
                 let mut result = Table::empty(result_schema);
                 let mut combined: Vec<Value> = Vec::with_capacity(left_width + right_width);
+                let mut left_record = Record::with_capacity(left_cols.len());
+                let mut left_values: Vec<Value> = Vec::with_capacity(left_cols.len());
 
                 for left_idx in 0..left_n {
-                    let left_record = Record::from_values(
-                        left_cols.iter().map(|c| c.get_value(left_idx)).collect(),
-                    );
+                    left_values.clear();
+                    left_values.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                    left_record.set_from_slice(&left_values);
                     let key_values: Vec<Value> = left_keys
                         .iter()
                         .map(|expr| left_evaluator.evaluate(expr, &left_record))
@@ -696,10 +707,12 @@ impl ConcurrentPlanExecutor {
 
                 let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
                     HashMap::with_capacity(left_n);
+                let mut left_record = Record::with_capacity(left_cols.len());
+                let mut left_values: Vec<Value> = Vec::with_capacity(left_cols.len());
                 for left_idx in 0..left_n {
-                    let left_record = Record::from_values(
-                        left_cols.iter().map(|c| c.get_value(left_idx)).collect(),
-                    );
+                    left_values.clear();
+                    left_values.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                    left_record.set_from_slice(&left_values);
                     let key_values: Vec<Value> = left_keys
                         .iter()
                         .map(|expr| left_evaluator.evaluate(expr, &left_record))
@@ -719,11 +732,13 @@ impl ConcurrentPlanExecutor {
 
                 let mut result = Table::empty(result_schema);
                 let mut combined: Vec<Value> = Vec::with_capacity(left_width + right_width);
+                let mut right_record = Record::with_capacity(right_cols.len());
+                let mut right_values: Vec<Value> = Vec::with_capacity(right_cols.len());
 
                 for right_idx in 0..right_n {
-                    let right_record = Record::from_values(
-                        right_cols.iter().map(|c| c.get_value(right_idx)).collect(),
-                    );
+                    right_values.clear();
+                    right_values.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                    right_record.set_from_slice(&right_values);
                     let key_values: Vec<Value> = right_keys
                         .iter()
                         .map(|expr| right_evaluator.evaluate(expr, &right_record))
@@ -763,10 +778,12 @@ impl ConcurrentPlanExecutor {
 
                 let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
                     HashMap::with_capacity(right_n);
+                let mut right_record = Record::with_capacity(right_cols.len());
+                let mut right_values: Vec<Value> = Vec::with_capacity(right_cols.len());
                 for right_idx in 0..right_n {
-                    let right_record = Record::from_values(
-                        right_cols.iter().map(|c| c.get_value(right_idx)).collect(),
-                    );
+                    right_values.clear();
+                    right_values.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                    right_record.set_from_slice(&right_values);
                     let key_values: Vec<Value> = right_keys
                         .iter()
                         .map(|expr| right_evaluator.evaluate(expr, &right_record))
@@ -787,11 +804,13 @@ impl ConcurrentPlanExecutor {
                 let mut matched_right: HashSet<usize> = HashSet::with_capacity(right_n);
                 let mut result = Table::empty(result_schema);
                 let mut combined: Vec<Value> = Vec::with_capacity(left_width + right_width);
+                let mut left_record = Record::with_capacity(left_cols.len());
+                let mut left_values: Vec<Value> = Vec::with_capacity(left_cols.len());
 
                 for left_idx in 0..left_n {
-                    let left_record = Record::from_values(
-                        left_cols.iter().map(|c| c.get_value(left_idx)).collect(),
-                    );
+                    left_values.clear();
+                    left_values.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                    left_record.set_from_slice(&left_values);
                     let key_values: Vec<Value> = left_keys
                         .iter()
                         .map(|expr| left_evaluator.evaluate(expr, &left_record))

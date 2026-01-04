@@ -144,9 +144,21 @@ pub fn fn_net_ip_net_mask(args: &[Value]) -> Result<Value> {
     }
     match (&args[0], &args[1]) {
         (Value::Int64(num_bytes), Value::Int64(prefix_len)) => {
-            let mut mask = vec![0u8; *num_bytes as usize];
-            let full_bytes = (*prefix_len / 8) as usize;
-            let remaining_bits = (*prefix_len % 8) as u8;
+            if *num_bytes < 0 || *num_bytes > 16 {
+                return Err(Error::InvalidQuery(
+                    "NET.IP_NET_MASK num_bytes must be between 0 and 16".into(),
+                ));
+            }
+            if *prefix_len < 0 || *prefix_len > (*num_bytes * 8) {
+                return Err(Error::InvalidQuery(
+                    "NET.IP_NET_MASK prefix_length must be between 0 and num_bytes*8".into(),
+                ));
+            }
+            let num_bytes_usize = *num_bytes as usize;
+            let prefix_len_usize = *prefix_len as usize;
+            let mut mask = vec![0u8; num_bytes_usize];
+            let full_bytes = prefix_len_usize / 8;
+            let remaining_bits = (prefix_len_usize % 8) as u8;
 
             for (i, byte) in mask.iter_mut().enumerate() {
                 if i < full_bytes {
@@ -172,9 +184,15 @@ pub fn fn_net_ip_trunc(args: &[Value]) -> Result<Value> {
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::Bytes(bytes), Value::Int64(prefix_len)) => {
+            if *prefix_len < 0 || *prefix_len > (bytes.len() as i64 * 8) {
+                return Err(Error::InvalidQuery(
+                    "NET.IP_TRUNC prefix_length must be between 0 and IP address bit length".into(),
+                ));
+            }
+            let prefix_len_usize = *prefix_len as usize;
             let mut result = bytes.clone();
-            let full_bytes = (*prefix_len / 8) as usize;
-            let remaining_bits = (*prefix_len % 8) as u8;
+            let full_bytes = prefix_len_usize / 8;
+            let remaining_bits = (prefix_len_usize % 8) as u8;
 
             for (i, byte) in result.iter_mut().enumerate() {
                 if i < full_bytes {

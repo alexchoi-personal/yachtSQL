@@ -55,13 +55,30 @@ pub fn fn_reverse(args: &[Value]) -> Result<Value> {
     }
 }
 
+const MAX_REPEAT_OUTPUT_LEN: usize = 10 * 1024 * 1024;
+
 pub fn fn_repeat(args: &[Value]) -> Result<Value> {
     if args.len() < 2 {
         return Err(Error::InvalidQuery("REPEAT requires 2 arguments".into()));
     }
     match (&args[0], &args[1]) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::String(s), Value::Int64(n)) => Ok(Value::String(s.repeat(*n as usize))),
+        (Value::String(s), Value::Int64(n)) => {
+            if *n < 0 {
+                return Err(Error::InvalidQuery(
+                    "REPEAT count must be non-negative".into(),
+                ));
+            }
+            let count = *n as usize;
+            let output_len = s.len().saturating_mul(count);
+            if output_len > MAX_REPEAT_OUTPUT_LEN {
+                return Err(Error::InvalidQuery(format!(
+                    "REPEAT would produce {} bytes, exceeding maximum of {} bytes",
+                    output_len, MAX_REPEAT_OUTPUT_LEN
+                )));
+            }
+            Ok(Value::String(s.repeat(count)))
+        }
         (Value::String(_), _) | (_, Value::Int64(_)) | (_, _) => Err(Error::InvalidQuery(
             "REPEAT requires string and int arguments".into(),
         )),

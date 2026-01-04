@@ -115,7 +115,10 @@ impl Column {
         }
         Ok(match self {
             Column::Bool { data, nulls } => {
-                let new_data: Vec<bool> = indices.iter().map(|&idx| data[idx]).collect();
+                let mut new_data: Vec<bool> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx]);
+                }
                 Column::Bool {
                     data: new_data,
                     nulls: nulls.gather(indices),
@@ -142,56 +145,80 @@ impl Column {
                 }
             }
             Column::Numeric { data, nulls } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx]).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx]);
+                }
                 Column::Numeric {
                     data: new_data,
                     nulls: nulls.gather(indices),
                 }
             }
             Column::String { data, nulls } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx].clone());
+                }
                 Column::String {
                     data: new_data,
                     nulls: nulls.gather(indices),
                 }
             }
             Column::Bytes { data, nulls } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx].clone());
+                }
                 Column::Bytes {
                     data: new_data,
                     nulls: nulls.gather(indices),
                 }
             }
             Column::Date { data, nulls } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx]).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx]);
+                }
                 Column::Date {
                     data: new_data,
                     nulls: nulls.gather(indices),
                 }
             }
             Column::Time { data, nulls } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx]).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx]);
+                }
                 Column::Time {
                     data: new_data,
                     nulls: nulls.gather(indices),
                 }
             }
             Column::DateTime { data, nulls } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx]).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx]);
+                }
                 Column::DateTime {
                     data: new_data,
                     nulls: nulls.gather(indices),
                 }
             }
             Column::Timestamp { data, nulls } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx]).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx]);
+                }
                 Column::Timestamp {
                     data: new_data,
                     nulls: nulls.gather(indices),
                 }
             }
             Column::Json { data, nulls } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx].clone());
+                }
                 Column::Json {
                     data: new_data,
                     nulls: nulls.gather(indices),
@@ -202,7 +229,10 @@ impl Column {
                 nulls,
                 element_type,
             } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx].clone());
+                }
                 Column::Array {
                     data: new_data,
                     nulls: nulls.gather(indices),
@@ -214,7 +244,10 @@ impl Column {
                 nulls,
                 fields,
             } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx].clone());
+                }
                 Column::Struct {
                     data: new_data,
                     nulls: nulls.gather(indices),
@@ -222,14 +255,20 @@ impl Column {
                 }
             }
             Column::Geography { data, nulls } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx].clone());
+                }
                 Column::Geography {
                     data: new_data,
                     nulls: nulls.gather(indices),
                 }
             }
             Column::Interval { data, nulls } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx].clone());
+                }
                 Column::Interval {
                     data: new_data,
                     nulls: nulls.gather(indices),
@@ -240,7 +279,10 @@ impl Column {
                 nulls,
                 element_type,
             } => {
-                let new_data: Vec<_> = indices.iter().map(|&idx| data[idx].clone()).collect();
+                let mut new_data: Vec<_> = Vec::with_capacity(indices.len());
+                for &idx in indices {
+                    new_data.push(data[idx].clone());
+                }
                 Column::Range {
                     data: new_data,
                     nulls: nulls.gather(indices),

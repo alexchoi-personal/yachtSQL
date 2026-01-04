@@ -564,18 +564,32 @@ impl<'a> ColumnarEvaluator<'a> {
     }
 
     fn coerce_int_to_numeric(&self, col: &Column) -> Result<Column> {
-        let mut values = Vec::with_capacity(col.len());
-        for i in 0..col.len() {
-            let val = col.get_value(i);
-            match val {
-                Value::Int64(v) => {
-                    values.push(Value::Numeric(rust_decimal::Decimal::from(v)));
+        match col {
+            Column::Int64 { data, nulls } => {
+                let mut new_data: Vec<rust_decimal::Decimal> = Vec::with_capacity(data.len());
+                for &v in data.iter() {
+                    new_data.push(rust_decimal::Decimal::from(v));
                 }
-                Value::Null => values.push(Value::Null),
-                other => values.push(other),
+                Ok(Column::Numeric {
+                    data: new_data,
+                    nulls: nulls.clone(),
+                })
+            }
+            _ => {
+                let mut values = Vec::with_capacity(col.len());
+                for i in 0..col.len() {
+                    let val = col.get_value(i);
+                    match val {
+                        Value::Int64(v) => {
+                            values.push(Value::Numeric(rust_decimal::Decimal::from(v)));
+                        }
+                        Value::Null => values.push(Value::Null),
+                        other => values.push(other),
+                    }
+                }
+                Ok(Column::from_values(&values))
             }
         }
-        Ok(Column::from_values(&values))
     }
 
     fn coerce_int_to_float(&self, col: &Column) -> Result<Column> {

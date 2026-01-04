@@ -119,12 +119,12 @@ impl ConcurrentPlanExecutor {
 
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-                let record = Record::from_values(values.clone());
+                let record = Record::from_values(values);
                 let val = self
                     .eval_expr_with_subqueries(predicate, &schema, &record)
                     .await?;
                 if val.as_bool().unwrap_or(false) {
-                    result.push_row(values)?;
+                    result.push_row(record.into_values())?;
                 }
             }
             Ok(result)
@@ -147,10 +147,10 @@ impl ConcurrentPlanExecutor {
 
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-                let record = Record::from_values(values.clone());
+                let record = Record::from_values(values);
                 let val = evaluator.evaluate(predicate, &record)?;
                 if val.as_bool().unwrap_or(false) {
-                    result.push_row(values)?;
+                    result.push_row(record.into_values())?;
                 }
             }
             Ok(result)
