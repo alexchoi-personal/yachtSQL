@@ -1,10 +1,10 @@
 #![coverage(off)]
 
-use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use rustc_hash::{FxHashMap, FxHashSet};
 use yachtsql_common::error::{Error, Result};
 use yachtsql_ir::Expr;
 use yachtsql_storage::{Schema, Table};
@@ -65,24 +65,24 @@ pub struct DroppedSchemaData {
 }
 
 pub struct TableLockSet {
-    read_tables: Mutex<HashMap<String, Table>>,
-    write_tables: Mutex<HashMap<String, Table>>,
+    read_tables: Mutex<FxHashMap<String, Table>>,
+    write_tables: Mutex<FxHashMap<String, Table>>,
     catalog: Option<Arc<ConcurrentCatalog>>,
 }
 
 impl TableLockSet {
     pub fn new() -> Self {
         Self {
-            read_tables: Mutex::new(HashMap::new()),
-            write_tables: Mutex::new(HashMap::new()),
+            read_tables: Mutex::new(FxHashMap::default()),
+            write_tables: Mutex::new(FxHashMap::default()),
             catalog: None,
         }
     }
 
     pub fn with_catalog(catalog: Arc<ConcurrentCatalog>) -> Self {
         Self {
-            read_tables: Mutex::new(HashMap::new()),
-            write_tables: Mutex::new(HashMap::new()),
+            read_tables: Mutex::new(FxHashMap::default()),
+            write_tables: Mutex::new(FxHashMap::default()),
             catalog: Some(catalog),
         }
     }
@@ -147,7 +147,7 @@ impl TableLockSet {
         }
     }
 
-    pub fn snapshot_write_locked_tables(&self) -> HashMap<String, Table> {
+    pub fn snapshot_write_locked_tables(&self) -> FxHashMap<String, Table> {
         self.write_tables
             .lock()
             .map(|g| g.clone())
@@ -174,7 +174,7 @@ impl Default for TableLockSet {
 
 #[derive(Debug, Clone)]
 pub struct TransactionSnapshot {
-    pub tables: HashMap<String, Table>,
+    pub tables: FxHashMap<String, Table>,
 }
 
 #[derive(Debug)]
@@ -191,8 +191,8 @@ pub struct ConcurrentCatalog {
     dropped_schemas: DashMap<String, DroppedSchemaData>,
     transaction_snapshot: RwLock<Option<TransactionSnapshot>>,
     default_project: RwLock<Option<String>>,
-    projects: DashMap<String, HashSet<String>>,
-    dataset_tables: DashMap<String, HashSet<String>>,
+    projects: DashMap<String, FxHashSet<String>>,
+    dataset_tables: DashMap<String, FxHashSet<String>>,
 }
 
 impl ConcurrentCatalog {
@@ -257,7 +257,7 @@ impl ConcurrentCatalog {
     }
 
     pub fn begin_transaction(&self) -> Result<()> {
-        let mut tables_snapshot = HashMap::new();
+        let mut tables_snapshot = FxHashMap::default();
         for entry in self.tables.iter() {
             match entry.value().try_read() {
                 Some(table) => {
@@ -278,7 +278,7 @@ impl ConcurrentCatalog {
     }
 
     pub fn begin_transaction_with_tables(&self, table_names: &[String]) -> Result<()> {
-        let mut tables_snapshot = HashMap::new();
+        let mut tables_snapshot = FxHashMap::default();
         for name in table_names {
             let key = name.to_uppercase();
             if let Some(handle) = self.tables.get(&key) {
@@ -306,7 +306,7 @@ impl ConcurrentCatalog {
         if let Some(ref mut snapshot) = *snapshot_guard {
             snapshot.tables.insert(name.to_uppercase(), table_data);
         } else {
-            let mut tables = HashMap::new();
+            let mut tables = FxHashMap::default();
             tables.insert(name.to_uppercase(), table_data);
             *snapshot_guard = Some(TransactionSnapshot { tables });
         }
@@ -409,7 +409,7 @@ impl ConcurrentCatalog {
         &self,
         name: &str,
         if_not_exists: bool,
-        options: HashMap<String, String>,
+        options: FxHashMap<String, String>,
     ) -> Result<()> {
         let key = name.to_uppercase();
         if self.schemas.contains_key(&key) {
@@ -525,7 +525,11 @@ impl ConcurrentCatalog {
         self.schemas.contains_key(&name.to_uppercase())
     }
 
-    pub fn alter_schema_options(&self, name: &str, options: HashMap<String, String>) -> Result<()> {
+    pub fn alter_schema_options(
+        &self,
+        name: &str,
+        options: FxHashMap<String, String>,
+    ) -> Result<()> {
         let key = name.to_uppercase();
         if !self.schemas.contains_key(&key) {
             return Err(Error::invalid_query(format!("Schema not found: {}", name)));
@@ -766,7 +770,7 @@ impl ConcurrentCatalog {
             .map(|r| r.clone())
     }
 
-    pub fn get_functions(&self) -> HashMap<String, UserFunction> {
+    pub fn get_functions(&self) -> FxHashMap<String, UserFunction> {
         self.functions
             .iter()
             .map(|r| (r.key().clone(), r.value().clone()))
@@ -825,8 +829,8 @@ impl ConcurrentCatalog {
         Some(table.schema().clone())
     }
 
-    pub fn collect_table_stats(&self) -> HashMap<String, yachtsql_optimizer::TableStats> {
-        let mut stats = HashMap::new();
+    pub fn collect_table_stats(&self) -> FxHashMap<String, yachtsql_optimizer::TableStats> {
+        let mut stats = FxHashMap::default();
         for entry in self.tables.iter() {
             let table_name = entry.key().clone();
             let handle = entry.value();

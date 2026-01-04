@@ -1,7 +1,6 @@
 #![coverage(off)]
 
-use std::collections::HashSet;
-
+use rustc_hash::FxHashSet;
 use yachtsql_ir::Expr;
 
 use super::predicate::collect_column_indices_into;
@@ -9,13 +8,13 @@ use crate::optimized_logical_plan::OptimizedLogicalPlan;
 
 #[derive(Clone, Default)]
 pub struct RequiredColumns {
-    indices: HashSet<usize>,
+    indices: FxHashSet<usize>,
 }
 
 impl RequiredColumns {
     pub fn new() -> Self {
         Self {
-            indices: HashSet::new(),
+            indices: FxHashSet::default(),
         }
     }
 

@@ -1,7 +1,6 @@
 #![coverage(off)]
 
-use std::collections::{HashMap, HashSet};
-
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::DataType;
@@ -34,7 +33,7 @@ pub struct ViewDef {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SchemaMetadata {
-    pub options: HashMap<String, String>,
+    pub options: FxHashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,26 +44,26 @@ pub struct ColumnDefault {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionSnapshot {
-    pub tables: HashMap<String, Table>,
+    pub tables: FxHashMap<String, Table>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DroppedSchema {
     pub metadata: SchemaMetadata,
-    pub tables: HashMap<String, Table>,
+    pub tables: FxHashMap<String, Table>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Catalog {
-    tables: HashMap<String, Table>,
-    table_defaults: HashMap<String, Vec<ColumnDefault>>,
-    functions: HashMap<String, UserFunction>,
-    procedures: HashMap<String, UserProcedure>,
-    views: HashMap<String, ViewDef>,
-    schemas: HashSet<String>,
-    schema_metadata: HashMap<String, SchemaMetadata>,
+    tables: FxHashMap<String, Table>,
+    table_defaults: FxHashMap<String, Vec<ColumnDefault>>,
+    functions: FxHashMap<String, UserFunction>,
+    procedures: FxHashMap<String, UserProcedure>,
+    views: FxHashMap<String, ViewDef>,
+    schemas: FxHashSet<String>,
+    schema_metadata: FxHashMap<String, SchemaMetadata>,
     search_path: Vec<String>,
-    dropped_schemas: HashMap<String, DroppedSchema>,
+    dropped_schemas: FxHashMap<String, DroppedSchema>,
     #[serde(skip)]
     transaction_snapshot: Option<TransactionSnapshot>,
 }
@@ -72,15 +71,15 @@ pub struct Catalog {
 impl Catalog {
     pub fn new() -> Self {
         Self {
-            tables: HashMap::new(),
-            table_defaults: HashMap::new(),
-            functions: HashMap::new(),
-            procedures: HashMap::new(),
-            views: HashMap::new(),
-            schemas: HashSet::new(),
-            schema_metadata: HashMap::new(),
+            tables: FxHashMap::default(),
+            table_defaults: FxHashMap::default(),
+            functions: FxHashMap::default(),
+            procedures: FxHashMap::default(),
+            views: FxHashMap::default(),
+            schemas: FxHashSet::default(),
+            schema_metadata: FxHashMap::default(),
             search_path: Vec::new(),
-            dropped_schemas: HashMap::new(),
+            dropped_schemas: FxHashMap::default(),
             transaction_snapshot: None,
         }
     }
@@ -123,7 +122,7 @@ impl Catalog {
         &mut self,
         name: &str,
         if_not_exists: bool,
-        options: HashMap<String, String>,
+        options: FxHashMap<String, String>,
     ) -> Result<()> {
         let key = name.to_uppercase();
         if self.schemas.contains(&key) {
@@ -166,7 +165,7 @@ impl Catalog {
             )));
         }
 
-        let mut dropped_tables = HashMap::new();
+        let mut dropped_tables = FxHashMap::default();
         for table_key in tables_in_schema {
             if let Some(table) = self.tables.remove(&table_key) {
                 dropped_tables.insert(table_key, table);
@@ -235,7 +234,7 @@ impl Catalog {
     pub fn alter_schema_options(
         &mut self,
         name: &str,
-        options: HashMap<String, String>,
+        options: FxHashMap<String, String>,
     ) -> Result<()> {
         let key = name.to_uppercase();
         if !self.schemas.contains(&key) {
@@ -464,7 +463,7 @@ impl Catalog {
         self.procedures.contains_key(&name.to_uppercase())
     }
 
-    pub fn get_functions(&self) -> &HashMap<String, UserFunction> {
+    pub fn get_functions(&self) -> &FxHashMap<String, UserFunction> {
         &self.functions
     }
 

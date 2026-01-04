@@ -224,7 +224,7 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
     pub(in crate::planner::query) fn add_group_expr_to_index_map(
         &self,
         all_exprs: &mut Vec<ast::Expr>,
-        expr_indices: &mut std::collections::HashMap<String, usize>,
+        expr_indices: &mut rustc_hash::FxHashMap<String, usize>,
         expr: &ast::Expr,
     ) -> usize {
         let key = self.group_expr_key(expr);
@@ -240,7 +240,7 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
     pub(in crate::planner::query) fn add_group_exprs_to_index_map(
         &self,
         all_exprs: &mut Vec<ast::Expr>,
-        expr_indices: &mut std::collections::HashMap<String, usize>,
+        expr_indices: &mut rustc_hash::FxHashMap<String, usize>,
         exprs: &[ast::Expr],
     ) -> Vec<usize> {
         exprs

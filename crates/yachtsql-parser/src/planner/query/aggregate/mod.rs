@@ -46,8 +46,8 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
             ast::GroupByExpr::All(_) => {}
             ast::GroupByExpr::Expressions(exprs, _) => {
                 let mut all_exprs: Vec<ast::Expr> = Vec::new();
-                let mut expr_indices: std::collections::HashMap<String, usize> =
-                    std::collections::HashMap::new();
+                let mut expr_indices: rustc_hash::FxHashMap<String, usize> =
+                    rustc_hash::FxHashMap::default();
                 let mut sets: Vec<Vec<usize>> = Vec::new();
                 let mut has_grouping_modifier = false;
                 let mut regular_indices: Vec<usize> = Vec::new();

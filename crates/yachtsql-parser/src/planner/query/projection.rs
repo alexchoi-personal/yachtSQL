@@ -371,8 +371,8 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
         opts: &ast::WildcardAdditionalOptions,
         schema: &PlanSchema,
         named_windows: &[ast::NamedWindowDefinition],
-    ) -> Result<std::collections::HashMap<String, (Expr, DataType)>> {
-        let mut replace_map = std::collections::HashMap::new();
+    ) -> Result<rustc_hash::FxHashMap<String, (Expr, DataType)>> {
+        let mut replace_map = rustc_hash::FxHashMap::default();
         if let Some(replace) = &opts.opt_replace {
             for item in &replace.items {
                 let col_name = item.column_name.value.to_lowercase();

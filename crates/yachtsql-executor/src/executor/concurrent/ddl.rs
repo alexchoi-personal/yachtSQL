@@ -1,7 +1,6 @@
 #![coverage(off)]
 
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::DataType;
@@ -334,7 +333,7 @@ impl ConcurrentPlanExecutor {
         name: &str,
         options: &[(String, String)],
     ) -> Result<Table> {
-        let opts: HashMap<String, String> = options.iter().cloned().collect();
+        let opts: FxHashMap<String, String> = options.iter().cloned().collect();
         self.catalog.alter_schema_options(name, opts)?;
         Ok(Table::empty(Schema::new()))
     }

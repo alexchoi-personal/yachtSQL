@@ -1,7 +1,6 @@
 #![coverage(off)]
 
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use yachtsql_ir::{Expr, LogicalPlan, WhenClause};
 
 use super::Planner;
@@ -10,7 +9,7 @@ use crate::CatalogProvider;
 impl<'a, C: CatalogProvider> Planner<'a, C> {
     pub(super) fn substitute_params_in_plan(
         plan: LogicalPlan,
-        bindings: &HashMap<String, Expr>,
+        bindings: &FxHashMap<String, Expr>,
     ) -> LogicalPlan {
         match plan {
             LogicalPlan::Project {
@@ -44,7 +43,10 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
         }
     }
 
-    pub(super) fn substitute_params_in_expr(expr: Expr, bindings: &HashMap<String, Expr>) -> Expr {
+    pub(super) fn substitute_params_in_expr(
+        expr: Expr,
+        bindings: &FxHashMap<String, Expr>,
+    ) -> Expr {
         match expr {
             Expr::Column { ref name, .. } => {
                 if let Some(replacement) = bindings.get(&name.to_uppercase()) {
@@ -151,8 +153,7 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
+    use rustc_hash::FxHashMap;
     use yachtsql_common::types::DataType;
     use yachtsql_ir::{
         BinaryOp, Expr, Literal, LogicalPlan, PlanField, PlanSchema, ScalarFunction, UnaryOp,
@@ -179,8 +180,8 @@ mod tests {
         }
     }
 
-    fn make_bindings() -> HashMap<String, Expr> {
-        let mut bindings = HashMap::new();
+    fn make_bindings() -> FxHashMap<String, Expr> {
+        let mut bindings = FxHashMap::default();
         bindings.insert("PARAM1".to_string(), Expr::literal_i64(42));
         bindings.insert("PARAM2".to_string(), Expr::literal_string("hello"));
         bindings
@@ -683,7 +684,7 @@ mod tests {
 
     #[test]
     fn test_substitute_params_empty_bindings() {
-        let bindings = HashMap::new();
+        let bindings = FxHashMap::default();
         let expr = Expr::Column {
             table: None,
             name: "param1".to_string(),

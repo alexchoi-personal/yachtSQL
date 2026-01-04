@@ -1,5 +1,4 @@
-use std::collections::{HashMap, HashSet};
-
+use rustc_hash::{FxHashMap, FxHashSet};
 use yachtsql_ir::{BinaryOp, Expr, JoinType, Literal};
 
 use crate::join_order::CostModel;
@@ -199,13 +198,13 @@ pub fn adjust_predicate_indices(expr: &Expr, offset: usize) -> Expr {
     }
 }
 
-pub fn collect_column_indices(expr: &Expr) -> HashSet<usize> {
-    let mut indices = HashSet::new();
+pub fn collect_column_indices(expr: &Expr) -> FxHashSet<usize> {
+    let mut indices = FxHashSet::default();
     collect_column_indices_into(expr, &mut indices);
     indices
 }
 
-pub fn collect_column_indices_into(expr: &Expr, indices: &mut HashSet<usize>) {
+pub fn collect_column_indices_into(expr: &Expr, indices: &mut FxHashSet<usize>) {
     match expr {
         Expr::Column {
             index: Some(idx), ..
@@ -460,8 +459,8 @@ pub fn classify_predicates_for_join(
     (pushable_left, pushable_right, post_join)
 }
 
-pub fn build_aggregate_output_to_input_map(group_by: &[Expr]) -> HashMap<usize, usize> {
-    let mut map = HashMap::new();
+pub fn build_aggregate_output_to_input_map(group_by: &[Expr]) -> FxHashMap<usize, usize> {
+    let mut map = FxHashMap::default();
     for (output_idx, expr) in group_by.iter().enumerate() {
         if let Expr::Column {
             index: Some(input_idx),
@@ -476,7 +475,7 @@ pub fn build_aggregate_output_to_input_map(group_by: &[Expr]) -> HashMap<usize, 
 
 pub fn remap_predicate_indices(
     expr: &Expr,
-    output_to_input: &HashMap<usize, usize>,
+    output_to_input: &FxHashMap<usize, usize>,
 ) -> Option<Expr> {
     match expr {
         Expr::Column {

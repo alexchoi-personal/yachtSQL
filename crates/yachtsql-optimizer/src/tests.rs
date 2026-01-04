@@ -2,8 +2,7 @@
 
 #[cfg(test)]
 mod join_order_tests {
-    use std::collections::HashMap;
-
+    use rustc_hash::FxHashMap;
     use yachtsql_common::types::DataType;
     use yachtsql_ir::{BinaryOp, Expr, JoinType, LogicalPlan, PlanField, PlanSchema};
 
@@ -239,7 +238,7 @@ mod join_order_tests {
 
         #[test]
         fn estimate_base_cardinality_with_stats() {
-            let mut stats = HashMap::new();
+            let mut stats = FxHashMap::default();
             stats.insert("USERS".to_string(), TableStats::new(5000));
             stats.insert("ORDERS".to_string(), TableStats::new(10000));
 
@@ -257,7 +256,7 @@ mod join_order_tests {
 
         #[test]
         fn estimate_base_cardinality_with_empty_stats() {
-            let cost_model = CostModel::with_stats(HashMap::new());
+            let cost_model = CostModel::with_stats(FxHashMap::default());
             assert_eq!(cost_model.estimate_base_cardinality("any_table"), 1000);
         }
 
@@ -774,7 +773,7 @@ mod join_order_tests {
                 Some(eq(col_table("t1", "id"), col_table("t2", "id"))),
             );
 
-            let mut stats = HashMap::new();
+            let mut stats = FxHashMap::default();
             stats.insert("T1".to_string(), TableStats::new(5000));
             stats.insert("T2".to_string(), TableStats::new(500));
 
@@ -3305,8 +3304,7 @@ mod projection_pushdown_tests {
 
 #[cfg(test)]
 mod predicate_tests {
-    use std::collections::{HashMap, HashSet};
-
+    use rustc_hash::{FxHashMap, FxHashSet};
     use yachtsql_common::types::DataType;
     use yachtsql_ir::{
         AggregateFunction, BinaryOp, DateTimeField, Expr, JoinType, LogicalPlan, PlanSchema,
@@ -3385,28 +3383,28 @@ mod predicate_tests {
         fn column_with_index() {
             let expr = col_idx("a", 5);
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([5]));
+            assert_eq!(indices, FxHashSet::from_iter([5]));
         }
 
         #[test]
         fn column_without_index() {
             let expr = col_no_idx("a");
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::new());
+            assert_eq!(indices, FxHashSet::default());
         }
 
         #[test]
         fn literal() {
             let expr = lit_i64(42);
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::new());
+            assert_eq!(indices, FxHashSet::default());
         }
 
         #[test]
         fn binary_op() {
             let expr = add(col_idx("a", 1), col_idx("b", 3));
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([1, 3]));
+            assert_eq!(indices, FxHashSet::from_iter([1, 3]));
         }
 
         #[test]
@@ -3416,7 +3414,7 @@ mod predicate_tests {
                 expr: Box::new(col_idx("a", 2)),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([2]));
+            assert_eq!(indices, FxHashSet::from_iter([2]));
         }
 
         #[test]
@@ -3426,7 +3424,7 @@ mod predicate_tests {
                 negated: false,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([7]));
+            assert_eq!(indices, FxHashSet::from_iter([7]));
         }
 
         #[test]
@@ -3437,7 +3435,7 @@ mod predicate_tests {
                 negated: false,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([1, 4]));
+            assert_eq!(indices, FxHashSet::from_iter([1, 4]));
         }
 
         #[test]
@@ -3447,7 +3445,7 @@ mod predicate_tests {
                 args: vec![col_idx("a", 0), col_idx("b", 2)],
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([0, 2]));
+            assert_eq!(indices, FxHashSet::from_iter([0, 2]));
         }
 
         #[test]
@@ -3458,7 +3456,7 @@ mod predicate_tests {
                 safe: false,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([3]));
+            assert_eq!(indices, FxHashSet::from_iter([3]));
         }
 
         #[test]
@@ -3468,7 +3466,7 @@ mod predicate_tests {
                 name: "aliased".to_string(),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([6]));
+            assert_eq!(indices, FxHashSet::from_iter([6]));
         }
 
         #[test]
@@ -3480,7 +3478,7 @@ mod predicate_tests {
                 case_insensitive: false,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([1, 5]));
+            assert_eq!(indices, FxHashSet::from_iter([1, 5]));
         }
 
         #[test]
@@ -3491,7 +3489,7 @@ mod predicate_tests {
                 negated: false,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([0, 2, 4]));
+            assert_eq!(indices, FxHashSet::from_iter([0, 2, 4]));
         }
 
         #[test]
@@ -3503,7 +3501,7 @@ mod predicate_tests {
                 negated: false,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([1, 3, 5]));
+            assert_eq!(indices, FxHashSet::from_iter([1, 3, 5]));
         }
 
         #[test]
@@ -3517,7 +3515,7 @@ mod predicate_tests {
                 else_result: Some(Box::new(col_idx("else", 3))),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([0, 1, 2, 3]));
+            assert_eq!(indices, FxHashSet::from_iter([0, 1, 2, 3]));
         }
 
         #[test]
@@ -3531,7 +3529,7 @@ mod predicate_tests {
                 else_result: None,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([5, 7]));
+            assert_eq!(indices, FxHashSet::from_iter([5, 7]));
         }
 
         #[test]
@@ -3541,7 +3539,7 @@ mod predicate_tests {
                 expr: Box::new(col_idx("date_col", 4)),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([4]));
+            assert_eq!(indices, FxHashSet::from_iter([4]));
         }
 
         #[test]
@@ -3552,7 +3550,7 @@ mod predicate_tests {
                 length: Some(Box::new(col_idx("len", 2))),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([0, 1, 2]));
+            assert_eq!(indices, FxHashSet::from_iter([0, 1, 2]));
         }
 
         #[test]
@@ -3563,7 +3561,7 @@ mod predicate_tests {
                 length: None,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([3]));
+            assert_eq!(indices, FxHashSet::from_iter([3]));
         }
 
         #[test]
@@ -3574,7 +3572,7 @@ mod predicate_tests {
                 trim_where: TrimWhere::Both,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([2, 4]));
+            assert_eq!(indices, FxHashSet::from_iter([2, 4]));
         }
 
         #[test]
@@ -3585,7 +3583,7 @@ mod predicate_tests {
                 trim_where: TrimWhere::Leading,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([6]));
+            assert_eq!(indices, FxHashSet::from_iter([6]));
         }
 
         #[test]
@@ -3595,7 +3593,7 @@ mod predicate_tests {
                 string: Box::new(col_idx("str", 3)),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([1, 3]));
+            assert_eq!(indices, FxHashSet::from_iter([1, 3]));
         }
 
         #[test]
@@ -3607,7 +3605,7 @@ mod predicate_tests {
                 overlay_for: Some(Box::new(col_idx("for", 3))),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([0, 1, 2, 3]));
+            assert_eq!(indices, FxHashSet::from_iter([0, 1, 2, 3]));
         }
 
         #[test]
@@ -3619,7 +3617,7 @@ mod predicate_tests {
                 overlay_for: None,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([5, 6, 7]));
+            assert_eq!(indices, FxHashSet::from_iter([5, 6, 7]));
         }
 
         #[test]
@@ -3629,7 +3627,7 @@ mod predicate_tests {
                 index: Box::new(col_idx("idx", 4)),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([2, 4]));
+            assert_eq!(indices, FxHashSet::from_iter([2, 4]));
         }
 
         #[test]
@@ -3639,7 +3637,7 @@ mod predicate_tests {
                 field: "f".to_string(),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([8]));
+            assert_eq!(indices, FxHashSet::from_iter([8]));
         }
 
         #[test]
@@ -3649,7 +3647,7 @@ mod predicate_tests {
                 element_type: None,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([0, 1, 2]));
+            assert_eq!(indices, FxHashSet::from_iter([0, 1, 2]));
         }
 
         #[test]
@@ -3661,7 +3659,7 @@ mod predicate_tests {
                 ],
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([3, 5]));
+            assert_eq!(indices, FxHashSet::from_iter([3, 5]));
         }
 
         #[test]
@@ -3680,7 +3678,7 @@ mod predicate_tests {
                 ignore_nulls: false,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([1, 2, 3]));
+            assert_eq!(indices, FxHashSet::from_iter([1, 2, 3]));
         }
 
         #[test]
@@ -3695,7 +3693,7 @@ mod predicate_tests {
                 ignore_nulls: false,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([5]));
+            assert_eq!(indices, FxHashSet::from_iter([5]));
         }
 
         #[test]
@@ -3707,7 +3705,7 @@ mod predicate_tests {
                 filter: Some(Box::new(col_idx("f", 2))),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([0, 1, 2]));
+            assert_eq!(indices, FxHashSet::from_iter([0, 1, 2]));
         }
 
         #[test]
@@ -3719,7 +3717,7 @@ mod predicate_tests {
                 filter: None,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([7]));
+            assert_eq!(indices, FxHashSet::from_iter([7]));
         }
 
         #[test]
@@ -3736,7 +3734,7 @@ mod predicate_tests {
                 frame: None,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([1, 2]));
+            assert_eq!(indices, FxHashSet::from_iter([1, 2]));
         }
 
         #[test]
@@ -3753,7 +3751,7 @@ mod predicate_tests {
                 }),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([0, 3]));
+            assert_eq!(indices, FxHashSet::from_iter([0, 3]));
         }
 
         #[test]
@@ -3771,7 +3769,7 @@ mod predicate_tests {
                 frame: None,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([4, 5, 6]));
+            assert_eq!(indices, FxHashSet::from_iter([4, 5, 6]));
         }
 
         #[test]
@@ -3781,7 +3779,7 @@ mod predicate_tests {
                 time_zone: Box::new(col_idx("tz", 1)),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([0, 1]));
+            assert_eq!(indices, FxHashSet::from_iter([0, 1]));
         }
 
         #[test]
@@ -3791,7 +3789,7 @@ mod predicate_tests {
                 path: vec![],
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([9]));
+            assert_eq!(indices, FxHashSet::from_iter([9]));
         }
 
         #[test]
@@ -3802,7 +3800,7 @@ mod predicate_tests {
                 negated: false,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([2, 4]));
+            assert_eq!(indices, FxHashSet::from_iter([2, 4]));
         }
 
         #[test]
@@ -3813,7 +3811,7 @@ mod predicate_tests {
                 negated: false,
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([7]));
+            assert_eq!(indices, FxHashSet::from_iter([7]));
         }
 
         #[test]
@@ -3823,7 +3821,7 @@ mod predicate_tests {
                 body: Box::new(col_idx("col", 3)),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([3]));
+            assert_eq!(indices, FxHashSet::from_iter([3]));
         }
 
         #[test]
@@ -3833,7 +3831,7 @@ mod predicate_tests {
                 leading_field: Some(DateTimeField::Day),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([2]));
+            assert_eq!(indices, FxHashSet::from_iter([2]));
         }
 
         #[test]
@@ -3864,16 +3862,16 @@ mod predicate_tests {
             ];
             for expr in exprs {
                 let indices = collect_column_indices(&expr);
-                assert_eq!(indices, HashSet::new());
+                assert_eq!(indices, FxHashSet::default());
             }
         }
 
         #[test]
         fn collect_column_indices_into_appends() {
-            let mut indices = HashSet::from([100, 200]);
+            let mut indices = FxHashSet::from_iter([100, 200]);
             let expr = add(col_idx("a", 1), col_idx("b", 2));
             collect_column_indices_into(&expr, &mut indices);
-            assert_eq!(indices, HashSet::from([100, 200, 1, 2]));
+            assert_eq!(indices, FxHashSet::from_iter([100, 200, 1, 2]));
         }
 
         #[test]
@@ -3898,7 +3896,7 @@ mod predicate_tests {
                 })),
             };
             let indices = collect_column_indices(&expr);
-            assert_eq!(indices, HashSet::from([0, 1, 2, 3]));
+            assert_eq!(indices, FxHashSet::from_iter([0, 1, 2, 3]));
         }
     }
 
@@ -4059,28 +4057,28 @@ mod predicate_tests {
         fn empty_group_by() {
             let group_by: Vec<Expr> = vec![];
             let map = build_aggregate_output_to_input_map(&group_by);
-            assert_eq!(map, HashMap::new());
+            assert_eq!(map, FxHashMap::default());
         }
 
         #[test]
         fn single_column() {
             let group_by = vec![col_idx("a", 5)];
             let map = build_aggregate_output_to_input_map(&group_by);
-            assert_eq!(map, HashMap::from([(0, 5)]));
+            assert_eq!(map, FxHashMap::from_iter([(0, 5)]));
         }
 
         #[test]
         fn multiple_columns() {
             let group_by = vec![col_idx("a", 0), col_idx("b", 3), col_idx("c", 7)];
             let map = build_aggregate_output_to_input_map(&group_by);
-            assert_eq!(map, HashMap::from([(0, 0), (1, 3), (2, 7)]));
+            assert_eq!(map, FxHashMap::from_iter([(0, 0), (1, 3), (2, 7)]));
         }
 
         #[test]
         fn column_without_index_skipped() {
             let group_by = vec![col_idx("a", 2), col_no_idx("b"), col_idx("c", 4)];
             let map = build_aggregate_output_to_input_map(&group_by);
-            assert_eq!(map, HashMap::from([(0, 2), (2, 4)]));
+            assert_eq!(map, FxHashMap::from_iter([(0, 2), (2, 4)]));
         }
 
         #[test]
@@ -4091,15 +4089,15 @@ mod predicate_tests {
                 col_idx("c", 3),
             ];
             let map = build_aggregate_output_to_input_map(&group_by);
-            assert_eq!(map, HashMap::from([(0, 1), (2, 3)]));
+            assert_eq!(map, FxHashMap::from_iter([(0, 1), (2, 3)]));
         }
     }
 
     mod remap_predicate_indices_tests {
         use super::*;
 
-        fn output_to_input() -> HashMap<usize, usize> {
-            HashMap::from([(0, 5), (1, 10), (2, 15)])
+        fn output_to_input() -> FxHashMap<usize, usize> {
+            FxHashMap::from_iter([(0, 5), (1, 10), (2, 15)])
         }
 
         #[test]

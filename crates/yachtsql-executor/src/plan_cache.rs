@@ -1,9 +1,9 @@
 #![coverage(off)]
 
-use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 
 use lru::LruCache;
+use rustc_hash::{FxHashMap, FxHashSet};
 use xxhash_rust::xxh3::xxh3_64;
 use yachtsql_ir::{Expr, LogicalPlan};
 
@@ -15,14 +15,14 @@ fn hash_sql(sql: &str) -> SqlHash {
 
 pub struct PlanCache {
     plans: LruCache<SqlHash, LogicalPlan>,
-    object_to_hashes: HashMap<String, HashSet<SqlHash>>,
+    object_to_hashes: FxHashMap<String, FxHashSet<SqlHash>>,
 }
 
 impl PlanCache {
     pub fn new(capacity: NonZeroUsize) -> Self {
         Self {
             plans: LruCache::new(capacity),
-            object_to_hashes: HashMap::new(),
+            object_to_hashes: FxHashMap::default(),
         }
     }
 
@@ -55,13 +55,13 @@ impl PlanCache {
     }
 }
 
-fn extract_referenced_objects(plan: &LogicalPlan) -> HashSet<String> {
-    let mut objects = HashSet::new();
+fn extract_referenced_objects(plan: &LogicalPlan) -> FxHashSet<String> {
+    let mut objects = FxHashSet::default();
     collect_objects_from_plan(plan, &mut objects);
     objects
 }
 
-fn collect_objects_from_plan(plan: &LogicalPlan, objects: &mut HashSet<String>) {
+fn collect_objects_from_plan(plan: &LogicalPlan, objects: &mut FxHashSet<String>) {
     match plan {
         LogicalPlan::Scan { table_name, .. } => {
             objects.insert(table_name.clone());
@@ -375,7 +375,7 @@ fn collect_objects_from_plan(plan: &LogicalPlan, objects: &mut HashSet<String>) 
     }
 }
 
-fn collect_objects_from_expr(expr: &Expr, objects: &mut HashSet<String>) {
+fn collect_objects_from_expr(expr: &Expr, objects: &mut FxHashSet<String>) {
     match expr {
         Expr::ScalarFunction { args, .. } => {
             for arg in args {

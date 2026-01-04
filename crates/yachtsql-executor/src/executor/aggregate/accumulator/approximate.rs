@@ -1,8 +1,7 @@
 #![coverage(off)]
 
-use std::collections::HashMap;
-
 use ordered_float::OrderedFloat;
+use rustc_hash::FxHashMap;
 use yachtsql_common::types::Value;
 
 use super::utils::value_to_f64;
@@ -55,14 +54,14 @@ impl ApproxQuantilesAccumulator {
 
 #[derive(Clone)]
 pub(crate) struct ApproxTopCountAccumulator {
-    pub(crate) counts: HashMap<String, i64>,
+    pub(crate) counts: FxHashMap<String, i64>,
     pub(crate) top_n: usize,
 }
 
 impl ApproxTopCountAccumulator {
     pub(crate) fn new(top_n: usize) -> Self {
         Self {
-            counts: HashMap::new(),
+            counts: FxHashMap::default(),
             top_n,
         }
     }
@@ -103,14 +102,14 @@ impl ApproxTopCountAccumulator {
 
 #[derive(Clone)]
 pub(crate) struct ApproxTopSumAccumulator {
-    pub(crate) sums: HashMap<String, f64>,
+    pub(crate) sums: FxHashMap<String, f64>,
     pub(crate) top_n: usize,
 }
 
 impl ApproxTopSumAccumulator {
     pub(crate) fn new(top_n: usize) -> Self {
         Self {
-            sums: HashMap::new(),
+            sums: FxHashMap::default(),
             top_n,
         }
     }

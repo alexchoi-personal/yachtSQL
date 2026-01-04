@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use yachtsql_common::types::DataType;
 use yachtsql_parser::{CatalogProvider, FunctionDefinition, ViewDefinition, parse_and_plan};
 use yachtsql_storage::{Field, Schema};
@@ -7,13 +6,13 @@ use yachtsql_storage::{Field, Schema};
 use crate::{OptimizedLogicalPlan, optimize};
 
 pub(crate) struct MockCatalog {
-    tables: HashMap<String, Schema>,
+    tables: FxHashMap<String, Schema>,
 }
 
 impl MockCatalog {
     pub(crate) fn new() -> Self {
         Self {
-            tables: HashMap::new(),
+            tables: FxHashMap::default(),
         }
     }
 

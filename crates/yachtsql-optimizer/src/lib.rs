@@ -10,13 +10,12 @@ mod test_utils;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
-
 pub use join_order::{
     CostModel, GreedyJoinReorderer, JoinEdge, JoinGraph, JoinRelation, PredicateCollector,
 };
 pub use optimized_logical_plan::{OptimizedLogicalPlan, SampleType};
 pub use planner::{PhysicalPlanner, ProjectionPushdown, fold_constants};
+use rustc_hash::FxHashMap;
 pub use stats::{ColumnStats, TableStats};
 use yachtsql_common::error::Result;
 use yachtsql_ir::LogicalPlan;
@@ -26,7 +25,7 @@ pub struct OptimizerSettings {
     pub join_reorder: bool,
     pub filter_pushdown: bool,
     pub projection_pushdown: bool,
-    pub table_stats: HashMap<String, TableStats>,
+    pub table_stats: FxHashMap<String, TableStats>,
 }
 
 impl Default for OptimizerSettings {
@@ -41,7 +40,7 @@ impl OptimizerSettings {
             join_reorder: true,
             filter_pushdown: true,
             projection_pushdown: true,
-            table_stats: HashMap::new(),
+            table_stats: FxHashMap::default(),
         }
     }
 
@@ -50,11 +49,11 @@ impl OptimizerSettings {
             join_reorder: false,
             filter_pushdown: false,
             projection_pushdown: false,
-            table_stats: HashMap::new(),
+            table_stats: FxHashMap::default(),
         }
     }
 
-    pub fn with_table_stats(mut self, stats: HashMap<String, TableStats>) -> Self {
+    pub fn with_table_stats(mut self, stats: FxHashMap<String, TableStats>) -> Self {
         self.table_stats = stats;
         self
     }
@@ -87,7 +86,7 @@ pub fn optimize_with_settings(
 
 fn maybe_reorder_joins(
     plan: &LogicalPlan,
-    table_stats: &HashMap<String, TableStats>,
+    table_stats: &FxHashMap<String, TableStats>,
 ) -> Option<LogicalPlan> {
     if table_stats.is_empty() {
         return None;

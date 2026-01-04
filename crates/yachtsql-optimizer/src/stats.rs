@@ -1,12 +1,11 @@
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use yachtsql_common::types::Value;
 
 #[derive(Debug, Clone, Default)]
 pub struct TableStats {
     pub row_count: usize,
-    pub column_stats: HashMap<String, ColumnStats>,
-    pub correlations: HashMap<(String, String), f64>,
+    pub column_stats: FxHashMap<String, ColumnStats>,
+    pub correlations: FxHashMap<(String, String), f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -21,8 +20,8 @@ impl TableStats {
     pub fn new(row_count: usize) -> Self {
         Self {
             row_count,
-            column_stats: HashMap::new(),
-            correlations: HashMap::new(),
+            column_stats: FxHashMap::default(),
+            correlations: FxHashMap::default(),
         }
     }
 

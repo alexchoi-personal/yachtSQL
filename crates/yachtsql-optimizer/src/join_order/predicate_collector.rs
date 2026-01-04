@@ -317,13 +317,13 @@ impl PredicateCollector {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
 
     use super::*;
     use crate::stats::{ColumnStats, TableStats};
 
     fn create_cost_model_with_stats() -> CostModel {
-        let mut table_stats = HashMap::new();
+        let mut table_stats = FxHashMap::default();
 
         let mut orders_stats = TableStats::new(1000);
         orders_stats.column_stats.insert(
@@ -774,7 +774,7 @@ mod tests {
 
     #[test]
     fn test_get_null_ratio_zero_row_count() {
-        let mut table_stats = HashMap::new();
+        let mut table_stats = FxHashMap::default();
         let mut empty_table = TableStats::new(0);
         empty_table.column_stats.insert(
             "col".to_string(),

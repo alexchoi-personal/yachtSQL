@@ -1,13 +1,12 @@
 #![coverage(off)]
 
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use yachtsql_common::types::DataType;
 use yachtsql_ir::plan::FunctionArg;
 use yachtsql_ir::{Expr, ScalarFunction, SortExpr, WhenClause};
 
 pub fn substitute_parameters(expr: &Expr, params: &[FunctionArg], args: &[Expr]) -> Expr {
-    let mut param_map: HashMap<String, Expr> = HashMap::new();
+    let mut param_map: FxHashMap<String, Expr> = FxHashMap::default();
     for (i, param) in params.iter().enumerate() {
         let value = if i < args.len() {
             args[i].clone()
@@ -18,7 +17,7 @@ pub fn substitute_parameters(expr: &Expr, params: &[FunctionArg], args: &[Expr])
         };
         param_map.insert(param.name.to_uppercase(), value);
     }
-    let param_ref_map: HashMap<String, &Expr> =
+    let param_ref_map: FxHashMap<String, &Expr> =
         param_map.iter().map(|(k, v)| (k.clone(), v)).collect();
 
     substitute_expr(expr, &param_ref_map)
@@ -47,7 +46,7 @@ pub fn apply_struct_field_names(expr: Expr, return_type: &DataType) -> Expr {
     }
 }
 
-pub fn substitute_expr(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Expr {
+pub fn substitute_expr(expr: &Expr, param_map: &FxHashMap<String, &Expr>) -> Expr {
     match expr {
         Expr::Column { name, table, index } => {
             let upper_name = name.to_uppercase();
@@ -107,7 +106,7 @@ pub fn substitute_expr(expr: &Expr, param_map: &HashMap<String, &Expr>) -> Expr 
             {
                 let substituted_args: Vec<Expr> =
                     args.iter().map(|a| substitute_expr(a, param_map)).collect();
-                let lambda_param_map: HashMap<String, &Expr> = lambda_params
+                let lambda_param_map: FxHashMap<String, &Expr> = lambda_params
                     .iter()
                     .zip(substituted_args.iter())
                     .map(|(p, a)| (p.to_uppercase(), a))

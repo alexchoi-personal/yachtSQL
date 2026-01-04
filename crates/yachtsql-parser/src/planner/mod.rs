@@ -1,8 +1,8 @@
 #![coverage(off)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 
+use rustc_hash::FxHashMap;
 use sqlparser::ast::{self, ObjectName, ObjectNamePart, Statement, TableObject};
 use yachtsql_common::error::{Error, Result};
 use yachtsql_ir::{LogicalPlan, PlanSchema};
@@ -36,7 +36,7 @@ pub(super) fn table_object_to_raw_string(table: &TableObject) -> String {
 
 pub struct Planner<'a, C: CatalogProvider> {
     catalog: &'a C,
-    cte_schemas: RefCell<HashMap<String, PlanSchema>>,
+    cte_schemas: RefCell<FxHashMap<String, PlanSchema>>,
     outer_schema: RefCell<Option<PlanSchema>>,
 }
 
@@ -44,7 +44,7 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
     pub fn new(catalog: &'a C) -> Self {
         Self {
             catalog,
-            cte_schemas: RefCell::new(HashMap::new()),
+            cte_schemas: RefCell::new(FxHashMap::default()),
             outer_schema: RefCell::new(None),
         }
     }

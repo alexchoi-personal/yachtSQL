@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use super::join_graph::JoinEdge;
 use crate::stats::{ColumnStats, TableStats};
@@ -19,20 +19,20 @@ pub struct EnhancedJoinCost {
 }
 
 pub struct CostModel {
-    table_stats: HashMap<String, TableStats>,
+    table_stats: FxHashMap<String, TableStats>,
     default_row_count: usize,
 }
 
 impl CostModel {
     pub fn new() -> Self {
         Self {
-            table_stats: HashMap::new(),
+            table_stats: FxHashMap::default(),
             default_row_count: 1000,
         }
     }
 
-    pub fn with_stats(table_stats: HashMap<String, TableStats>) -> Self {
-        let normalized: HashMap<String, TableStats> = table_stats
+    pub fn with_stats(table_stats: FxHashMap<String, TableStats>) -> Self {
+        let normalized: FxHashMap<String, TableStats> = table_stats
             .into_iter()
             .map(|(k, v)| (k.to_uppercase(), v))
             .collect();
@@ -176,7 +176,7 @@ mod tests {
     }
 
     fn create_cost_model_with_stats() -> CostModel {
-        let mut table_stats = HashMap::new();
+        let mut table_stats = FxHashMap::default();
 
         let mut orders_stats = TableStats::new(10000);
         orders_stats.column_stats.insert(

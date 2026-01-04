@@ -1,8 +1,7 @@
 #![coverage(off)]
 
-use std::collections::HashMap;
-
 use regex::Regex;
+use rustc_hash::FxHashMap;
 use sqlparser::ast::{self, Statement, TableFactor};
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::DataType;
@@ -112,7 +111,8 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                                 Expr::Subquery(subquery_plan) => {
                                     let alias_name = alias.as_ref().map(|a| a.name.value.as_str());
 
-                                    let mut param_bindings: HashMap<String, Expr> = HashMap::new();
+                                    let mut param_bindings: FxHashMap<String, Expr> =
+                                        FxHashMap::default();
                                     for (i, arg) in tbl_args.args.iter().enumerate() {
                                         if i < func_def.parameters.len() {
                                             let param_name =
@@ -166,7 +166,8 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                             FunctionBody::SqlQuery(query_str) => {
                                 let alias_name = alias.as_ref().map(|a| a.name.value.as_str());
 
-                                let mut param_bindings: HashMap<String, String> = HashMap::new();
+                                let mut param_bindings: FxHashMap<String, String> =
+                                    FxHashMap::default();
                                 for (i, arg) in tbl_args.args.iter().enumerate() {
                                     if i < func_def.parameters.len() {
                                         let param_name = func_def.parameters[i].name.to_uppercase();

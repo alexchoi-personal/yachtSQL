@@ -1,7 +1,6 @@
 #![coverage(off)]
 
-use std::collections::HashSet;
-
+use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
@@ -289,8 +288,7 @@ impl ConcurrentPlanExecutor {
                     .map(|i| from_cols.iter().map(|c| c.get_value(i)).collect())
                     .collect();
 
-                let mut updated_rows: std::collections::HashMap<usize, Vec<Value>> =
-                    std::collections::HashMap::new();
+                let mut updated_rows: FxHashMap<usize, Vec<Value>> = FxHashMap::default();
 
                 for (target_idx, target_row) in target_rows.iter().enumerate() {
                     for from_row in &from_rows {
@@ -662,8 +660,8 @@ impl ConcurrentPlanExecutor {
 
         let combined_schema = self.create_merge_combined_schema(&target_schema, &source_schema);
 
-        let mut matched_target_indices: HashSet<usize> = HashSet::new();
-        let mut matched_source_indices: HashSet<usize> = HashSet::new();
+        let mut matched_target_indices: FxHashSet<usize> = FxHashSet::default();
+        let mut matched_source_indices: FxHashSet<usize> = FxHashSet::default();
         let mut match_pairs: Vec<(usize, usize)> = Vec::new();
 
         let on_has_subquery = Self::expr_contains_subquery(on);
@@ -692,8 +690,8 @@ impl ConcurrentPlanExecutor {
         let mut updates: Vec<(usize, Vec<Value>)> = Vec::new();
         let mut deletes: Vec<usize> = Vec::new();
         let mut inserts: Vec<Vec<Value>> = Vec::new();
-        let mut claimed_target_indices: HashSet<usize> = HashSet::new();
-        let mut claimed_source_indices: HashSet<usize> = HashSet::new();
+        let mut claimed_target_indices: FxHashSet<usize> = FxHashSet::default();
+        let mut claimed_source_indices: FxHashSet<usize> = FxHashSet::default();
 
         for clause in clauses {
             match clause {
