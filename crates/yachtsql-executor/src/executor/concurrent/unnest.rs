@@ -10,7 +10,7 @@ use yachtsql_storage::{Column, Record, Schema, Table};
 use super::ConcurrentPlanExecutor;
 use crate::executor::plan_schema_to_schema;
 use crate::executor::window::{
-    WindowFuncType, compute_window_function_columnar, get_record_from_columns,
+    WindowFuncType, compute_window_function_columnar, fill_record_from_columns,
     partition_rows_columnar, sort_partition_columnar,
 };
 use crate::plan::PhysicalPlan;
@@ -191,9 +191,10 @@ impl ConcurrentPlanExecutor {
         }
 
         let mut matching_indices = Vec::new();
+        let mut record = Record::with_capacity(columns.len());
 
         for row_idx in 0..n {
-            let record = get_record_from_columns(&columns, row_idx);
+            fill_record_from_columns(&mut record, &columns, row_idx);
             let val = Self::evaluate_qualify_predicate(
                 predicate,
                 &schema,
