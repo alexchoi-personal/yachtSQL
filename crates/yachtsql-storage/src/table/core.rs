@@ -616,32 +616,45 @@ impl Table {
         self.gather_rows(indices)
     }
 
-    pub fn concat(&self, other: &Table) -> Self {
+    pub fn concat(&self, other: &Table) -> Result<Self> {
         let mut new_columns: IndexMap<String, Arc<Column>> = IndexMap::new();
         for (name, col) in &self.columns {
             let mut new_col = col.as_ref().clone();
             if let Some(other_col) = other.columns.get(name) {
-                let _ = new_col.extend(other_col.as_ref());
+                new_col.extend(other_col.as_ref())?;
             }
             new_columns.insert(name.clone(), Arc::new(new_col));
         }
-        Self {
+        Ok(Self {
             schema: self.schema.clone(),
             columns: new_columns,
             row_count: self.row_count + other.row_count,
-        }
+        })
     }
 
-    pub fn concat_tables(schema: Schema, tables: &[&Table]) -> Self {
+    pub fn concat_tables(schema: Schema, tables: &[&Table]) -> Result<Self> {
         if tables.is_empty() {
-            return Self::empty(schema);
+            return Ok(Self::empty(schema));
         }
 
-        let mut result = tables[0].clone();
-        for table in &tables[1..] {
-            result = result.concat(table);
+        let total_rows: usize = tables.iter().map(|t| t.row_count).sum();
+        let mut columns: IndexMap<String, Arc<Column>> = IndexMap::new();
+
+        for (name, col) in &tables[0].columns {
+            let mut new_col = col.as_ref().clone();
+            for table in &tables[1..] {
+                if let Some(other_col) = table.columns.get(name) {
+                    new_col.extend(other_col.as_ref())?;
+                }
+            }
+            columns.insert(name.clone(), Arc::new(new_col));
         }
-        result
+
+        Ok(Self {
+            schema,
+            columns,
+            row_count: total_rows,
+        })
     }
 }
 
@@ -1286,14 +1299,14 @@ mod tests {
     fn test_concat() {
         let table1 = create_test_table();
         let table2 = create_test_table();
-        let concatenated = table1.concat(&table2);
+        let concatenated = table1.concat(&table2).unwrap();
         assert_eq!(concatenated.row_count(), 6);
     }
 
     #[test]
     fn test_concat_tables_empty() {
         let schema = create_test_schema();
-        let result = Table::concat_tables(schema.clone(), &[]);
+        let result = Table::concat_tables(schema.clone(), &[]).unwrap();
         assert!(result.is_empty());
     }
 
@@ -1301,7 +1314,7 @@ mod tests {
     fn test_concat_tables_single() {
         let table = create_test_table();
         let schema = table.schema().clone();
-        let result = Table::concat_tables(schema, &[&table]);
+        let result = Table::concat_tables(schema, &[&table]).unwrap();
         assert_eq!(result.row_count(), 3);
     }
 
@@ -1310,7 +1323,7 @@ mod tests {
         let table1 = create_test_table();
         let table2 = create_test_table();
         let schema = table1.schema().clone();
-        let result = Table::concat_tables(schema, &[&table1, &table2]);
+        let result = Table::concat_tables(schema, &[&table1, &table2]).unwrap();
         assert_eq!(result.row_count(), 6);
     }
 
@@ -1379,7 +1392,7 @@ mod tests {
         let mut table2 = Table::new(schema2);
         table2.push_row(vec![Value::Int64(2)]).unwrap();
 
-        let concatenated = table1.concat(&table2);
+        let concatenated = table1.concat(&table2).unwrap();
         assert_eq!(concatenated.row_count(), 2);
         assert_eq!(concatenated.num_columns(), 2);
     }
@@ -1608,7 +1621,7 @@ mod tests {
         let schema = create_test_schema();
         let table1 = Table::new(schema.clone());
         let table2 = Table::new(schema);
-        let concatenated = table1.concat(&table2);
+        let concatenated = table1.concat(&table2).unwrap();
         assert!(concatenated.is_empty());
     }
 
@@ -1617,7 +1630,7 @@ mod tests {
         let table1 = create_test_table();
         let schema = create_test_schema();
         let table2 = Table::new(schema);
-        let concatenated = table1.concat(&table2);
+        let concatenated = table1.concat(&table2).unwrap();
         assert_eq!(concatenated.row_count(), 3);
     }
 
@@ -1769,7 +1782,7 @@ mod tests {
         let table1 = create_test_table();
         let table2 = create_test_table();
         let schema = table1.schema().clone();
-        let result = Table::concat_tables(schema, &[&table1, &table2]);
+        let result = Table::concat_tables(schema, &[&table1, &table2]).unwrap();
         assert_eq!(result.row_count(), 6);
     }
 
@@ -1779,7 +1792,7 @@ mod tests {
         let table2 = create_test_table();
         let table3 = create_test_table();
         let schema = table1.schema().clone();
-        let result = Table::concat_tables(schema, &[&table1, &table2, &table3]);
+        let result = Table::concat_tables(schema, &[&table1, &table2, &table3]).unwrap();
         assert_eq!(result.row_count(), 9);
     }
 

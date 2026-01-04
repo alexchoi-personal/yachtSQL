@@ -474,8 +474,7 @@ impl ConcurrentPlanExecutor {
             .collect();
         for row_idx in 0..n {
             let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-            if !seen.contains(&values) {
-                seen.insert(values.clone());
+            if seen.insert(values.clone()) {
                 result.push_row(values)?;
             }
         }

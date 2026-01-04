@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use lru::LruCache;
 use regex::{Regex, RegexBuilder};
@@ -12,11 +13,11 @@ const MAX_PATTERN_LENGTH: usize = 10_000;
 const REGEX_SIZE_LIMIT: usize = 10 * 1024 * 1024;
 
 thread_local! {
-    static REGEX_CACHE: RefCell<LruCache<String, Regex>> =
+    static REGEX_CACHE: RefCell<LruCache<String, Arc<Regex>>> =
         RefCell::new(LruCache::new(NonZeroUsize::new(256).expect("256 > 0")));
 }
 
-fn build_regex(pattern: &str) -> Result<Regex> {
+fn build_regex(pattern: &str) -> Result<Arc<Regex>> {
     if pattern.len() > MAX_PATTERN_LENGTH {
         return Err(Error::InvalidQuery(format!(
             "Regex pattern length {} exceeds maximum of {} characters",
@@ -28,13 +29,15 @@ fn build_regex(pattern: &str) -> Result<Regex> {
     REGEX_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if let Some(re) = cache.get(pattern) {
-            return Ok(re.clone());
+            return Ok(Arc::clone(re));
         }
-        let re = RegexBuilder::new(pattern)
-            .size_limit(REGEX_SIZE_LIMIT)
-            .build()
-            .map_err(|e| Error::InvalidQuery(format!("Invalid regex: {}", e)))?;
-        cache.put(pattern.to_string(), re.clone());
+        let re = Arc::new(
+            RegexBuilder::new(pattern)
+                .size_limit(REGEX_SIZE_LIMIT)
+                .build()
+                .map_err(|e| Error::InvalidQuery(format!("Invalid regex: {}", e)))?,
+        );
+        cache.put(pattern.to_string(), Arc::clone(&re));
         Ok(re)
     })
 }

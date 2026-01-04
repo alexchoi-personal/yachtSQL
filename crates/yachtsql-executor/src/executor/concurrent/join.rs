@@ -436,9 +436,9 @@ impl ConcurrentPlanExecutor {
                 let bloom_items = build_n.max(1000);
                 let bloom_fp_rate = 0.01;
                 let mut bloom_filter: Bloom<u64> =
-                    Bloom::new_for_fp_rate(bloom_items, bloom_fp_rate).unwrap_or_else(|_| {
-                        panic!("invariant violation: failed to create bloom filter")
-                    });
+                    Bloom::new_for_fp_rate(bloom_items, bloom_fp_rate).map_err(|e| {
+                        Error::internal(format!("failed to create bloom filter: {}", e))
+                    })?;
 
                 if let Some(ref indices) = build_key_indices {
                     for build_idx in 0..build_n {
