@@ -7,45 +7,11 @@ use super::Column;
 
 impl Column {
     pub fn is_null(&self, index: usize) -> bool {
-        match self {
-            Column::Bool { nulls, .. } => nulls.is_null(index),
-            Column::Int64 { nulls, .. } => nulls.is_null(index),
-            Column::Float64 { nulls, .. } => nulls.is_null(index),
-            Column::Numeric { nulls, .. } => nulls.is_null(index),
-            Column::String { nulls, .. } => nulls.is_null(index),
-            Column::Bytes { nulls, .. } => nulls.is_null(index),
-            Column::Date { nulls, .. } => nulls.is_null(index),
-            Column::Time { nulls, .. } => nulls.is_null(index),
-            Column::DateTime { nulls, .. } => nulls.is_null(index),
-            Column::Timestamp { nulls, .. } => nulls.is_null(index),
-            Column::Json { nulls, .. } => nulls.is_null(index),
-            Column::Array { nulls, .. } => nulls.is_null(index),
-            Column::Struct { nulls, .. } => nulls.is_null(index),
-            Column::Geography { nulls, .. } => nulls.is_null(index),
-            Column::Interval { nulls, .. } => nulls.is_null(index),
-            Column::Range { nulls, .. } => nulls.is_null(index),
-        }
+        with_nulls!(self, |nulls| nulls.is_null(index))
     }
 
     pub fn is_all_null(&self) -> bool {
-        match self {
-            Column::Bool { nulls, .. } => nulls.is_all_null(),
-            Column::Int64 { nulls, .. } => nulls.is_all_null(),
-            Column::Float64 { nulls, .. } => nulls.is_all_null(),
-            Column::Numeric { nulls, .. } => nulls.is_all_null(),
-            Column::String { nulls, .. } => nulls.is_all_null(),
-            Column::Bytes { nulls, .. } => nulls.is_all_null(),
-            Column::Date { nulls, .. } => nulls.is_all_null(),
-            Column::Time { nulls, .. } => nulls.is_all_null(),
-            Column::DateTime { nulls, .. } => nulls.is_all_null(),
-            Column::Timestamp { nulls, .. } => nulls.is_all_null(),
-            Column::Json { nulls, .. } => nulls.is_all_null(),
-            Column::Array { nulls, .. } => nulls.is_all_null(),
-            Column::Struct { nulls, .. } => nulls.is_all_null(),
-            Column::Geography { nulls, .. } => nulls.is_all_null(),
-            Column::Interval { nulls, .. } => nulls.is_all_null(),
-            Column::Range { nulls, .. } => nulls.is_all_null(),
-        }
+        with_nulls!(self, |nulls| nulls.is_all_null())
     }
 
     pub fn get(&self, index: usize) -> Result<Value> {

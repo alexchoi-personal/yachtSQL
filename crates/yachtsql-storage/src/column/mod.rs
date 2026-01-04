@@ -1,5 +1,8 @@
 #![coverage(off)]
 
+#[macro_use]
+mod macros;
+
 mod access;
 mod aggregation;
 mod mutation;
@@ -210,24 +213,7 @@ impl Column {
     }
 
     pub fn len(&self) -> usize {
-        match self {
-            Column::Bool { data, .. } => data.len(),
-            Column::Int64 { data, .. } => data.len(),
-            Column::Float64 { data, .. } => data.len(),
-            Column::Numeric { data, .. } => data.len(),
-            Column::String { data, .. } => data.len(),
-            Column::Bytes { data, .. } => data.len(),
-            Column::Date { data, .. } => data.len(),
-            Column::Time { data, .. } => data.len(),
-            Column::DateTime { data, .. } => data.len(),
-            Column::Timestamp { data, .. } => data.len(),
-            Column::Json { data, .. } => data.len(),
-            Column::Array { data, .. } => data.len(),
-            Column::Struct { data, .. } => data.len(),
-            Column::Geography { data, .. } => data.len(),
-            Column::Interval { data, .. } => data.len(),
-            Column::Range { data, .. } => data.len(),
-        }
+        for_each_variant!(self, |data| data.len())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -265,24 +251,7 @@ impl Column {
     }
 
     pub fn count_null(&self) -> usize {
-        match self {
-            Column::Bool { nulls, .. }
-            | Column::Int64 { nulls, .. }
-            | Column::Float64 { nulls, .. }
-            | Column::Numeric { nulls, .. }
-            | Column::String { nulls, .. }
-            | Column::Bytes { nulls, .. }
-            | Column::Date { nulls, .. }
-            | Column::Time { nulls, .. }
-            | Column::DateTime { nulls, .. }
-            | Column::Timestamp { nulls, .. }
-            | Column::Json { nulls, .. }
-            | Column::Array { nulls, .. }
-            | Column::Struct { nulls, .. }
-            | Column::Geography { nulls, .. }
-            | Column::Interval { nulls, .. }
-            | Column::Range { nulls, .. } => nulls.count_null(),
-        }
+        with_nulls!(self, |nulls| nulls.count_null())
     }
 
     pub fn count_valid(&self) -> usize {
