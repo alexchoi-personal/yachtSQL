@@ -661,19 +661,27 @@ pub(crate) fn sort_partition_columnar(
         return Ok(());
     }
 
-    indices.sort_by(|&a, &b| {
-        let record_a = get_record_from_columns(columns, a);
-        let record_b = get_record_from_columns(columns, b);
-        for sort_expr in order_by {
-            let val_a = evaluator
-                .evaluate(&sort_expr.expr, &record_a)
-                .unwrap_or(Value::Null);
-            let val_b = evaluator
-                .evaluate(&sort_expr.expr, &record_b)
-                .unwrap_or(Value::Null);
+    let max_idx = indices.iter().copied().max().unwrap_or(0);
+    let mut precomputed: Vec<Vec<Value>> = Vec::with_capacity(max_idx + 1);
+    for idx in 0..=max_idx {
+        let record = get_record_from_columns(columns, idx);
+        let values: Vec<Value> = order_by
+            .iter()
+            .map(|sort_expr| {
+                evaluator
+                    .evaluate(&sort_expr.expr, &record)
+                    .unwrap_or(Value::Null)
+            })
+            .collect();
+        precomputed.push(values);
+    }
 
-            let ordering = val_a
-                .partial_cmp(&val_b)
+    indices.sort_by(|&a, &b| {
+        let vals_a = &precomputed[a];
+        let vals_b = &precomputed[b];
+        for (i, sort_expr) in order_by.iter().enumerate() {
+            let ordering = vals_a[i]
+                .partial_cmp(&vals_b[i])
                 .unwrap_or(std::cmp::Ordering::Equal);
             let ordering = if sort_expr.asc {
                 ordering
@@ -941,24 +949,25 @@ pub(crate) fn compute_window_function_columnar(
                     results.push(agg_result);
                 }
             } else if has_order_by {
+                let precomputed_order_values: Vec<Vec<Value>> = sorted_indices
+                    .iter()
+                    .map(|&idx| {
+                        let record = get_record_from_columns(columns, idx);
+                        order_by
+                            .iter()
+                            .map(|ob| evaluator.evaluate(&ob.expr, &record).unwrap_or(Value::Null))
+                            .collect()
+                    })
+                    .collect();
+
                 let mut peer_groups: Vec<(usize, usize)> = Vec::new();
                 let mut group_start = 0;
-                let mut prev_values: Option<Vec<Value>> = None;
 
-                for (i, &idx) in sorted_indices.iter().enumerate() {
-                    let record = get_record_from_columns(columns, idx);
-                    let curr_values: Vec<Value> = order_by
-                        .iter()
-                        .map(|ob| evaluator.evaluate(&ob.expr, &record).unwrap_or(Value::Null))
-                        .collect();
-
-                    if let Some(prev) = &prev_values
-                        && curr_values != *prev
-                    {
+                for i in 1..partition_size {
+                    if precomputed_order_values[i] != precomputed_order_values[i - 1] {
                         peer_groups.push((group_start, i - 1));
                         group_start = i;
                     }
-                    prev_values = Some(curr_values);
                 }
                 peer_groups.push((group_start, partition_size - 1));
 

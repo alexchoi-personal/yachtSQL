@@ -3,12 +3,12 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
-#![allow(clippy::wildcard_enum_match_arm)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::only_used_in_recursion)]
 #![allow(clippy::if_same_then_else)]
 #![allow(clippy::manual_strip)]
+#![allow(clippy::wildcard_enum_match_arm)]
 
 mod catalog;
 mod columnar_evaluator;

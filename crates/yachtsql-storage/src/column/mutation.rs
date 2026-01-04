@@ -40,7 +40,9 @@ impl Column {
                 nulls.push(false);
             }
             (Column::Int64 { data, nulls }, Value::String(v)) => {
-                let n = v.parse::<i64>().unwrap_or(0);
+                let n = v
+                    .parse::<i64>()
+                    .map_err(|_| Error::type_mismatch("INT64", format!("STRING '{}'", v)))?;
                 data.push(n);
                 nulls.push(false);
             }
@@ -58,7 +60,10 @@ impl Column {
             }
             (Column::Float64 { data, nulls }, Value::Numeric(v)) => {
                 use rust_decimal::prelude::ToPrimitive;
-                data.push(v.to_f64().unwrap_or(0.0));
+                let f = v
+                    .to_f64()
+                    .ok_or_else(|| Error::type_mismatch("FLOAT64", format!("NUMERIC {}", v)))?;
+                data.push(f);
                 nulls.push(false);
             }
             (Column::Numeric { data, nulls }, Value::Null) => {
@@ -70,7 +75,9 @@ impl Column {
                 nulls.push(false);
             }
             (Column::Numeric { data, nulls }, Value::Float64(v)) => {
-                data.push(Decimal::from_f64_retain(v.0).unwrap_or(Decimal::ZERO));
+                let d = Decimal::from_f64_retain(v.0)
+                    .ok_or_else(|| Error::type_mismatch("NUMERIC", format!("FLOAT64 {}", v.0)))?;
+                data.push(d);
                 nulls.push(false);
             }
             (Column::Numeric { data, nulls }, Value::Int64(v)) => {

@@ -419,11 +419,17 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
             | ScalarFunction::IfNull
             | ScalarFunction::Ifnull
             | ScalarFunction::NullIf
-            | ScalarFunction::Nvl
-            | ScalarFunction::Nvl2
-            | ScalarFunction::If => {
+            | ScalarFunction::Nvl => {
                 if let Some(first_arg) = args.first() {
                     Self::compute_expr_type(first_arg, schema)
+                } else {
+                    DataType::Unknown
+                }
+            }
+
+            ScalarFunction::Nvl2 | ScalarFunction::If => {
+                if let Some(second_arg) = args.get(1) {
+                    Self::compute_expr_type(second_arg, schema)
                 } else {
                     DataType::Unknown
                 }

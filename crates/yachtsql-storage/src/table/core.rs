@@ -70,7 +70,7 @@ impl Table {
     }
 
     pub fn column(&self, idx: usize) -> Option<&Column> {
-        self.columns.values().nth(idx).map(|arc| arc.as_ref())
+        self.columns.get_index(idx).map(|(_, arc)| arc.as_ref())
     }
 
     pub fn column_by_name(&self, name: &str) -> Option<&Column> {
@@ -82,7 +82,7 @@ impl Table {
     }
 
     pub fn get_column_arc(&self, idx: usize) -> Option<Arc<Column>> {
-        self.columns.values().nth(idx).map(Arc::clone)
+        self.columns.get_index(idx).map(|(_, arc)| Arc::clone(arc))
     }
 
     pub fn columns(&self) -> &IndexMap<String, Arc<Column>> {

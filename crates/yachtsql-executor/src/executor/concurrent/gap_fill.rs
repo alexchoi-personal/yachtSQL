@@ -255,6 +255,10 @@ fn interpolate_value(
     next_ts: i64,
     current_ts: i64,
 ) -> Value {
+    if next_ts == prev_ts {
+        return prev.clone();
+    }
+
     use ordered_float::OrderedFloat;
     let ratio = (current_ts - prev_ts) as f64 / (next_ts - prev_ts) as f64;
 

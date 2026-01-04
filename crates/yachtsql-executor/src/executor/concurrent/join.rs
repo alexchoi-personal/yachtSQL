@@ -12,6 +12,32 @@ use super::{ConcurrentPlanExecutor, plan_schema_to_schema};
 use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
+fn extract_column_indices(keys: &[Expr], schema: &Schema) -> Option<Vec<usize>> {
+    keys.iter()
+        .map(|expr| match expr {
+            Expr::Column { name, index, .. } => {
+                if let Some(idx) = index {
+                    Some(*idx)
+                } else {
+                    schema.field_index(name)
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn extract_key_values_direct(
+    cols: &[&Column],
+    row_idx: usize,
+    col_indices: &[usize],
+) -> Vec<Value> {
+    col_indices
+        .iter()
+        .map(|&idx| cols[idx].get_value(row_idx))
+        .collect()
+}
+
 impl ConcurrentPlanExecutor {
     #[instrument(skip(self, left, right, condition), fields(join_type = ?join_type))]
     pub(crate) async fn execute_nested_loop_join(
@@ -353,27 +379,38 @@ impl ConcurrentPlanExecutor {
                     )
                 };
 
-                let build_evaluator = ValueEvaluator::new(build_schema)
-                    .with_variables(&vars)
-                    .with_system_variables(&sys_vars)
-                    .with_user_functions(&udf);
+                let build_key_indices = extract_column_indices(build_keys, build_schema);
+                let probe_key_indices = extract_column_indices(probe_keys, probe_schema);
 
                 let mut hash_table: HashMap<Vec<Value>, Vec<usize>> =
                     HashMap::with_capacity(build_n);
-                for build_idx in 0..build_n {
-                    let build_record = Record::from_values(
-                        build_cols.iter().map(|c| c.get_value(build_idx)).collect(),
-                    );
-                    let key_values: Vec<Value> = build_keys
-                        .iter()
-                        .map(|expr| build_evaluator.evaluate(expr, &build_record))
-                        .collect::<Result<Vec<_>>>()?;
 
-                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
-                        continue;
+                if let Some(ref indices) = build_key_indices {
+                    for build_idx in 0..build_n {
+                        let key_values = extract_key_values_direct(build_cols, build_idx, indices);
+                        if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                            continue;
+                        }
+                        hash_table.entry(key_values).or_default().push(build_idx);
                     }
-
-                    hash_table.entry(key_values).or_default().push(build_idx);
+                } else {
+                    let build_evaluator = ValueEvaluator::new(build_schema)
+                        .with_variables(&vars)
+                        .with_system_variables(&sys_vars)
+                        .with_user_functions(&udf);
+                    for build_idx in 0..build_n {
+                        let build_record = Record::from_values(
+                            build_cols.iter().map(|c| c.get_value(build_idx)).collect(),
+                        );
+                        let key_values: Vec<Value> = build_keys
+                            .iter()
+                            .map(|expr| build_evaluator.evaluate(expr, &build_record))
+                            .collect::<Result<Vec<_>>>()?;
+                        if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                            continue;
+                        }
+                        hash_table.entry(key_values).or_default().push(build_idx);
+                    }
                 }
 
                 if parallel && probe_n >= 2000 {
@@ -393,59 +430,106 @@ impl ConcurrentPlanExecutor {
                                 let udf = &udf;
                                 let build_cols = &build_cols;
                                 let probe_cols = &probe_cols;
+                                let probe_key_indices = &probe_key_indices;
                                 s.spawn(move || {
-                                    let probe_evaluator = ValueEvaluator::new(probe_schema)
-                                        .with_variables(vars)
-                                        .with_system_variables(sys_vars)
-                                        .with_user_functions(udf);
                                     let mut rows = Vec::new();
-                                    for &probe_idx in chunk {
-                                        let probe_record = Record::from_values(
-                                            probe_cols
-                                                .iter()
-                                                .map(|c| c.get_value(probe_idx))
-                                                .collect(),
-                                        );
-                                        let key_values: Vec<Value> = probe_keys
-                                            .iter()
-                                            .map(|expr| {
-                                                probe_evaluator.evaluate(expr, &probe_record)
-                                            })
-                                            .collect::<Result<Vec<_>>>()?;
-
-                                        if key_values.iter().any(|v| matches!(v, Value::Null)) {
-                                            continue;
-                                        }
-
-                                        if let Some(matching_indices) = hash_table.get(&key_values)
-                                        {
-                                            for &build_idx in matching_indices {
-                                                let mut combined: Vec<Value> =
-                                                    Vec::with_capacity(left_width + right_width);
-                                                if build_on_right {
-                                                    combined.extend(
-                                                        probe_cols
-                                                            .iter()
-                                                            .map(|c| c.get_value(probe_idx)),
-                                                    );
-                                                    combined.extend(
-                                                        build_cols
-                                                            .iter()
-                                                            .map(|c| c.get_value(build_idx)),
-                                                    );
-                                                } else {
-                                                    combined.extend(
-                                                        build_cols
-                                                            .iter()
-                                                            .map(|c| c.get_value(build_idx)),
-                                                    );
-                                                    combined.extend(
-                                                        probe_cols
-                                                            .iter()
-                                                            .map(|c| c.get_value(probe_idx)),
-                                                    );
+                                    if let Some(indices) = probe_key_indices {
+                                        for &probe_idx in chunk {
+                                            let key_values = extract_key_values_direct(
+                                                probe_cols, probe_idx, indices,
+                                            );
+                                            if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                                                continue;
+                                            }
+                                            if let Some(matching_indices) =
+                                                hash_table.get(&key_values)
+                                            {
+                                                for &build_idx in matching_indices {
+                                                    let mut combined: Vec<Value> =
+                                                        Vec::with_capacity(
+                                                            left_width + right_width,
+                                                        );
+                                                    if build_on_right {
+                                                        combined.extend(
+                                                            probe_cols
+                                                                .iter()
+                                                                .map(|c| c.get_value(probe_idx)),
+                                                        );
+                                                        combined.extend(
+                                                            build_cols
+                                                                .iter()
+                                                                .map(|c| c.get_value(build_idx)),
+                                                        );
+                                                    } else {
+                                                        combined.extend(
+                                                            build_cols
+                                                                .iter()
+                                                                .map(|c| c.get_value(build_idx)),
+                                                        );
+                                                        combined.extend(
+                                                            probe_cols
+                                                                .iter()
+                                                                .map(|c| c.get_value(probe_idx)),
+                                                        );
+                                                    }
+                                                    rows.push(combined);
                                                 }
-                                                rows.push(combined);
+                                            }
+                                        }
+                                    } else {
+                                        let probe_evaluator = ValueEvaluator::new(probe_schema)
+                                            .with_variables(vars)
+                                            .with_system_variables(sys_vars)
+                                            .with_user_functions(udf);
+                                        for &probe_idx in chunk {
+                                            let probe_record = Record::from_values(
+                                                probe_cols
+                                                    .iter()
+                                                    .map(|c| c.get_value(probe_idx))
+                                                    .collect(),
+                                            );
+                                            let key_values: Vec<Value> = probe_keys
+                                                .iter()
+                                                .map(|expr| {
+                                                    probe_evaluator.evaluate(expr, &probe_record)
+                                                })
+                                                .collect::<Result<Vec<_>>>()?;
+                                            if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                                                continue;
+                                            }
+                                            if let Some(matching_indices) =
+                                                hash_table.get(&key_values)
+                                            {
+                                                for &build_idx in matching_indices {
+                                                    let mut combined: Vec<Value> =
+                                                        Vec::with_capacity(
+                                                            left_width + right_width,
+                                                        );
+                                                    if build_on_right {
+                                                        combined.extend(
+                                                            probe_cols
+                                                                .iter()
+                                                                .map(|c| c.get_value(probe_idx)),
+                                                        );
+                                                        combined.extend(
+                                                            build_cols
+                                                                .iter()
+                                                                .map(|c| c.get_value(build_idx)),
+                                                        );
+                                                    } else {
+                                                        combined.extend(
+                                                            build_cols
+                                                                .iter()
+                                                                .map(|c| c.get_value(build_idx)),
+                                                        );
+                                                        combined.extend(
+                                                            probe_cols
+                                                                .iter()
+                                                                .map(|c| c.get_value(probe_idx)),
+                                                        );
+                                                    }
+                                                    rows.push(combined);
+                                                }
                                             }
                                         }
                                     }
@@ -470,11 +554,43 @@ impl ConcurrentPlanExecutor {
                     }
                     Ok(result)
                 } else {
+                    let mut result = Table::empty(result_schema);
+                    if let Some(ref indices) = probe_key_indices {
+                        for probe_idx in 0..probe_n {
+                            let key_values =
+                                extract_key_values_direct(probe_cols, probe_idx, indices);
+                            if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                                continue;
+                            }
+                            if let Some(matching_indices) = hash_table.get(&key_values) {
+                                for &build_idx in matching_indices {
+                                    let mut combined: Vec<Value> =
+                                        Vec::with_capacity(left_width + right_width);
+                                    if build_on_right {
+                                        combined.extend(
+                                            probe_cols.iter().map(|c| c.get_value(probe_idx)),
+                                        );
+                                        combined.extend(
+                                            build_cols.iter().map(|c| c.get_value(build_idx)),
+                                        );
+                                    } else {
+                                        combined.extend(
+                                            build_cols.iter().map(|c| c.get_value(build_idx)),
+                                        );
+                                        combined.extend(
+                                            probe_cols.iter().map(|c| c.get_value(probe_idx)),
+                                        );
+                                    }
+                                    result.push_row(combined)?;
+                                }
+                            }
+                        }
+                        return Ok(result);
+                    }
                     let probe_evaluator = ValueEvaluator::new(probe_schema)
                         .with_variables(&vars)
                         .with_system_variables(&sys_vars)
                         .with_user_functions(&udf);
-                    let mut result = Table::empty(result_schema);
                     for probe_idx in 0..probe_n {
                         let probe_record = Record::from_values(
                             probe_cols.iter().map(|c| c.get_value(probe_idx)).collect(),

@@ -118,68 +118,181 @@ impl Column {
 
     pub fn min(&self) -> Option<Value> {
         match self {
-            Column::Int64 { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, &v)| v)
-                .min()
-                .map(Value::Int64),
-            Column::Float64 { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, &v)| v)
-                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .map(Value::float64),
-            Column::Numeric { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .min()
-                .cloned()
-                .map(Value::Numeric),
-            Column::String { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .min()
-                .cloned()
-                .map(Value::String),
-            Column::Date { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .min()
-                .copied()
-                .map(Value::Date),
-            Column::Time { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .min()
-                .copied()
-                .map(Value::Time),
-            Column::DateTime { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .min()
-                .copied()
-                .map(Value::DateTime),
-            Column::Timestamp { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .min()
-                .copied()
-                .map(Value::Timestamp),
+            Column::Int64 { data, nulls } => {
+                let mut result: Option<i64> = None;
+                let chunks = data.chunks_exact(64);
+                let remainder = chunks.remainder();
+
+                for (&bitmap_word, chunk) in nulls.words().iter().zip(chunks) {
+                    if bitmap_word == 0 {
+                        let chunk_min = chunk.iter().copied().min();
+                        result = match (result, chunk_min) {
+                            (Some(r), Some(c)) => Some(r.min(c)),
+                            (None, c) => c,
+                            (r, None) => r,
+                        };
+                    } else if bitmap_word != u64::MAX {
+                        let mut valid_mask = !bitmap_word;
+                        while valid_mask != 0 {
+                            let bit = valid_mask.trailing_zeros() as usize;
+                            result = Some(result.map_or(chunk[bit], |r| r.min(chunk[bit])));
+                            valid_mask &= valid_mask - 1;
+                        }
+                    }
+                }
+
+                if !remainder.is_empty() {
+                    let last_word = nulls.words().last().copied().unwrap_or(0);
+                    if last_word == 0 {
+                        let rem_min = remainder.iter().copied().min();
+                        result = match (result, rem_min) {
+                            (Some(r), Some(c)) => Some(r.min(c)),
+                            (None, c) => c,
+                            (r, None) => r,
+                        };
+                    } else {
+                        for (i, &val) in remainder.iter().enumerate() {
+                            if (last_word >> i) & 1 == 0 {
+                                result = Some(result.map_or(val, |r| r.min(val)));
+                            }
+                        }
+                    }
+                }
+                result.map(Value::Int64)
+            }
+            Column::Float64 { data, nulls } => {
+                let mut result: Option<f64> = None;
+                let chunks = data.chunks_exact(64);
+                let remainder = chunks.remainder();
+
+                for (&bitmap_word, chunk) in nulls.words().iter().zip(chunks) {
+                    if bitmap_word == 0 {
+                        for &v in chunk {
+                            result = Some(result.map_or(v, |r| if v < r { v } else { r }));
+                        }
+                    } else if bitmap_word != u64::MAX {
+                        let mut valid_mask = !bitmap_word;
+                        while valid_mask != 0 {
+                            let bit = valid_mask.trailing_zeros() as usize;
+                            let v = chunk[bit];
+                            result = Some(result.map_or(v, |r| if v < r { v } else { r }));
+                            valid_mask &= valid_mask - 1;
+                        }
+                    }
+                }
+
+                if !remainder.is_empty() {
+                    let last_word = nulls.words().last().copied().unwrap_or(0);
+                    if last_word == 0 {
+                        for &v in remainder {
+                            result = Some(result.map_or(v, |r| if v < r { v } else { r }));
+                        }
+                    } else {
+                        for (i, &v) in remainder.iter().enumerate() {
+                            if (last_word >> i) & 1 == 0 {
+                                result = Some(result.map_or(v, |r| if v < r { v } else { r }));
+                            }
+                        }
+                    }
+                }
+                result.map(Value::float64)
+            }
+            Column::Numeric { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().min().cloned().map(Value::Numeric)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .min()
+                        .cloned()
+                        .map(Value::Numeric)
+                }
+            }
+            Column::String { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().min().cloned().map(Value::String)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .min()
+                        .cloned()
+                        .map(Value::String)
+                }
+            }
+            Column::Date { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().min().copied().map(Value::Date)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .min()
+                        .copied()
+                        .map(Value::Date)
+                }
+            }
+            Column::Time { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().min().copied().map(Value::Time)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .min()
+                        .copied()
+                        .map(Value::Time)
+                }
+            }
+            Column::DateTime { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().min().copied().map(Value::DateTime)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .min()
+                        .copied()
+                        .map(Value::DateTime)
+                }
+            }
+            Column::Timestamp { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().min().copied().map(Value::Timestamp)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .min()
+                        .copied()
+                        .map(Value::Timestamp)
+                }
+            }
             Column::Bool { .. }
             | Column::Bytes { .. }
             | Column::Json { .. }
@@ -193,68 +306,181 @@ impl Column {
 
     pub fn max(&self) -> Option<Value> {
         match self {
-            Column::Int64 { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, &v)| v)
-                .max()
-                .map(Value::Int64),
-            Column::Float64 { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, &v)| v)
-                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .map(Value::float64),
-            Column::Numeric { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .max()
-                .cloned()
-                .map(Value::Numeric),
-            Column::String { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .max()
-                .cloned()
-                .map(Value::String),
-            Column::Date { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .max()
-                .copied()
-                .map(Value::Date),
-            Column::Time { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .max()
-                .copied()
-                .map(Value::Time),
-            Column::DateTime { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .max()
-                .copied()
-                .map(Value::DateTime),
-            Column::Timestamp { data, nulls } => data
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !nulls.is_null(*i))
-                .map(|(_, v)| v)
-                .max()
-                .copied()
-                .map(Value::Timestamp),
+            Column::Int64 { data, nulls } => {
+                let mut result: Option<i64> = None;
+                let chunks = data.chunks_exact(64);
+                let remainder = chunks.remainder();
+
+                for (&bitmap_word, chunk) in nulls.words().iter().zip(chunks) {
+                    if bitmap_word == 0 {
+                        let chunk_max = chunk.iter().copied().max();
+                        result = match (result, chunk_max) {
+                            (Some(r), Some(c)) => Some(r.max(c)),
+                            (None, c) => c,
+                            (r, None) => r,
+                        };
+                    } else if bitmap_word != u64::MAX {
+                        let mut valid_mask = !bitmap_word;
+                        while valid_mask != 0 {
+                            let bit = valid_mask.trailing_zeros() as usize;
+                            result = Some(result.map_or(chunk[bit], |r| r.max(chunk[bit])));
+                            valid_mask &= valid_mask - 1;
+                        }
+                    }
+                }
+
+                if !remainder.is_empty() {
+                    let last_word = nulls.words().last().copied().unwrap_or(0);
+                    if last_word == 0 {
+                        let rem_max = remainder.iter().copied().max();
+                        result = match (result, rem_max) {
+                            (Some(r), Some(c)) => Some(r.max(c)),
+                            (None, c) => c,
+                            (r, None) => r,
+                        };
+                    } else {
+                        for (i, &val) in remainder.iter().enumerate() {
+                            if (last_word >> i) & 1 == 0 {
+                                result = Some(result.map_or(val, |r| r.max(val)));
+                            }
+                        }
+                    }
+                }
+                result.map(Value::Int64)
+            }
+            Column::Float64 { data, nulls } => {
+                let mut result: Option<f64> = None;
+                let chunks = data.chunks_exact(64);
+                let remainder = chunks.remainder();
+
+                for (&bitmap_word, chunk) in nulls.words().iter().zip(chunks) {
+                    if bitmap_word == 0 {
+                        for &v in chunk {
+                            result = Some(result.map_or(v, |r| if v > r { v } else { r }));
+                        }
+                    } else if bitmap_word != u64::MAX {
+                        let mut valid_mask = !bitmap_word;
+                        while valid_mask != 0 {
+                            let bit = valid_mask.trailing_zeros() as usize;
+                            let v = chunk[bit];
+                            result = Some(result.map_or(v, |r| if v > r { v } else { r }));
+                            valid_mask &= valid_mask - 1;
+                        }
+                    }
+                }
+
+                if !remainder.is_empty() {
+                    let last_word = nulls.words().last().copied().unwrap_or(0);
+                    if last_word == 0 {
+                        for &v in remainder {
+                            result = Some(result.map_or(v, |r| if v > r { v } else { r }));
+                        }
+                    } else {
+                        for (i, &v) in remainder.iter().enumerate() {
+                            if (last_word >> i) & 1 == 0 {
+                                result = Some(result.map_or(v, |r| if v > r { v } else { r }));
+                            }
+                        }
+                    }
+                }
+                result.map(Value::float64)
+            }
+            Column::Numeric { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().max().cloned().map(Value::Numeric)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .max()
+                        .cloned()
+                        .map(Value::Numeric)
+                }
+            }
+            Column::String { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().max().cloned().map(Value::String)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .max()
+                        .cloned()
+                        .map(Value::String)
+                }
+            }
+            Column::Date { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().max().copied().map(Value::Date)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .max()
+                        .copied()
+                        .map(Value::Date)
+                }
+            }
+            Column::Time { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().max().copied().map(Value::Time)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .max()
+                        .copied()
+                        .map(Value::Time)
+                }
+            }
+            Column::DateTime { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().max().copied().map(Value::DateTime)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .max()
+                        .copied()
+                        .map(Value::DateTime)
+                }
+            }
+            Column::Timestamp { data, nulls } => {
+                let null_count = nulls.count_null();
+                if null_count == data.len() {
+                    None
+                } else if null_count == 0 {
+                    data.iter().max().copied().map(Value::Timestamp)
+                } else {
+                    data.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !nulls.is_null(*i))
+                        .map(|(_, v)| v)
+                        .max()
+                        .copied()
+                        .map(Value::Timestamp)
+                }
+            }
             Column::Bool { .. }
             | Column::Bytes { .. }
             | Column::Json { .. }

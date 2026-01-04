@@ -779,12 +779,12 @@ async fn test_alter_table_add_column_position() {
         .unwrap();
 
     session
-        .execute_sql("INSERT INTO position_test VALUES (1, 30, 'Alice')")
+        .execute_sql("INSERT INTO position_test (id, age, name) VALUES (1, 30, 'Alice')")
         .await
         .unwrap();
 
     let result = session
-        .execute_sql("SELECT * FROM position_test")
+        .execute_sql("SELECT id, age, name FROM position_test")
         .await
         .unwrap();
     assert_table_eq!(result, [[1, 30, "Alice"]]);
