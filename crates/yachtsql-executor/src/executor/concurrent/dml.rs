@@ -1,5 +1,6 @@
 #![coverage(off)]
 
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
@@ -10,6 +11,8 @@ use yachtsql_storage::{Column, Record, Schema, Table};
 use super::{ConcurrentPlanExecutor, coerce_value};
 use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
+
+const PARALLEL_THRESHOLD: usize = 2000;
 
 impl ConcurrentPlanExecutor {
     #[instrument(skip(self, columns, source), fields(table = %table_name))]
@@ -157,46 +160,96 @@ impl ConcurrentPlanExecutor {
             .map(|(_, c)| c.as_ref())
             .collect();
 
-        let mut rows_to_insert = Vec::new();
-        for row_idx in 0..source_n {
-            let row_values: Vec<Value> = source_cols.iter().map(|c| c.get_value(row_idx)).collect();
-            if columns.is_empty() {
-                let mut coerced_row = Vec::with_capacity(fields.len());
-                for (i, val) in row_values.iter().enumerate() {
-                    if i < fields.len() {
-                        let final_val = match val {
-                            Value::Default => default_values[i].clone().unwrap_or(Value::Null),
-                            _ => val.clone(),
-                        };
-                        coerced_row.push(coerce_value(final_val, &fields[i].data_type)?);
-                    } else {
-                        coerced_row.push(val.clone());
-                    }
-                }
-                rows_to_insert.push(coerced_row);
-            } else {
-                let mut row: Vec<Value> = default_values
-                    .iter()
-                    .map(|opt| opt.clone().unwrap_or(Value::Null))
-                    .collect();
-                for (i, col_name) in columns.iter().enumerate() {
-                    if let Some(col_idx) = target_schema.field_index(col_name)
-                        && i < row_values.len()
-                        && col_idx < fields.len()
-                    {
-                        let val = &row_values[i];
-                        let final_val = match val {
-                            Value::Default => {
-                                default_values[col_idx].clone().unwrap_or(Value::Null)
+        let rows_to_insert: Vec<Vec<Value>> = if source_n >= PARALLEL_THRESHOLD {
+            (0..source_n)
+                .into_par_iter()
+                .map(|row_idx| {
+                    let row_values: Vec<Value> =
+                        source_cols.iter().map(|c| c.get_value(row_idx)).collect();
+                    if columns.is_empty() {
+                        let mut coerced_row = Vec::with_capacity(fields.len());
+                        for (i, val) in row_values.iter().enumerate() {
+                            if i < fields.len() {
+                                let final_val = match val {
+                                    Value::Default => {
+                                        default_values[i].clone().unwrap_or(Value::Null)
+                                    }
+                                    _ => val.clone(),
+                                };
+                                coerced_row.push(coerce_value(final_val, &fields[i].data_type)?);
+                            } else {
+                                coerced_row.push(val.clone());
                             }
-                            _ => val.clone(),
-                        };
-                        row[col_idx] = coerce_value(final_val, &fields[col_idx].data_type)?;
+                        }
+                        Ok(coerced_row)
+                    } else {
+                        let mut row: Vec<Value> = default_values
+                            .iter()
+                            .map(|opt| opt.clone().unwrap_or(Value::Null))
+                            .collect();
+                        for (i, col_name) in columns.iter().enumerate() {
+                            if let Some(col_idx) = target_schema.field_index(col_name)
+                                && i < row_values.len()
+                                && col_idx < fields.len()
+                            {
+                                let val = &row_values[i];
+                                let final_val = match val {
+                                    Value::Default => {
+                                        default_values[col_idx].clone().unwrap_or(Value::Null)
+                                    }
+                                    _ => val.clone(),
+                                };
+                                row[col_idx] = coerce_value(final_val, &fields[col_idx].data_type)?;
+                            }
+                        }
+                        Ok(row)
                     }
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let mut rows = Vec::new();
+            for row_idx in 0..source_n {
+                let row_values: Vec<Value> =
+                    source_cols.iter().map(|c| c.get_value(row_idx)).collect();
+                if columns.is_empty() {
+                    let mut coerced_row = Vec::with_capacity(fields.len());
+                    for (i, val) in row_values.iter().enumerate() {
+                        if i < fields.len() {
+                            let final_val = match val {
+                                Value::Default => default_values[i].clone().unwrap_or(Value::Null),
+                                _ => val.clone(),
+                            };
+                            coerced_row.push(coerce_value(final_val, &fields[i].data_type)?);
+                        } else {
+                            coerced_row.push(val.clone());
+                        }
+                    }
+                    rows.push(coerced_row);
+                } else {
+                    let mut row: Vec<Value> = default_values
+                        .iter()
+                        .map(|opt| opt.clone().unwrap_or(Value::Null))
+                        .collect();
+                    for (i, col_name) in columns.iter().enumerate() {
+                        if let Some(col_idx) = target_schema.field_index(col_name)
+                            && i < row_values.len()
+                            && col_idx < fields.len()
+                        {
+                            let val = &row_values[i];
+                            let final_val = match val {
+                                Value::Default => {
+                                    default_values[col_idx].clone().unwrap_or(Value::Null)
+                                }
+                                _ => val.clone(),
+                            };
+                            row[col_idx] = coerce_value(final_val, &fields[col_idx].data_type)?;
+                        }
+                    }
+                    rows.push(row);
                 }
-                rows_to_insert.push(row);
             }
-        }
+            rows
+        };
 
         self.tables
             .with_table_mut(table_name, |target| {
@@ -434,42 +487,91 @@ impl ConcurrentPlanExecutor {
                         .with_variables(&vars)
                         .with_user_functions(&udf);
 
-                    for row_idx in 0..table_n {
-                        let row_values: Vec<Value> =
-                            table_cols.iter().map(|c| c.get_value(row_idx)).collect();
-                        let record = Record::from_values(row_values.clone());
-                        let matches = filter
-                            .map(|f| evaluator.evaluate(f, &record))
-                            .transpose()?
-                            .map(|v| v.as_bool().unwrap_or(false))
-                            .unwrap_or(true);
+                    if table_n >= PARALLEL_THRESHOLD {
+                        let processed_rows: Vec<Vec<Value>> = (0..table_n)
+                            .into_par_iter()
+                            .map(|row_idx| {
+                                let row_values: Vec<Value> =
+                                    table_cols.iter().map(|c| c.get_value(row_idx)).collect();
+                                let record = Record::from_values(row_values.clone());
+                                let matches = filter
+                                    .map(|f| evaluator.evaluate(f, &record))
+                                    .transpose()?
+                                    .map(|v| v.as_bool().unwrap_or(false))
+                                    .unwrap_or(true);
 
-                        if matches {
-                            let mut new_row = row_values;
-                            for assignment in assignments {
-                                let (base_col, field_path) =
-                                    Self::parse_assignment_column(&assignment.column);
-                                if let Some(idx) = target_schema.field_index(&base_col) {
-                                    let val = match &assignment.value {
-                                        Expr::Default => {
-                                            default_values[idx].clone().unwrap_or(Value::Null)
+                                if matches {
+                                    let mut new_row = row_values;
+                                    for assignment in assignments {
+                                        let (base_col, field_path) =
+                                            Self::parse_assignment_column(&assignment.column);
+                                        if let Some(idx) = target_schema.field_index(&base_col) {
+                                            let val = match &assignment.value {
+                                                Expr::Default => default_values[idx]
+                                                    .clone()
+                                                    .unwrap_or(Value::Null),
+                                                _ => evaluator
+                                                    .evaluate(&assignment.value, &record)?,
+                                            };
+                                            if field_path.is_empty() {
+                                                new_row[idx] = val;
+                                            } else {
+                                                new_row[idx] = Self::set_nested_field(
+                                                    &new_row[idx],
+                                                    &field_path,
+                                                    val,
+                                                )?;
+                                            }
                                         }
-                                        _ => evaluator.evaluate(&assignment.value, &record)?,
-                                    };
-                                    if field_path.is_empty() {
-                                        new_row[idx] = val;
-                                    } else {
-                                        new_row[idx] = Self::set_nested_field(
-                                            &new_row[idx],
-                                            &field_path,
-                                            val,
-                                        )?;
+                                    }
+                                    Ok(new_row)
+                                } else {
+                                    Ok(row_values)
+                                }
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+
+                        for row in processed_rows {
+                            new_table.push_row(row)?;
+                        }
+                    } else {
+                        for row_idx in 0..table_n {
+                            let row_values: Vec<Value> =
+                                table_cols.iter().map(|c| c.get_value(row_idx)).collect();
+                            let record = Record::from_values(row_values.clone());
+                            let matches = filter
+                                .map(|f| evaluator.evaluate(f, &record))
+                                .transpose()?
+                                .map(|v| v.as_bool().unwrap_or(false))
+                                .unwrap_or(true);
+
+                            if matches {
+                                let mut new_row = row_values;
+                                for assignment in assignments {
+                                    let (base_col, field_path) =
+                                        Self::parse_assignment_column(&assignment.column);
+                                    if let Some(idx) = target_schema.field_index(&base_col) {
+                                        let val = match &assignment.value {
+                                            Expr::Default => {
+                                                default_values[idx].clone().unwrap_or(Value::Null)
+                                            }
+                                            _ => evaluator.evaluate(&assignment.value, &record)?,
+                                        };
+                                        if field_path.is_empty() {
+                                            new_row[idx] = val;
+                                        } else {
+                                            new_row[idx] = Self::set_nested_field(
+                                                &new_row[idx],
+                                                &field_path,
+                                                val,
+                                            )?;
+                                        }
                                     }
                                 }
+                                new_table.push_row(new_row)?;
+                            } else {
+                                new_table.push_row(row_values)?;
                             }
-                            new_table.push_row(new_row)?;
-                        } else {
-                            new_table.push_row(row_values)?;
                         }
                     }
                 }
@@ -583,18 +685,45 @@ impl ConcurrentPlanExecutor {
                 .with_system_variables(&sys_vars)
                 .with_user_functions(&udf);
 
-            for row_idx in 0..table_n {
-                let row_values: Vec<Value> =
-                    table_cols.iter().map(|c| c.get_value(row_idx)).collect();
-                let record = Record::from_values(row_values.clone());
-                let matches = filter
-                    .map(|f| evaluator.evaluate(f, &record))
-                    .transpose()?
-                    .map(|v| v.as_bool().unwrap_or(false))
-                    .unwrap_or(true);
+            if table_n >= PARALLEL_THRESHOLD {
+                let keep_flags: Vec<bool> = (0..table_n)
+                    .into_par_iter()
+                    .map(|row_idx| {
+                        let row_values: Vec<Value> =
+                            table_cols.iter().map(|c| c.get_value(row_idx)).collect();
+                        let record = Record::from_values(row_values);
+                        let matches = filter
+                            .map(|f| evaluator.evaluate(f, &record))
+                            .transpose()
+                            .ok()
+                            .flatten()
+                            .map(|v| v.as_bool().unwrap_or(false))
+                            .unwrap_or(true);
+                        !matches
+                    })
+                    .collect();
 
-                if !matches {
-                    new_table.push_row(row_values)?;
+                for (row_idx, keep) in keep_flags.iter().enumerate() {
+                    if *keep {
+                        let row: Vec<Value> =
+                            table_cols.iter().map(|c| c.get_value(row_idx)).collect();
+                        new_table.push_row(row)?;
+                    }
+                }
+            } else {
+                for row_idx in 0..table_n {
+                    let row_values: Vec<Value> =
+                        table_cols.iter().map(|c| c.get_value(row_idx)).collect();
+                    let record = Record::from_values(row_values.clone());
+                    let matches = filter
+                        .map(|f| evaluator.evaluate(f, &record))
+                        .transpose()?
+                        .map(|v| v.as_bool().unwrap_or(false))
+                        .unwrap_or(true);
+
+                    if !matches {
+                        new_table.push_row(row_values)?;
+                    }
                 }
             }
         }
