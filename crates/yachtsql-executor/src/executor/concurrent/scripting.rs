@@ -11,7 +11,7 @@ use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
 impl ConcurrentPlanExecutor {
-    pub(crate) async fn execute_call(&self, procedure_name: &str, args: &[Expr]) -> Result<Table> {
+    pub(crate) fn execute_call(&self, procedure_name: &str, args: &[Expr]) -> Result<Table> {
         use yachtsql_ir::ProcedureArgMode;
 
         let proc = self
@@ -114,7 +114,7 @@ impl ConcurrentPlanExecutor {
         }
 
         for body_plan in &body_plans {
-            last_result = self.execute_plan(body_plan).await?;
+            last_result = self.execute_plan(body_plan)?;
         }
 
         for (param_name, var_name) in out_var_mappings {
@@ -203,14 +203,13 @@ impl ConcurrentPlanExecutor {
         Ok(Table::empty(Schema::new()))
     }
 
-    pub(crate) async fn execute_set_variable(&self, name: &str, value: &Expr) -> Result<Table> {
+    pub(crate) fn execute_set_variable(&self, name: &str, value: &Expr) -> Result<Table> {
         let empty_schema = Schema::new();
         let empty_record = Record::new();
 
         let val = match value {
             Expr::Subquery(plan) | Expr::ScalarSubquery(plan) => {
-                self.eval_scalar_subquery(plan, &empty_schema, &empty_record)
-                    .await?
+                self.eval_scalar_subquery(plan, &empty_schema, &empty_record)?
             }
             _ => {
                 let vars = self.get_variables();
@@ -245,7 +244,7 @@ impl ConcurrentPlanExecutor {
         Ok(Table::empty(Schema::new()))
     }
 
-    pub(crate) async fn execute_set_multiple_variables(
+    pub(crate) fn execute_set_multiple_variables(
         &self,
         names: &[String],
         value: &Expr,
@@ -255,7 +254,7 @@ impl ConcurrentPlanExecutor {
 
         let field_values: Vec<(String, Value)> = match value {
             Expr::Subquery(plan) | Expr::ScalarSubquery(plan) => {
-                let result = self.eval_scalar_subquery_as_row(plan).await?;
+                let result = self.eval_scalar_subquery_as_row(plan)?;
                 match result {
                     Value::Struct(fields) => fields,
                     _ => {
@@ -307,7 +306,7 @@ impl ConcurrentPlanExecutor {
         Ok(Table::empty(Schema::new()))
     }
 
-    pub(crate) async fn execute_if(
+    pub(crate) fn execute_if(
         &self,
         condition: &Expr,
         then_branch: &[PhysicalPlan],
@@ -317,8 +316,7 @@ impl ConcurrentPlanExecutor {
         let empty_record = Record::new();
 
         let cond = if Self::expr_contains_subquery(condition) {
-            self.eval_expr_with_subqueries(condition, &empty_schema, &empty_record)
-                .await?
+            self.eval_expr_with_subqueries(condition, &empty_schema, &empty_record)?
         } else {
             let vars = self.get_variables();
             let sys_vars = self.get_system_variables();
@@ -338,12 +336,12 @@ impl ConcurrentPlanExecutor {
 
         let mut result = Table::empty(Schema::new());
         for stmt in branch {
-            result = self.execute_plan(stmt).await?;
+            result = self.execute_plan(stmt)?;
         }
         Ok(result)
     }
 
-    pub(crate) async fn execute_while(
+    pub(crate) fn execute_while(
         &self,
         condition: &Expr,
         body: &[PhysicalPlan],
@@ -371,7 +369,7 @@ impl ConcurrentPlanExecutor {
             }
 
             for stmt in body {
-                match self.execute_plan(stmt).await {
+                match self.execute_plan(stmt) {
                     Ok(r) => result = r,
                     Err(Error::InvalidQuery(msg)) if msg.contains("BREAK") => {
                         if msg == "BREAK outside of loop" {
@@ -414,18 +412,14 @@ impl ConcurrentPlanExecutor {
     }
 
     #[allow(unused_assignments)]
-    pub(crate) async fn execute_loop(
-        &self,
-        body: &[PhysicalPlan],
-        label: Option<&str>,
-    ) -> Result<Table> {
+    pub(crate) fn execute_loop(&self, body: &[PhysicalPlan], label: Option<&str>) -> Result<Table> {
         let mut result = Table::empty(Schema::new());
         let mut iterations = 0;
         const MAX_ITERATIONS: usize = 10000;
 
         'outer: loop {
             for stmt in body {
-                match self.execute_plan(stmt).await {
+                match self.execute_plan(stmt) {
                     Ok(r) => result = r,
                     Err(Error::InvalidQuery(msg)) if msg.contains("BREAK") => {
                         if let Some(lbl) = label
@@ -453,14 +447,14 @@ impl ConcurrentPlanExecutor {
         }
     }
 
-    pub(crate) async fn execute_block(
+    pub(crate) fn execute_block(
         &self,
         body: &[PhysicalPlan],
         label: Option<&str>,
     ) -> Result<Table> {
         let mut last_result = Table::empty(Schema::new());
         for plan in body {
-            match self.execute_plan(plan).await {
+            match self.execute_plan(plan) {
                 Ok(result) => {
                     last_result = result;
                 }
@@ -481,7 +475,7 @@ impl ConcurrentPlanExecutor {
         Ok(last_result)
     }
 
-    pub(crate) async fn execute_repeat(
+    pub(crate) fn execute_repeat(
         &self,
         body: &[PhysicalPlan],
         until_condition: &Expr,
@@ -493,7 +487,7 @@ impl ConcurrentPlanExecutor {
 
         'outer: loop {
             for stmt in body {
-                match self.execute_plan(stmt).await {
+                match self.execute_plan(stmt) {
                     Ok(r) => result = r,
                     Err(Error::InvalidQuery(msg)) if msg.contains("BREAK") => {
                         return Ok(Table::empty(Schema::new()));
@@ -532,13 +526,13 @@ impl ConcurrentPlanExecutor {
         Ok(result)
     }
 
-    pub(crate) async fn execute_for(
+    pub(crate) fn execute_for(
         &self,
         variable: &str,
         query: &PhysicalPlan,
         body: &[PhysicalPlan],
     ) -> Result<Table> {
-        let query_result = self.execute_plan(query).await?;
+        let query_result = self.execute_plan(query)?;
         let schema_fields = query_result.schema().fields().to_vec();
         let mut result = Table::empty(Schema::new());
 
@@ -564,7 +558,7 @@ impl ConcurrentPlanExecutor {
             self.session.set_variable(variable, row_value);
 
             for stmt in body {
-                match self.execute_plan(stmt).await {
+                match self.execute_plan(stmt) {
                     Ok(r) => result = r,
                     Err(Error::InvalidQuery(msg)) if msg.contains("BREAK") => {
                         return Ok(Table::empty(Schema::new()));
@@ -609,7 +603,7 @@ impl ConcurrentPlanExecutor {
         }
     }
 
-    pub(crate) async fn execute_try_catch(
+    pub(crate) fn execute_try_catch(
         &self,
         try_block: &[(PhysicalPlan, Option<String>)],
         catch_block: &[PhysicalPlan],
@@ -617,7 +611,7 @@ impl ConcurrentPlanExecutor {
         let mut last_result = Table::empty(Schema::new());
 
         for (plan, source_sql) in try_block {
-            match self.execute_plan(plan).await {
+            match self.execute_plan(plan) {
                 Ok(result) => {
                     last_result = result;
                 }
@@ -644,7 +638,7 @@ impl ConcurrentPlanExecutor {
                     self.session.set_system_variable("@@error", error_struct);
 
                     for catch_plan in catch_block {
-                        match self.execute_plan(catch_plan).await {
+                        match self.execute_plan(catch_plan) {
                             Ok(result) => last_result = result,
                             Err(Error::InvalidQuery(msg))
                                 if msg == "RETURN outside of function" =>
@@ -662,7 +656,7 @@ impl ConcurrentPlanExecutor {
         Ok(last_result)
     }
 
-    pub(crate) async fn execute_execute_immediate(
+    pub(crate) fn execute_execute_immediate(
         &self,
         sql_expr: &Expr,
         into_variables: &[String],
@@ -713,7 +707,7 @@ impl ConcurrentPlanExecutor {
 
         let processed_sql = self.substitute_parameters(&sql_string, &positional_values)?;
 
-        let result = self.execute_dynamic_sql(&processed_sql).await?;
+        let result = self.execute_dynamic_sql(&processed_sql)?;
 
         if !into_variables.is_empty() && !result.is_empty() {
             let n = result.row_count();
@@ -793,7 +787,7 @@ impl ConcurrentPlanExecutor {
         }
     }
 
-    async fn execute_dynamic_sql(&self, sql: &str) -> Result<Table> {
+    fn execute_dynamic_sql(&self, sql: &str) -> Result<Table> {
         let logical_plan = yachtsql_parser::parse_and_plan(sql, &*self.catalog)?;
         let physical = optimize(&logical_plan)?;
         let executor_plan = PhysicalPlan::from_physical(&physical);
@@ -816,6 +810,6 @@ impl ConcurrentPlanExecutor {
             }
         }
 
-        self.execute_plan(&executor_plan).await
+        self.execute_plan(&executor_plan)
     }
 }

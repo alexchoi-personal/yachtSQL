@@ -16,7 +16,7 @@ use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
 impl ConcurrentPlanExecutor {
-    pub(crate) async fn execute_scan(
+    pub(crate) fn execute_scan(
         &self,
         table_name: &str,
         planned_schema: &PlanSchema,
@@ -97,12 +97,8 @@ impl ConcurrentPlanExecutor {
         source_table.with_reordered_schema(new_schema, &column_indices)
     }
 
-    pub(crate) async fn execute_filter(
-        &self,
-        input: &PhysicalPlan,
-        predicate: &Expr,
-    ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+    pub(crate) fn execute_filter(&self, input: &PhysicalPlan, predicate: &Expr) -> Result<Table> {
+        let input_table = self.execute_plan(input)?;
         let schema = input_table.schema().clone();
 
         let has_collation = schema.fields().iter().any(|f| f.collation.is_some());
@@ -119,9 +115,7 @@ impl ConcurrentPlanExecutor {
             let mut record = Record::with_capacity(columns.len());
             for row_idx in 0..n {
                 record.set_from_columns(&columns, row_idx);
-                let val = self
-                    .eval_expr_with_subqueries(predicate, &schema, &record)
-                    .await?;
+                let val = self.eval_expr_with_subqueries(predicate, &schema, &record)?;
                 if val.as_bool().unwrap_or(false) {
                     result.push_row(record.values().to_vec())?;
                 }
@@ -167,13 +161,13 @@ impl ConcurrentPlanExecutor {
         }
     }
 
-    pub(crate) async fn execute_project(
+    pub(crate) fn execute_project(
         &self,
         input: &PhysicalPlan,
         expressions: &[Expr],
         schema: &PlanSchema,
     ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+        let input_table = self.execute_plan(input)?;
         let input_schema = input_table.schema().clone();
         let result_schema = plan_schema_to_schema(schema);
 
@@ -191,9 +185,7 @@ impl ConcurrentPlanExecutor {
                 let record = Record::from_values(values);
                 let mut new_row = Vec::with_capacity(expressions.len());
                 for expr in expressions {
-                    let val = self
-                        .eval_expr_with_subqueries(expr, &input_schema, &record)
-                        .await?;
+                    let val = self.eval_expr_with_subqueries(expr, &input_schema, &record)?;
                     new_row.push(val);
                 }
                 result.push_row(new_row)?;
@@ -230,13 +222,13 @@ impl ConcurrentPlanExecutor {
         }
     }
 
-    pub(crate) async fn execute_sample(
+    pub(crate) fn execute_sample(
         &self,
         input: &PhysicalPlan,
         sample_type: &SampleType,
         sample_value: i64,
     ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+        let input_table = self.execute_plan(input)?;
         let n = input_table.row_count();
         let columns: Vec<&Column> = input_table
             .columns()
@@ -263,12 +255,12 @@ impl ConcurrentPlanExecutor {
         input_table.gather_rows(&indices)
     }
 
-    pub(crate) async fn execute_sort(
+    pub(crate) fn execute_sort(
         &self,
         input: &PhysicalPlan,
         sort_exprs: &[SortExpr],
     ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+        let input_table = self.execute_plan(input)?;
         let schema = input_table.schema().clone();
         let vars = self.get_variables();
         let sys_vars = self.get_system_variables();
@@ -344,13 +336,13 @@ impl ConcurrentPlanExecutor {
         input_table.gather_rows(&indices)
     }
 
-    pub(crate) async fn execute_limit(
+    pub(crate) fn execute_limit(
         &self,
         input: &PhysicalPlan,
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+        let input_table = self.execute_plan(input)?;
         let n = input_table.row_count();
         let offset = offset.unwrap_or(0);
         let limit = limit.unwrap_or(usize::MAX);
@@ -362,13 +354,13 @@ impl ConcurrentPlanExecutor {
         input_table.gather_rows(&indices)
     }
 
-    pub(crate) async fn execute_topn(
+    pub(crate) fn execute_topn(
         &self,
         input: &PhysicalPlan,
         sort_exprs: &[SortExpr],
         limit: usize,
     ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+        let input_table = self.execute_plan(input)?;
         let n = input_table.row_count();
 
         if limit == 0 {
@@ -460,8 +452,8 @@ impl ConcurrentPlanExecutor {
         input_table.gather_rows(&indices)
     }
 
-    pub(crate) async fn execute_distinct(&self, input: &PhysicalPlan) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+    pub(crate) fn execute_distinct(&self, input: &PhysicalPlan) -> Result<Table> {
+        let input_table = self.execute_plan(input)?;
         let n = input_table.row_count();
         let columns: Vec<&Column> = input_table
             .columns()
@@ -482,7 +474,7 @@ impl ConcurrentPlanExecutor {
         input_table.gather_rows(&unique_indices)
     }
 
-    pub(crate) async fn execute_aggregate(
+    pub(crate) fn execute_aggregate(
         &self,
         input: &PhysicalPlan,
         group_by: &[Expr],
@@ -491,7 +483,7 @@ impl ConcurrentPlanExecutor {
         grouping_sets: Option<&Vec<Vec<usize>>>,
         parallel: bool,
     ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+        let input_table = self.execute_plan(input)?;
         let vars = self.get_variables();
         let udf = self.get_user_functions();
         crate::executor::aggregate::compute_aggregate(
@@ -506,19 +498,19 @@ impl ConcurrentPlanExecutor {
         )
     }
 
-    pub(crate) async fn execute_window(
+    pub(crate) fn execute_window(
         &self,
         input: &PhysicalPlan,
         window_exprs: &[Expr],
         schema: &PlanSchema,
     ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+        let input_table = self.execute_plan(input)?;
         let vars = self.get_variables();
         let udf = self.get_user_functions();
         crate::executor::window::compute_window(&input_table, window_exprs, schema, &vars, &udf)
     }
 
-    pub(crate) async fn execute_values(
+    pub(crate) fn execute_values(
         &self,
         values: &[Vec<Expr>],
         schema: &PlanSchema,

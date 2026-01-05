@@ -12,7 +12,7 @@ use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
 impl ConcurrentPlanExecutor {
-    pub(crate) async fn execute_gap_fill(
+    pub(crate) fn execute_gap_fill(
         &self,
         input: &PhysicalPlan,
         ts_column: &str,
@@ -23,7 +23,7 @@ impl ConcurrentPlanExecutor {
         input_schema: &PlanSchema,
         schema: &PlanSchema,
     ) -> Result<Table> {
-        let input_table = self.execute_plan(input).await?;
+        let input_table = self.execute_plan(input)?;
         let storage_schema = input_table.schema();
 
         let ts_idx = input_schema

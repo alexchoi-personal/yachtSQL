@@ -24,12 +24,12 @@ use super::ConcurrentPlanExecutor;
 use crate::plan::PhysicalPlan;
 
 impl ConcurrentPlanExecutor {
-    pub(crate) async fn execute_export(
+    pub(crate) fn execute_export(
         &self,
         options: &ExportOptions,
         query: &PhysicalPlan,
     ) -> Result<Table> {
-        let data = self.execute_plan(query).await?;
+        let data = self.execute_plan(query)?;
 
         let is_cloud_uri = options.uri.starts_with("gs://")
             || options.uri.starts_with("s3://")
