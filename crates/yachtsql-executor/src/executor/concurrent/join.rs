@@ -186,7 +186,7 @@ impl ConcurrentPlanExecutor {
         let right_width = right_schema.field_count();
 
         let total_work = left_n.saturating_mul(right_n);
-        let use_parallel = total_work >= PARALLEL_THRESHOLD;
+        let use_parallel = parallel && total_work >= PARALLEL_THRESHOLD;
 
         match join_type {
             JoinType::Inner => {

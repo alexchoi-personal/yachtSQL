@@ -160,7 +160,9 @@ impl ConcurrentPlanExecutor {
             .map(|(_, c)| c.as_ref())
             .collect();
 
-        let rows_to_insert: Vec<Vec<Value>> = if source_n >= PARALLEL_THRESHOLD {
+        let rows_to_insert: Vec<Vec<Value>> = if self.is_parallel_enabled()
+            && source_n >= PARALLEL_THRESHOLD
+        {
             (0..source_n)
                 .into_par_iter()
                 .map(|row_idx| {
@@ -487,7 +489,7 @@ impl ConcurrentPlanExecutor {
                         .with_variables(&vars)
                         .with_user_functions(&udf);
 
-                    if table_n >= PARALLEL_THRESHOLD {
+                    if self.is_parallel_enabled() && table_n >= PARALLEL_THRESHOLD {
                         let processed_rows: Vec<Vec<Value>> = (0..table_n)
                             .into_par_iter()
                             .map(|row_idx| {
@@ -685,7 +687,7 @@ impl ConcurrentPlanExecutor {
                 .with_system_variables(&sys_vars)
                 .with_user_functions(&udf);
 
-            if table_n >= PARALLEL_THRESHOLD {
+            if self.is_parallel_enabled() && table_n >= PARALLEL_THRESHOLD {
                 let keep_flags: Vec<bool> = (0..table_n)
                     .into_par_iter()
                     .map(|row_idx| {

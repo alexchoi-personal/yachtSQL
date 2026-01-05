@@ -211,7 +211,7 @@ impl ConcurrentPlanExecutor {
                 .collect();
 
             let mut result = Table::empty(result_schema);
-            if n >= PARALLEL_THRESHOLD {
+            if self.is_parallel_enabled() && n >= PARALLEL_THRESHOLD {
                 let rows: Vec<Vec<Value>> = (0..n)
                     .into_par_iter()
                     .map(|row_idx| {
@@ -299,7 +299,7 @@ impl ConcurrentPlanExecutor {
             .map(|(_, c)| c.as_ref())
             .collect();
 
-        let sort_keys: Vec<Vec<Value>> = if n >= PARALLEL_THRESHOLD {
+        let sort_keys: Vec<Vec<Value>> = if self.is_parallel_enabled() && n >= PARALLEL_THRESHOLD {
             (0..n)
                 .into_par_iter()
                 .map(|idx| {
@@ -416,7 +416,7 @@ impl ConcurrentPlanExecutor {
             .map(|(_, c)| c.as_ref())
             .collect();
 
-        let sort_keys: Vec<Vec<Value>> = if n >= PARALLEL_THRESHOLD {
+        let sort_keys: Vec<Vec<Value>> = if self.is_parallel_enabled() && n >= PARALLEL_THRESHOLD {
             (0..n)
                 .into_par_iter()
                 .map(|idx| {
