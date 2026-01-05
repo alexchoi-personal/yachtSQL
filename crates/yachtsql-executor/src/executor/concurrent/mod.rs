@@ -113,6 +113,26 @@ impl ConcurrentPlanExecutor {
         self.variables.read().unwrap_or_else(|e| e.into_inner())
     }
 
+    pub(crate) fn is_parallel_enabled(&self) -> bool {
+        if let Some(val) = self
+            .variables
+            .read()
+            .ok()
+            .and_then(|v| v.get("PARALLEL_EXECUTION").cloned())
+        {
+            return val.as_bool().unwrap_or(true);
+        }
+        if let Some(val) = self
+            .system_variables
+            .read()
+            .ok()
+            .and_then(|v| v.get("PARALLEL_EXECUTION").cloned())
+        {
+            return val.as_bool().unwrap_or(true);
+        }
+        true
+    }
+
     pub(crate) fn get_user_functions(
         &self,
     ) -> std::sync::RwLockReadGuard<'_, FxHashMap<String, UserFunctionDef>> {

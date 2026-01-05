@@ -708,46 +708,42 @@ fn bench_optimizer_phases(c: &mut Criterion) {
         ("q4_top_customers", query4_top_customers),
     ];
 
-    for (name, query) in queries.iter() {
-        rt.block_on(async {
-            executor.clear_plan_cache();
-            executor
-                .execute_sql("SET OPTIMIZER_JOIN_REORDER = true")
-                .await
-                .unwrap();
-            executor
-                .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = true")
-                .await
-                .unwrap();
-            executor
-                .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = true")
-                .await
-                .unwrap();
-        });
-        group.bench_function(format!("{}_on", name), |b| {
-            b.to_async(&rt)
-                .iter(|| async { executor.execute_sql(query).await.unwrap() });
-        });
+    let configs = [
+        ("opt_off_par_off", false, false),
+        ("opt_off_par_on", false, true),
+        ("opt_on_par_off", true, false),
+        ("opt_on_par_on", true, true),
+    ];
 
-        rt.block_on(async {
-            executor.clear_plan_cache();
-            executor
-                .execute_sql("SET OPTIMIZER_JOIN_REORDER = false")
-                .await
-                .unwrap();
-            executor
-                .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN = false")
-                .await
-                .unwrap();
-            executor
-                .execute_sql("SET OPTIMIZER_PROJECTION_PUSHDOWN = false")
-                .await
-                .unwrap();
-        });
-        group.bench_function(format!("{}_off", name), |b| {
-            b.to_async(&rt)
-                .iter(|| async { executor.execute_sql(query).await.unwrap() });
-        });
+    for (name, query) in queries.iter() {
+        for (config_name, optimizer_on, parallel_on) in configs.iter() {
+            rt.block_on(async {
+                executor.clear_plan_cache();
+                executor
+                    .execute_sql(&format!("SET OPTIMIZER_JOIN_REORDER = {}", optimizer_on))
+                    .await
+                    .unwrap();
+                executor
+                    .execute_sql(&format!("SET OPTIMIZER_FILTER_PUSHDOWN = {}", optimizer_on))
+                    .await
+                    .unwrap();
+                executor
+                    .execute_sql(&format!(
+                        "SET OPTIMIZER_PROJECTION_PUSHDOWN = {}",
+                        optimizer_on
+                    ))
+                    .await
+                    .unwrap();
+                executor
+                    .execute_sql(&format!("SET PARALLEL_EXECUTION = {}", parallel_on))
+                    .await
+                    .unwrap();
+            });
+            group.bench_function(format!("{}_{}", name, config_name), |b| {
+                b.to_async(&rt)
+                    .iter(|| async { executor.execute_sql(query).await.unwrap() });
+            });
+        }
     }
 
     group.finish();

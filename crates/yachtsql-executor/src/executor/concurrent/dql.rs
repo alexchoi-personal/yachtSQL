@@ -2,6 +2,7 @@
 
 use rand::Rng;
 use rand::seq::SliceRandom;
+use rayon::prelude::*;
 use rustc_hash::FxHashSet;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
@@ -10,6 +11,8 @@ use yachtsql_optimizer::SampleType;
 use yachtsql_storage::{Column, Field, FieldMode, Record, Schema, Table};
 
 use super::{ConcurrentPlanExecutor, compare_values_for_sort};
+
+const PARALLEL_THRESHOLD: usize = 2000;
 use crate::columnar_evaluator::ColumnarEvaluator;
 use crate::executor::plan_schema_to_schema;
 use crate::plan::PhysicalPlan;
@@ -208,15 +211,34 @@ impl ConcurrentPlanExecutor {
                 .collect();
 
             let mut result = Table::empty(result_schema);
-            let mut record = Record::with_capacity(columns.len());
-            for row_idx in 0..n {
-                record.set_from_columns(&columns, row_idx);
-                let mut new_row = Vec::with_capacity(expressions.len());
-                for expr in expressions {
-                    let val = evaluator.evaluate(expr, &record)?;
-                    new_row.push(val);
+            if self.is_parallel_enabled() && n >= PARALLEL_THRESHOLD {
+                let rows: Vec<Vec<Value>> = (0..n)
+                    .into_par_iter()
+                    .map(|row_idx| {
+                        let row_values: Vec<Value> =
+                            columns.iter().map(|c| c.get_value(row_idx)).collect();
+                        let record = Record::from_slice(&row_values);
+                        expressions
+                            .iter()
+                            .map(|expr| evaluator.evaluate(expr, &record).unwrap_or(Value::Null))
+                            .collect()
+                    })
+                    .collect();
+
+                for row in rows {
+                    result.push_row(row)?;
                 }
-                result.push_row(new_row)?;
+            } else {
+                let mut record = Record::with_capacity(columns.len());
+                for row_idx in 0..n {
+                    record.set_from_columns(&columns, row_idx);
+                    let mut new_row = Vec::with_capacity(expressions.len());
+                    for expr in expressions {
+                        let val = evaluator.evaluate(expr, &record)?;
+                        new_row.push(val);
+                    }
+                    result.push_row(new_row)?;
+                }
             }
             Ok(result)
         }
@@ -277,7 +299,19 @@ impl ConcurrentPlanExecutor {
             .map(|(_, c)| c.as_ref())
             .collect();
 
-        let sort_keys: Vec<Vec<Value>> = {
+        let sort_keys: Vec<Vec<Value>> = if self.is_parallel_enabled() && n >= PARALLEL_THRESHOLD {
+            (0..n)
+                .into_par_iter()
+                .map(|idx| {
+                    let row_values: Vec<Value> = columns.iter().map(|c| c.get_value(idx)).collect();
+                    let record = Record::from_slice(&row_values);
+                    sort_exprs
+                        .iter()
+                        .map(|se| evaluator.evaluate(&se.expr, &record).unwrap_or(Value::Null))
+                        .collect()
+                })
+                .collect()
+        } else {
             let mut row_values: Vec<Value> = Vec::with_capacity(columns.len());
             (0..n)
                 .map(|idx| {
@@ -382,7 +416,19 @@ impl ConcurrentPlanExecutor {
             .map(|(_, c)| c.as_ref())
             .collect();
 
-        let sort_keys: Vec<Vec<Value>> = {
+        let sort_keys: Vec<Vec<Value>> = if self.is_parallel_enabled() && n >= PARALLEL_THRESHOLD {
+            (0..n)
+                .into_par_iter()
+                .map(|idx| {
+                    let row_values: Vec<Value> = columns.iter().map(|c| c.get_value(idx)).collect();
+                    let record = Record::from_slice(&row_values);
+                    sort_exprs
+                        .iter()
+                        .map(|se| evaluator.evaluate(&se.expr, &record).unwrap_or(Value::Null))
+                        .collect()
+                })
+                .collect()
+        } else {
             let mut row_values: Vec<Value> = Vec::with_capacity(columns.len());
             (0..n)
                 .map(|idx| {

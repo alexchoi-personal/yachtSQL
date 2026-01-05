@@ -3,6 +3,7 @@
 use std::hash::{Hash, Hasher};
 
 use bloomfilter::Bloom;
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::instrument;
 use yachtsql_common::error::{Error, Result};
@@ -13,6 +14,8 @@ use yachtsql_storage::{Column, Record, Schema, Table};
 use super::{ConcurrentPlanExecutor, plan_schema_to_schema};
 use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
+
+const PARALLEL_THRESHOLD: usize = 2000;
 
 fn extract_column_indices(keys: &[Expr], schema: &Schema) -> Option<Vec<usize>> {
     keys.iter()
@@ -182,108 +185,262 @@ impl ConcurrentPlanExecutor {
         let left_width = left_schema.field_count();
         let right_width = right_schema.field_count();
 
-        let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
-        let mut eval_record = Record::with_capacity(left_width + right_width);
+        let total_work = left_n.saturating_mul(right_n);
+        let use_parallel = parallel && total_work >= PARALLEL_THRESHOLD;
 
         match join_type {
             JoinType::Inner => {
-                for left_idx in 0..left_n {
-                    for right_idx in 0..right_n {
-                        combined_values.clear();
-                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
-                        combined_values
-                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                if use_parallel {
+                    let row_batches: Vec<Vec<Vec<Value>>> = (0..left_n)
+                        .into_par_iter()
+                        .map(|left_idx| {
+                            let mut matches = Vec::new();
+                            for right_idx in 0..right_n {
+                                let mut combined_values: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                combined_values
+                                    .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                                combined_values
+                                    .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
 
-                        let matches = match condition {
-                            Some(c) => {
-                                eval_record.set_from_slice(&combined_values);
-                                evaluator
-                                    .evaluate(c, &eval_record)?
-                                    .as_bool()
-                                    .unwrap_or(false)
+                                let is_match = match condition {
+                                    Some(c) => {
+                                        let eval_record = Record::from_slice(&combined_values);
+                                        evaluator
+                                            .evaluate(c, &eval_record)
+                                            .ok()
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false)
+                                    }
+                                    None => true,
+                                };
+
+                                if is_match {
+                                    matches.push(combined_values);
+                                }
                             }
-                            None => true,
-                        };
+                            matches
+                        })
+                        .collect();
 
-                        if matches {
-                            result.push_row(std::mem::take(&mut combined_values))?;
-                            combined_values = Vec::with_capacity(left_width + right_width);
+                    for batch in row_batches {
+                        for row in batch {
+                            result.push_row(row)?;
+                        }
+                    }
+                } else {
+                    let mut combined_values: Vec<Value> =
+                        Vec::with_capacity(left_width + right_width);
+                    let mut eval_record = Record::with_capacity(left_width + right_width);
+                    for left_idx in 0..left_n {
+                        for right_idx in 0..right_n {
+                            combined_values.clear();
+                            combined_values
+                                .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                            combined_values
+                                .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                            let matches = match condition {
+                                Some(c) => {
+                                    eval_record.set_from_slice(&combined_values);
+                                    evaluator
+                                        .evaluate(c, &eval_record)?
+                                        .as_bool()
+                                        .unwrap_or(false)
+                                }
+                                None => true,
+                            };
+
+                            if matches {
+                                result.push_row(std::mem::take(&mut combined_values))?;
+                                combined_values = Vec::with_capacity(left_width + right_width);
+                            }
                         }
                     }
                 }
             }
             JoinType::Left => {
-                for left_idx in 0..left_n {
-                    let mut found_match = false;
-                    for right_idx in 0..right_n {
-                        combined_values.clear();
-                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
-                        combined_values
-                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                if use_parallel {
+                    let row_batches: Vec<Vec<Vec<Value>>> = (0..left_n)
+                        .into_par_iter()
+                        .map(|left_idx| {
+                            let mut output_rows = Vec::new();
+                            let mut found_match = false;
+                            for right_idx in 0..right_n {
+                                let mut combined_values: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                combined_values
+                                    .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                                combined_values
+                                    .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
 
-                        let matches = match condition {
-                            Some(c) => {
-                                eval_record.set_from_slice(&combined_values);
-                                evaluator
-                                    .evaluate(c, &eval_record)?
-                                    .as_bool()
-                                    .unwrap_or(false)
+                                let is_match = match condition {
+                                    Some(c) => {
+                                        let eval_record = Record::from_slice(&combined_values);
+                                        evaluator
+                                            .evaluate(c, &eval_record)
+                                            .ok()
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false)
+                                    }
+                                    None => true,
+                                };
+
+                                if is_match {
+                                    found_match = true;
+                                    output_rows.push(combined_values);
+                                }
                             }
-                            None => true,
-                        };
+                            if !found_match {
+                                let mut null_row: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                null_row.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                                null_row.extend(std::iter::repeat_n(Value::Null, right_width));
+                                output_rows.push(null_row);
+                            }
+                            output_rows
+                        })
+                        .collect();
 
-                        if matches {
-                            found_match = true;
+                    for batch in row_batches {
+                        for row in batch {
+                            result.push_row(row)?;
+                        }
+                    }
+                } else {
+                    let mut combined_values: Vec<Value> =
+                        Vec::with_capacity(left_width + right_width);
+                    let mut eval_record = Record::with_capacity(left_width + right_width);
+                    for left_idx in 0..left_n {
+                        let mut found_match = false;
+                        for right_idx in 0..right_n {
+                            combined_values.clear();
+                            combined_values
+                                .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                            combined_values
+                                .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                            let matches = match condition {
+                                Some(c) => {
+                                    eval_record.set_from_slice(&combined_values);
+                                    evaluator
+                                        .evaluate(c, &eval_record)?
+                                        .as_bool()
+                                        .unwrap_or(false)
+                                }
+                                None => true,
+                            };
+
+                            if matches {
+                                found_match = true;
+                                result.push_row(std::mem::take(&mut combined_values))?;
+                                combined_values = Vec::with_capacity(left_width + right_width);
+                            }
+                        }
+                        if !found_match {
+                            combined_values.clear();
+                            combined_values
+                                .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                            combined_values.extend(std::iter::repeat_n(Value::Null, right_width));
                             result.push_row(std::mem::take(&mut combined_values))?;
                             combined_values = Vec::with_capacity(left_width + right_width);
                         }
-                    }
-                    if !found_match {
-                        combined_values.clear();
-                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
-                        combined_values.extend(std::iter::repeat_n(Value::Null, right_width));
-                        result.push_row(std::mem::take(&mut combined_values))?;
-                        combined_values = Vec::with_capacity(left_width + right_width);
                     }
                 }
             }
             JoinType::Right => {
-                for right_idx in 0..right_n {
-                    let mut found_match = false;
-                    for left_idx in 0..left_n {
-                        combined_values.clear();
-                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
-                        combined_values
-                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                if use_parallel {
+                    let row_batches: Vec<Vec<Vec<Value>>> = (0..right_n)
+                        .into_par_iter()
+                        .map(|right_idx| {
+                            let mut output_rows = Vec::new();
+                            let mut found_match = false;
+                            for left_idx in 0..left_n {
+                                let mut combined_values: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                combined_values
+                                    .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                                combined_values
+                                    .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
 
-                        let matches = match condition {
-                            Some(c) => {
-                                eval_record.set_from_slice(&combined_values);
-                                evaluator
-                                    .evaluate(c, &eval_record)?
-                                    .as_bool()
-                                    .unwrap_or(false)
+                                let is_match = match condition {
+                                    Some(c) => {
+                                        let eval_record = Record::from_slice(&combined_values);
+                                        evaluator
+                                            .evaluate(c, &eval_record)
+                                            .ok()
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false)
+                                    }
+                                    None => true,
+                                };
+
+                                if is_match {
+                                    found_match = true;
+                                    output_rows.push(combined_values);
+                                }
                             }
-                            None => true,
-                        };
+                            if !found_match {
+                                let mut null_row: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                null_row.extend(std::iter::repeat_n(Value::Null, left_width));
+                                null_row
+                                    .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                                output_rows.push(null_row);
+                            }
+                            output_rows
+                        })
+                        .collect();
 
-                        if matches {
-                            found_match = true;
+                    for batch in row_batches {
+                        for row in batch {
+                            result.push_row(row)?;
+                        }
+                    }
+                } else {
+                    let mut combined_values: Vec<Value> =
+                        Vec::with_capacity(left_width + right_width);
+                    let mut eval_record = Record::with_capacity(left_width + right_width);
+                    for right_idx in 0..right_n {
+                        let mut found_match = false;
+                        for left_idx in 0..left_n {
+                            combined_values.clear();
+                            combined_values
+                                .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                            combined_values
+                                .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                            let matches = match condition {
+                                Some(c) => {
+                                    eval_record.set_from_slice(&combined_values);
+                                    evaluator
+                                        .evaluate(c, &eval_record)?
+                                        .as_bool()
+                                        .unwrap_or(false)
+                                }
+                                None => true,
+                            };
+
+                            if matches {
+                                found_match = true;
+                                result.push_row(std::mem::take(&mut combined_values))?;
+                                combined_values = Vec::with_capacity(left_width + right_width);
+                            }
+                        }
+                        if !found_match {
+                            combined_values.clear();
+                            combined_values.extend(std::iter::repeat_n(Value::Null, left_width));
+                            combined_values
+                                .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
                             result.push_row(std::mem::take(&mut combined_values))?;
                             combined_values = Vec::with_capacity(left_width + right_width);
                         }
                     }
-                    if !found_match {
-                        combined_values.clear();
-                        combined_values.extend(std::iter::repeat_n(Value::Null, left_width));
-                        combined_values
-                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
-                        result.push_row(std::mem::take(&mut combined_values))?;
-                        combined_values = Vec::with_capacity(left_width + right_width);
-                    }
                 }
             }
             JoinType::Full => {
+                let mut combined_values: Vec<Value> = Vec::with_capacity(left_width + right_width);
+                let mut eval_record = Record::with_capacity(left_width + right_width);
                 let mut matched_right: FxHashSet<usize> =
                     FxHashSet::with_capacity_and_hasher(right_n, Default::default());
 
@@ -333,19 +490,46 @@ impl ConcurrentPlanExecutor {
                 }
             }
             JoinType::Cross => {
-                for left_idx in 0..left_n {
-                    for right_idx in 0..right_n {
-                        combined_values.clear();
-                        combined_values.extend(left_columns.iter().map(|c| c.get_value(left_idx)));
-                        combined_values
-                            .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
-                        result.push_row(std::mem::take(&mut combined_values))?;
-                        combined_values = Vec::with_capacity(left_width + right_width);
+                if use_parallel {
+                    let row_batches: Vec<Vec<Vec<Value>>> = (0..left_n)
+                        .into_par_iter()
+                        .map(|left_idx| {
+                            let mut rows = Vec::with_capacity(right_n);
+                            for right_idx in 0..right_n {
+                                let mut combined_values: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                combined_values
+                                    .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                                combined_values
+                                    .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                                rows.push(combined_values);
+                            }
+                            rows
+                        })
+                        .collect();
+
+                    for batch in row_batches {
+                        for row in batch {
+                            result.push_row(row)?;
+                        }
+                    }
+                } else {
+                    let mut combined_values: Vec<Value> =
+                        Vec::with_capacity(left_width + right_width);
+                    for left_idx in 0..left_n {
+                        for right_idx in 0..right_n {
+                            combined_values.clear();
+                            combined_values
+                                .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                            combined_values
+                                .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+                            result.push_row(std::mem::take(&mut combined_values))?;
+                            combined_values = Vec::with_capacity(left_width + right_width);
+                        }
                     }
                 }
             }
         }
-        drop(eval_record);
 
         Ok(result)
     }
@@ -486,154 +670,109 @@ impl ConcurrentPlanExecutor {
                     }
                 }
 
-                if parallel && probe_n >= 2000 {
-                    let num_threads = std::thread::available_parallelism()
-                        .map(|n| n.get())
-                        .unwrap_or(4);
-                    let chunk_size = probe_n.div_ceil(num_threads);
-
-                    let chunk_results: Vec<Result<Vec<Vec<Value>>>> = std::thread::scope(|s| {
-                        let handles: Vec<_> = (0..probe_n)
-                            .step_by(chunk_size)
-                            .map(|chunk_start| {
-                                let chunk_end = (chunk_start + chunk_size).min(probe_n);
-                                let hash_table = &hash_table;
-                                let bloom_filter = &bloom_filter;
-                                let vars = &vars;
-                                let sys_vars = &sys_vars;
-                                let udf = &udf;
-                                let build_cols = &build_cols;
-                                let probe_cols = &probe_cols;
-                                let probe_key_indices = &probe_key_indices;
-                                s.spawn(move || {
-                                    let mut rows = Vec::new();
-                                    if let Some(indices) = probe_key_indices {
-                                        for probe_idx in chunk_start..chunk_end {
-                                            let key_values = extract_key_values_direct(
-                                                probe_cols, probe_idx, indices,
-                                            );
-                                            if key_values.iter().any(|v| matches!(v, Value::Null)) {
-                                                continue;
-                                            }
-                                            let key_hash = hash_key_values(&key_values);
-                                            if !bloom_filter.check(&key_hash) {
-                                                continue;
-                                            }
-                                            if let Some(matching_indices) =
-                                                hash_table.get(&key_values)
-                                            {
-                                                for &build_idx in matching_indices {
-                                                    let mut combined: Vec<Value> =
-                                                        Vec::with_capacity(
-                                                            left_width + right_width,
-                                                        );
-                                                    if build_on_right {
-                                                        combined.extend(
-                                                            probe_cols
-                                                                .iter()
-                                                                .map(|c| c.get_value(probe_idx)),
-                                                        );
-                                                        combined.extend(
-                                                            build_cols
-                                                                .iter()
-                                                                .map(|c| c.get_value(build_idx)),
-                                                        );
-                                                    } else {
-                                                        combined.extend(
-                                                            build_cols
-                                                                .iter()
-                                                                .map(|c| c.get_value(build_idx)),
-                                                        );
-                                                        combined.extend(
-                                                            probe_cols
-                                                                .iter()
-                                                                .map(|c| c.get_value(probe_idx)),
-                                                        );
-                                                    }
-                                                    rows.push(combined);
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        let probe_evaluator = ValueEvaluator::new(probe_schema)
-                                            .with_variables(vars)
-                                            .with_system_variables(sys_vars)
-                                            .with_user_functions(udf);
-                                        let mut probe_record =
-                                            Record::with_capacity(probe_cols.len());
-                                        let mut probe_values: Vec<Value> =
-                                            Vec::with_capacity(probe_cols.len());
-                                        for probe_idx in chunk_start..chunk_end {
-                                            probe_values.clear();
-                                            probe_values.extend(
+                if parallel && probe_n >= PARALLEL_THRESHOLD {
+                    let row_batches: Vec<Vec<Vec<Value>>> = if let Some(ref indices) =
+                        probe_key_indices
+                    {
+                        (0..probe_n)
+                            .into_par_iter()
+                            .map(|probe_idx| {
+                                let key_values =
+                                    extract_key_values_direct(probe_cols, probe_idx, indices);
+                                if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                                    return Vec::new();
+                                }
+                                let key_hash = hash_key_values(&key_values);
+                                if !bloom_filter.check(&key_hash) {
+                                    return Vec::new();
+                                }
+                                let Some(matching_indices) = hash_table.get(&key_values) else {
+                                    return Vec::new();
+                                };
+                                matching_indices
+                                    .iter()
+                                    .map(|&build_idx| {
+                                        let mut combined: Vec<Value> =
+                                            Vec::with_capacity(left_width + right_width);
+                                        if build_on_right {
+                                            combined.extend(
                                                 probe_cols.iter().map(|c| c.get_value(probe_idx)),
                                             );
-                                            probe_record.set_from_slice(&probe_values);
-                                            let key_values: Vec<Value> = probe_keys
-                                                .iter()
-                                                .map(|expr| {
-                                                    probe_evaluator.evaluate(expr, &probe_record)
-                                                })
-                                                .collect::<Result<Vec<_>>>()?;
-                                            if key_values.iter().any(|v| matches!(v, Value::Null)) {
-                                                continue;
-                                            }
-                                            let key_hash = hash_key_values(&key_values);
-                                            if !bloom_filter.check(&key_hash) {
-                                                continue;
-                                            }
-                                            if let Some(matching_indices) =
-                                                hash_table.get(&key_values)
-                                            {
-                                                for &build_idx in matching_indices {
-                                                    let mut combined: Vec<Value> =
-                                                        Vec::with_capacity(
-                                                            left_width + right_width,
-                                                        );
-                                                    if build_on_right {
-                                                        combined.extend(
-                                                            probe_cols
-                                                                .iter()
-                                                                .map(|c| c.get_value(probe_idx)),
-                                                        );
-                                                        combined.extend(
-                                                            build_cols
-                                                                .iter()
-                                                                .map(|c| c.get_value(build_idx)),
-                                                        );
-                                                    } else {
-                                                        combined.extend(
-                                                            build_cols
-                                                                .iter()
-                                                                .map(|c| c.get_value(build_idx)),
-                                                        );
-                                                        combined.extend(
-                                                            probe_cols
-                                                                .iter()
-                                                                .map(|c| c.get_value(probe_idx)),
-                                                        );
-                                                    }
-                                                    rows.push(combined);
-                                                }
-                                            }
+                                            combined.extend(
+                                                build_cols.iter().map(|c| c.get_value(build_idx)),
+                                            );
+                                        } else {
+                                            combined.extend(
+                                                build_cols.iter().map(|c| c.get_value(build_idx)),
+                                            );
+                                            combined.extend(
+                                                probe_cols.iter().map(|c| c.get_value(probe_idx)),
+                                            );
                                         }
-                                    }
-                                    Ok(rows)
-                                })
-                            })
-                            .collect();
-                        handles
-                            .into_iter()
-                            .map(|h| {
-                                h.join()
-                                    .unwrap_or_else(|_| Err(Error::internal("Thread join failed")))
+                                        combined
+                                    })
+                                    .collect()
                             })
                             .collect()
-                    });
+                    } else {
+                        (0..probe_n)
+                            .into_par_iter()
+                            .map(|probe_idx| {
+                                let probe_evaluator = ValueEvaluator::new(probe_schema)
+                                    .with_variables(&vars)
+                                    .with_system_variables(&sys_vars)
+                                    .with_user_functions(&udf);
+                                let probe_values: Vec<Value> =
+                                    probe_cols.iter().map(|c| c.get_value(probe_idx)).collect();
+                                let probe_record = Record::from_slice(&probe_values);
+                                let key_values: Vec<Value> = probe_keys
+                                    .iter()
+                                    .filter_map(|expr| {
+                                        probe_evaluator.evaluate(expr, &probe_record).ok()
+                                    })
+                                    .collect();
+                                if key_values.len() != probe_keys.len()
+                                    || key_values.iter().any(|v| matches!(v, Value::Null))
+                                {
+                                    return Vec::new();
+                                }
+                                let key_hash = hash_key_values(&key_values);
+                                if !bloom_filter.check(&key_hash) {
+                                    return Vec::new();
+                                }
+                                let Some(matching_indices) = hash_table.get(&key_values) else {
+                                    return Vec::new();
+                                };
+                                matching_indices
+                                    .iter()
+                                    .map(|&build_idx| {
+                                        let mut combined: Vec<Value> =
+                                            Vec::with_capacity(left_width + right_width);
+                                        if build_on_right {
+                                            combined.extend(
+                                                probe_cols.iter().map(|c| c.get_value(probe_idx)),
+                                            );
+                                            combined.extend(
+                                                build_cols.iter().map(|c| c.get_value(build_idx)),
+                                            );
+                                        } else {
+                                            combined.extend(
+                                                build_cols.iter().map(|c| c.get_value(build_idx)),
+                                            );
+                                            combined.extend(
+                                                probe_cols.iter().map(|c| c.get_value(probe_idx)),
+                                            );
+                                        }
+                                        combined
+                                    })
+                                    .collect()
+                            })
+                            .collect()
+                    };
 
                     let mut result = Table::empty(result_schema);
-                    for chunk_result in chunk_results {
-                        for row in chunk_result? {
+                    for batch in row_batches {
+                        for row in batch {
                             result.push_row(row)?;
                         }
                     }
