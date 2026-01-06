@@ -3,6 +3,7 @@
 
 mod join_order;
 mod optimized_logical_plan;
+mod pass;
 mod planner;
 pub mod stats;
 #[cfg(test)]
@@ -13,71 +14,129 @@ mod tests;
 pub use join_order::{
     CostModel, GreedyJoinReorderer, JoinEdge, JoinGraph, JoinRelation, PredicateCollector,
 };
-pub use optimized_logical_plan::{OptimizedLogicalPlan, SampleType};
-pub use planner::{PhysicalPlanner, ProjectionPushdown, fold_constants};
+pub use optimized_logical_plan::{
+    BoundType, ExecutionHints, OptimizedLogicalPlan, PARALLEL_ROW_THRESHOLD, PhysicalPlan,
+    SampleType,
+};
+pub use pass::{OptimizationPass, PassOverhead, PassTarget};
+pub use planner::{
+    PhysicalPlanner, ProjectionPushdown, apply_empty_propagation, apply_filter_merging,
+    apply_trivial_predicate_removal, fold_constants,
+};
 use rustc_hash::FxHashMap;
 pub use stats::{ColumnStats, TableStats};
 use yachtsql_common::error::Result;
 use yachtsql_ir::LogicalPlan;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OptimizationLevel {
+    None,
+    Basic,
+    #[default]
+    Standard,
+    Aggressive,
+    Full,
+}
+
 #[derive(Clone, Debug)]
 pub struct OptimizerSettings {
-    pub join_reorder: bool,
-    pub filter_pushdown: bool,
-    pub projection_pushdown: bool,
+    pub level: OptimizationLevel,
     pub table_stats: FxHashMap<String, TableStats>,
+    pub disable_join_reorder: bool,
 }
 
 impl Default for OptimizerSettings {
     fn default() -> Self {
-        Self::all_enabled()
+        Self::with_level(OptimizationLevel::Standard)
     }
 }
 
 impl OptimizerSettings {
-    pub fn all_enabled() -> Self {
+    pub fn with_level(level: OptimizationLevel) -> Self {
         Self {
-            join_reorder: true,
-            filter_pushdown: true,
-            projection_pushdown: true,
+            level,
             table_stats: FxHashMap::default(),
+            disable_join_reorder: false,
         }
     }
 
+    pub fn all_enabled() -> Self {
+        Self::with_level(OptimizationLevel::Standard)
+    }
+
     pub fn all_disabled() -> Self {
-        Self {
-            join_reorder: false,
-            filter_pushdown: false,
-            projection_pushdown: false,
-            table_stats: FxHashMap::default(),
-        }
+        Self::with_level(OptimizationLevel::None)
     }
 
     pub fn with_table_stats(mut self, stats: FxHashMap<String, TableStats>) -> Self {
         self.table_stats = stats;
         self
     }
+
+    fn join_reorder_enabled(&self) -> bool {
+        !self.disable_join_reorder && self.level >= OptimizationLevel::Standard
+    }
+
+    fn filter_pushdown_enabled(&self) -> bool {
+        self.level >= OptimizationLevel::Basic
+    }
+
+    fn projection_pushdown_enabled(&self) -> bool {
+        self.level >= OptimizationLevel::Basic
+    }
 }
 
-pub fn optimize(logical: &LogicalPlan) -> Result<OptimizedLogicalPlan> {
+impl PartialOrd for OptimizationLevel {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OptimizationLevel {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let self_ord = match self {
+            OptimizationLevel::None => 0,
+            OptimizationLevel::Basic => 1,
+            OptimizationLevel::Standard => 2,
+            OptimizationLevel::Aggressive => 3,
+            OptimizationLevel::Full => 4,
+        };
+        let other_ord = match other {
+            OptimizationLevel::None => 0,
+            OptimizationLevel::Basic => 1,
+            OptimizationLevel::Standard => 2,
+            OptimizationLevel::Aggressive => 3,
+            OptimizationLevel::Full => 4,
+        };
+        self_ord.cmp(&other_ord)
+    }
+}
+
+pub fn optimize(logical: &LogicalPlan) -> Result<PhysicalPlan> {
     optimize_with_settings(logical, &OptimizerSettings::all_enabled())
 }
 
 pub fn optimize_with_settings(
     logical: &LogicalPlan,
     settings: &OptimizerSettings,
-) -> Result<OptimizedLogicalPlan> {
-    let reordered = if settings.join_reorder {
+) -> Result<PhysicalPlan> {
+    let reordered = if settings.join_reorder_enabled() {
         maybe_reorder_joins(logical, &settings.table_stats)
     } else {
         None
     };
 
     let plan_to_optimize = reordered.as_ref().unwrap_or(logical);
-    let planner = PhysicalPlanner::with_settings(settings.filter_pushdown);
-    let physical_plan = planner.plan(plan_to_optimize)?;
+    let planner = PhysicalPlanner::with_settings(settings.filter_pushdown_enabled());
+    let mut physical_plan = planner.plan(plan_to_optimize)?;
 
-    if settings.projection_pushdown {
+    if settings.level >= OptimizationLevel::Basic {
+        physical_plan = apply_trivial_predicate_removal(physical_plan);
+        physical_plan = apply_empty_propagation(physical_plan);
+        physical_plan = apply_filter_merging(physical_plan);
+    }
+
+    if settings.projection_pushdown_enabled() {
         Ok(ProjectionPushdown::optimize(physical_plan))
     } else {
         Ok(physical_plan)

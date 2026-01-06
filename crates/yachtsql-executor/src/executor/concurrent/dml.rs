@@ -441,7 +441,7 @@ impl ConcurrentPlanExecutor {
                     for row_idx in 0..table_n {
                         let row_values: Vec<Value> =
                             table_cols.iter().map(|c| c.get_value(row_idx)).collect();
-                        let record = Record::from_values(row_values.clone());
+                        let record = Record::from_values(row_values);
                         let matches = if let Some(f) = filter {
                             self.eval_expr_with_subqueries(f, &target_schema, &record)?
                                 .as_bool()
@@ -451,7 +451,8 @@ impl ConcurrentPlanExecutor {
                         };
 
                         if matches {
-                            let mut new_row = row_values;
+                            let mut new_row = record.into_values();
+                            let eval_record = Record::from_slice(&new_row);
                             for assignment in assignments {
                                 let (base_col, field_path) =
                                     Self::parse_assignment_column(&assignment.column);
@@ -463,7 +464,7 @@ impl ConcurrentPlanExecutor {
                                         _ => self.eval_expr_with_subqueries(
                                             &assignment.value,
                                             &target_schema,
-                                            &record,
+                                            &eval_record,
                                         )?,
                                     };
                                     if field_path.is_empty() {
@@ -479,7 +480,7 @@ impl ConcurrentPlanExecutor {
                             }
                             new_table.push_row(new_row)?;
                         } else {
-                            new_table.push_row(row_values)?;
+                            new_table.push_row(record.into_values())?;
                         }
                     }
                 } else {
@@ -495,7 +496,7 @@ impl ConcurrentPlanExecutor {
                             .map(|row_idx| {
                                 let row_values: Vec<Value> =
                                     table_cols.iter().map(|c| c.get_value(row_idx)).collect();
-                                let record = Record::from_values(row_values.clone());
+                                let record = Record::from_values(row_values);
                                 let matches = filter
                                     .map(|f| evaluator.evaluate(f, &record))
                                     .transpose()?
@@ -503,7 +504,8 @@ impl ConcurrentPlanExecutor {
                                     .unwrap_or(true);
 
                                 if matches {
-                                    let mut new_row = row_values;
+                                    let mut new_row = record.into_values();
+                                    let eval_record = Record::from_slice(&new_row);
                                     for assignment in assignments {
                                         let (base_col, field_path) =
                                             Self::parse_assignment_column(&assignment.column);
@@ -513,7 +515,7 @@ impl ConcurrentPlanExecutor {
                                                     .clone()
                                                     .unwrap_or(Value::Null),
                                                 _ => evaluator
-                                                    .evaluate(&assignment.value, &record)?,
+                                                    .evaluate(&assignment.value, &eval_record)?,
                                             };
                                             if field_path.is_empty() {
                                                 new_row[idx] = val;
@@ -528,7 +530,7 @@ impl ConcurrentPlanExecutor {
                                     }
                                     Ok(new_row)
                                 } else {
-                                    Ok(row_values)
+                                    Ok(record.into_values())
                                 }
                             })
                             .collect::<Result<Vec<_>>>()?;
@@ -540,7 +542,7 @@ impl ConcurrentPlanExecutor {
                         for row_idx in 0..table_n {
                             let row_values: Vec<Value> =
                                 table_cols.iter().map(|c| c.get_value(row_idx)).collect();
-                            let record = Record::from_values(row_values.clone());
+                            let record = Record::from_values(row_values);
                             let matches = filter
                                 .map(|f| evaluator.evaluate(f, &record))
                                 .transpose()?
@@ -548,7 +550,8 @@ impl ConcurrentPlanExecutor {
                                 .unwrap_or(true);
 
                             if matches {
-                                let mut new_row = row_values;
+                                let mut new_row = record.into_values();
+                                let eval_record = Record::from_slice(&new_row);
                                 for assignment in assignments {
                                     let (base_col, field_path) =
                                         Self::parse_assignment_column(&assignment.column);
@@ -557,7 +560,8 @@ impl ConcurrentPlanExecutor {
                                             Expr::Default => {
                                                 default_values[idx].clone().unwrap_or(Value::Null)
                                             }
-                                            _ => evaluator.evaluate(&assignment.value, &record)?,
+                                            _ => evaluator
+                                                .evaluate(&assignment.value, &eval_record)?,
                                         };
                                         if field_path.is_empty() {
                                             new_row[idx] = val;
@@ -572,7 +576,7 @@ impl ConcurrentPlanExecutor {
                                 }
                                 new_table.push_row(new_row)?;
                             } else {
-                                new_table.push_row(row_values)?;
+                                new_table.push_row(record.into_values())?;
                             }
                         }
                     }
@@ -665,7 +669,7 @@ impl ConcurrentPlanExecutor {
             for row_idx in 0..table_n {
                 let row_values: Vec<Value> =
                     table_cols.iter().map(|c| c.get_value(row_idx)).collect();
-                let record = Record::from_values(row_values.clone());
+                let record = Record::from_values(row_values);
                 let matches = match filter {
                     Some(f) => self
                         .eval_expr_with_subqueries(f, &schema, &record)?
@@ -675,7 +679,7 @@ impl ConcurrentPlanExecutor {
                 };
 
                 if !matches {
-                    new_table.push_row(row_values)?;
+                    new_table.push_row(record.into_values())?;
                 }
             }
         } else {
@@ -716,7 +720,7 @@ impl ConcurrentPlanExecutor {
                 for row_idx in 0..table_n {
                     let row_values: Vec<Value> =
                         table_cols.iter().map(|c| c.get_value(row_idx)).collect();
-                    let record = Record::from_values(row_values.clone());
+                    let record = Record::from_values(row_values);
                     let matches = filter
                         .map(|f| evaluator.evaluate(f, &record))
                         .transpose()?
@@ -724,7 +728,7 @@ impl ConcurrentPlanExecutor {
                         .unwrap_or(true);
 
                     if !matches {
-                        new_table.push_row(row_values)?;
+                        new_table.push_row(record.into_values())?;
                     }
                 }
             }

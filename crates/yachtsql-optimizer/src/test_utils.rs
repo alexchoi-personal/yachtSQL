@@ -3,7 +3,7 @@ use yachtsql_common::types::DataType;
 use yachtsql_parser::{CatalogProvider, FunctionDefinition, ViewDefinition, parse_and_plan};
 use yachtsql_storage::{Field, Schema};
 
-use crate::{OptimizedLogicalPlan, optimize};
+use crate::{PhysicalPlan, optimize};
 
 pub(crate) struct MockCatalog {
     tables: FxHashMap<String, Schema>,
@@ -69,12 +69,12 @@ pub(crate) fn test_catalog() -> MockCatalog {
         .with_table("products", products_schema())
 }
 
-pub(crate) fn optimize_sql<C: CatalogProvider>(sql: &str, catalog: &C) -> OptimizedLogicalPlan {
+pub(crate) fn optimize_sql<C: CatalogProvider>(sql: &str, catalog: &C) -> PhysicalPlan {
     let logical = parse_and_plan(sql, catalog).expect("failed to parse SQL");
     optimize(&logical).expect("failed to optimize plan")
 }
 
-pub(crate) fn optimize_sql_default(sql: &str) -> OptimizedLogicalPlan {
+pub(crate) fn optimize_sql_default(sql: &str) -> PhysicalPlan {
     optimize_sql(sql, &test_catalog())
 }
 
@@ -83,7 +83,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, TableScan { table_name: $name:expr }) => {
         match &$plan {
-            OptimizedLogicalPlan::TableScan { table_name, .. } => {
+            PhysicalPlan::TableScan { table_name, .. } => {
                 assert_eq!(table_name, $name, "TableScan table_name mismatch");
             }
             other => panic!(
@@ -95,7 +95,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, TableScan { table_name: $name:expr, projection: $proj:expr }) => {
         match &$plan {
-            OptimizedLogicalPlan::TableScan {
+            PhysicalPlan::TableScan {
                 table_name,
                 projection,
                 ..
@@ -112,7 +112,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, Filter { input: ($($input:tt)+) }) => {
         match &$plan {
-            OptimizedLogicalPlan::Filter { input, .. } => {
+            PhysicalPlan::Filter { input, .. } => {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Filter, got {:?}", std::mem::discriminant(other)),
@@ -121,7 +121,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, Filter { input: ($($input:tt)+), predicate: _ }) => {
         match &$plan {
-            OptimizedLogicalPlan::Filter { input, .. } => {
+            PhysicalPlan::Filter { input, .. } => {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Filter, got {:?}", std::mem::discriminant(other)),
@@ -130,7 +130,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, Project { input: ($($input:tt)+) }) => {
         match &$plan {
-            OptimizedLogicalPlan::Project { input, .. } => {
+            PhysicalPlan::Project { input, .. } => {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Project, got {:?}", std::mem::discriminant(other)),
@@ -139,7 +139,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, HashJoin { left: ($($left:tt)+), right: ($($right:tt)+), join_type: $jt:expr }) => {
         match &$plan {
-            OptimizedLogicalPlan::HashJoin {
+            PhysicalPlan::HashJoin {
                 left,
                 right,
                 join_type,
@@ -158,7 +158,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, HashJoin { left: ($($left:tt)+), right: ($($right:tt)+) }) => {
         match &$plan {
-            OptimizedLogicalPlan::HashJoin { left, right, .. } => {
+            PhysicalPlan::HashJoin { left, right, .. } => {
                 assert_plan!(**left, $($left)+);
                 assert_plan!(**right, $($right)+);
             }
@@ -171,7 +171,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, NestedLoopJoin { left: ($($left:tt)+), right: ($($right:tt)+), join_type: $jt:expr }) => {
         match &$plan {
-            OptimizedLogicalPlan::NestedLoopJoin {
+            PhysicalPlan::NestedLoopJoin {
                 left,
                 right,
                 join_type,
@@ -190,7 +190,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, CrossJoin { left: ($($left:tt)+), right: ($($right:tt)+) }) => {
         match &$plan {
-            OptimizedLogicalPlan::CrossJoin { left, right, .. } => {
+            PhysicalPlan::CrossJoin { left, right, .. } => {
                 assert_plan!(**left, $($left)+);
                 assert_plan!(**right, $($right)+);
             }
@@ -203,7 +203,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, Sort { input: ($($input:tt)+) }) => {
         match &$plan {
-            OptimizedLogicalPlan::Sort { input, .. } => {
+            PhysicalPlan::Sort { input, .. } => {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Sort, got {:?}", std::mem::discriminant(other)),
@@ -212,7 +212,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, Limit { input: ($($input:tt)+) }) => {
         match &$plan {
-            OptimizedLogicalPlan::Limit { input, .. } => {
+            PhysicalPlan::Limit { input, .. } => {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Limit, got {:?}", std::mem::discriminant(other)),
@@ -221,7 +221,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, Limit { input: ($($input:tt)+), limit: $lim:expr }) => {
         match &$plan {
-            OptimizedLogicalPlan::Limit { input, limit, .. } => {
+            PhysicalPlan::Limit { input, limit, .. } => {
                 assert_eq!(*limit, $lim, "Limit value mismatch");
                 assert_plan!(**input, $($input)+);
             }
@@ -231,7 +231,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, TopN { input: ($($input:tt)+), limit: $lim:expr }) => {
         match &$plan {
-            OptimizedLogicalPlan::TopN { input, limit, .. } => {
+            PhysicalPlan::TopN { input, limit, .. } => {
                 assert_eq!(*limit, $lim, "TopN limit mismatch");
                 assert_plan!(**input, $($input)+);
             }
@@ -241,7 +241,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, TopN { input: ($($input:tt)+) }) => {
         match &$plan {
-            OptimizedLogicalPlan::TopN { input, .. } => {
+            PhysicalPlan::TopN { input, .. } => {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected TopN, got {:?}", std::mem::discriminant(other)),
@@ -250,7 +250,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, HashAggregate { input: ($($input:tt)+) }) => {
         match &$plan {
-            OptimizedLogicalPlan::HashAggregate { input, .. } => {
+            PhysicalPlan::HashAggregate { input, .. } => {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
@@ -262,7 +262,7 @@ macro_rules! assert_plan {
 
     ($plan:expr, Distinct { input: ($($input:tt)+) }) => {
         match &$plan {
-            OptimizedLogicalPlan::Distinct { input } => {
+            PhysicalPlan::Distinct { input } => {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(

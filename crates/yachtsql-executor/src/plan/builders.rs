@@ -1,24 +1,25 @@
 #![coverage(off)]
 
-use yachtsql_optimizer::OptimizedLogicalPlan;
+use yachtsql_optimizer::PhysicalPlan as OptimizerPlan;
 
 use super::{ExecutionHints, PARALLEL_ROW_THRESHOLD, PhysicalPlan};
 
 impl PhysicalPlan {
-    pub fn from_physical(plan: &OptimizedLogicalPlan) -> Self {
+    pub fn from_physical(plan: &OptimizerPlan) -> Self {
         match plan {
-            OptimizedLogicalPlan::TableScan {
+            OptimizerPlan::TableScan {
                 table_name,
                 schema,
                 projection,
+                row_count,
             } => PhysicalPlan::TableScan {
                 table_name: table_name.clone(),
                 schema: schema.clone(),
                 projection: projection.clone(),
-                row_count: None,
+                row_count: *row_count,
             },
 
-            OptimizedLogicalPlan::Sample {
+            OptimizerPlan::Sample {
                 input,
                 sample_type,
                 sample_value,
@@ -28,12 +29,12 @@ impl PhysicalPlan {
                 sample_value: *sample_value,
             },
 
-            OptimizedLogicalPlan::Filter { input, predicate } => PhysicalPlan::Filter {
+            OptimizerPlan::Filter { input, predicate } => PhysicalPlan::Filter {
                 input: Box::new(Self::from_physical(input)),
                 predicate: predicate.clone(),
             },
 
-            OptimizedLogicalPlan::Project {
+            OptimizerPlan::Project {
                 input,
                 expressions,
                 schema,
@@ -43,12 +44,13 @@ impl PhysicalPlan {
                 schema: schema.clone(),
             },
 
-            OptimizedLogicalPlan::NestedLoopJoin {
+            OptimizerPlan::NestedLoopJoin {
                 left,
                 right,
                 join_type,
                 condition,
                 schema,
+                ..
             } => {
                 let left_plan = Box::new(Self::from_physical(left));
                 let right_plan = Box::new(Self::from_physical(right));
@@ -64,10 +66,11 @@ impl PhysicalPlan {
                 }
             }
 
-            OptimizedLogicalPlan::CrossJoin {
+            OptimizerPlan::CrossJoin {
                 left,
                 right,
                 schema,
+                ..
             } => {
                 let left_plan = Box::new(Self::from_physical(left));
                 let right_plan = Box::new(Self::from_physical(right));
@@ -81,13 +84,14 @@ impl PhysicalPlan {
                 }
             }
 
-            OptimizedLogicalPlan::HashJoin {
+            OptimizerPlan::HashJoin {
                 left,
                 right,
                 join_type,
                 left_keys,
                 right_keys,
                 schema,
+                ..
             } => {
                 let left_plan = Box::new(Self::from_physical(left));
                 let right_plan = Box::new(Self::from_physical(right));
@@ -104,12 +108,13 @@ impl PhysicalPlan {
                 }
             }
 
-            OptimizedLogicalPlan::HashAggregate {
+            OptimizerPlan::HashAggregate {
                 input,
                 group_by,
                 aggregates,
                 schema,
                 grouping_sets,
+                ..
             } => PhysicalPlan::HashAggregate {
                 input: Box::new(Self::from_physical(input)),
                 group_by: group_by.clone(),
@@ -119,13 +124,15 @@ impl PhysicalPlan {
                 hints: ExecutionHints::default(),
             },
 
-            OptimizedLogicalPlan::Sort { input, sort_exprs } => PhysicalPlan::Sort {
+            OptimizerPlan::Sort {
+                input, sort_exprs, ..
+            } => PhysicalPlan::Sort {
                 input: Box::new(Self::from_physical(input)),
                 sort_exprs: sort_exprs.clone(),
                 hints: ExecutionHints::default(),
             },
 
-            OptimizedLogicalPlan::Limit {
+            OptimizerPlan::Limit {
                 input,
                 limit,
                 offset,
@@ -135,7 +142,7 @@ impl PhysicalPlan {
                 offset: *offset,
             },
 
-            OptimizedLogicalPlan::TopN {
+            OptimizerPlan::TopN {
                 input,
                 sort_exprs,
                 limit,
@@ -145,14 +152,15 @@ impl PhysicalPlan {
                 limit: *limit,
             },
 
-            OptimizedLogicalPlan::Distinct { input } => PhysicalPlan::Distinct {
+            OptimizerPlan::Distinct { input } => PhysicalPlan::Distinct {
                 input: Box::new(Self::from_physical(input)),
             },
 
-            OptimizedLogicalPlan::Union {
+            OptimizerPlan::Union {
                 inputs,
                 all,
                 schema,
+                ..
             } => {
                 let input_plans: Vec<_> = inputs.iter().map(Self::from_physical).collect();
                 let parallel = Self::should_parallelize_union(&input_plans);
@@ -165,11 +173,12 @@ impl PhysicalPlan {
                 }
             }
 
-            OptimizedLogicalPlan::Intersect {
+            OptimizerPlan::Intersect {
                 left,
                 right,
                 all,
                 schema,
+                ..
             } => {
                 let left_plan = Box::new(Self::from_physical(left));
                 let right_plan = Box::new(Self::from_physical(right));
@@ -184,11 +193,12 @@ impl PhysicalPlan {
                 }
             }
 
-            OptimizedLogicalPlan::Except {
+            OptimizerPlan::Except {
                 left,
                 right,
                 all,
                 schema,
+                ..
             } => {
                 let left_plan = Box::new(Self::from_physical(left));
                 let right_plan = Box::new(Self::from_physical(right));
@@ -203,10 +213,11 @@ impl PhysicalPlan {
                 }
             }
 
-            OptimizedLogicalPlan::Window {
+            OptimizerPlan::Window {
                 input,
                 window_exprs,
                 schema,
+                ..
             } => PhysicalPlan::Window {
                 input: Box::new(Self::from_physical(input)),
                 window_exprs: window_exprs.clone(),
@@ -214,7 +225,7 @@ impl PhysicalPlan {
                 hints: ExecutionHints::default(),
             },
 
-            OptimizedLogicalPlan::Unnest {
+            OptimizerPlan::Unnest {
                 input,
                 columns,
                 schema,
@@ -224,12 +235,12 @@ impl PhysicalPlan {
                 schema: schema.clone(),
             },
 
-            OptimizedLogicalPlan::Qualify { input, predicate } => PhysicalPlan::Qualify {
+            OptimizerPlan::Qualify { input, predicate } => PhysicalPlan::Qualify {
                 input: Box::new(Self::from_physical(input)),
                 predicate: predicate.clone(),
             },
 
-            OptimizedLogicalPlan::WithCte { ctes, body } => {
+            OptimizerPlan::WithCte { ctes, body, .. } => {
                 let parallel_ctes: Vec<usize> = ctes
                     .iter()
                     .enumerate()
@@ -252,16 +263,16 @@ impl PhysicalPlan {
                 }
             }
 
-            OptimizedLogicalPlan::Values { values, schema } => PhysicalPlan::Values {
+            OptimizerPlan::Values { values, schema } => PhysicalPlan::Values {
                 values: values.clone(),
                 schema: schema.clone(),
             },
 
-            OptimizedLogicalPlan::Empty { schema } => PhysicalPlan::Empty {
+            OptimizerPlan::Empty { schema } => PhysicalPlan::Empty {
                 schema: schema.clone(),
             },
 
-            OptimizedLogicalPlan::Insert {
+            OptimizerPlan::Insert {
                 table_name,
                 columns,
                 source,
@@ -271,7 +282,7 @@ impl PhysicalPlan {
                 source: Box::new(Self::from_physical(source)),
             },
 
-            OptimizedLogicalPlan::Update {
+            OptimizerPlan::Update {
                 table_name,
                 alias,
                 assignments,
@@ -285,7 +296,7 @@ impl PhysicalPlan {
                 filter: filter.clone(),
             },
 
-            OptimizedLogicalPlan::Delete {
+            OptimizerPlan::Delete {
                 table_name,
                 alias,
                 filter,
@@ -295,7 +306,7 @@ impl PhysicalPlan {
                 filter: filter.clone(),
             },
 
-            OptimizedLogicalPlan::Merge {
+            OptimizerPlan::Merge {
                 target_table,
                 source,
                 on,
@@ -307,7 +318,7 @@ impl PhysicalPlan {
                 clauses: clauses.clone(),
             },
 
-            OptimizedLogicalPlan::CreateTable {
+            OptimizerPlan::CreateTable {
                 table_name,
                 columns,
                 if_not_exists,
@@ -321,7 +332,7 @@ impl PhysicalPlan {
                 query: query.as_ref().map(|q| Box::new(Self::from_physical(q))),
             },
 
-            OptimizedLogicalPlan::DropTable {
+            OptimizerPlan::DropTable {
                 table_names,
                 if_exists,
             } => PhysicalPlan::DropTable {
@@ -329,7 +340,7 @@ impl PhysicalPlan {
                 if_exists: *if_exists,
             },
 
-            OptimizedLogicalPlan::AlterTable {
+            OptimizerPlan::AlterTable {
                 table_name,
                 operation,
                 if_exists,
@@ -339,11 +350,11 @@ impl PhysicalPlan {
                 if_exists: *if_exists,
             },
 
-            OptimizedLogicalPlan::Truncate { table_name } => PhysicalPlan::Truncate {
+            OptimizerPlan::Truncate { table_name } => PhysicalPlan::Truncate {
                 table_name: table_name.clone(),
             },
 
-            OptimizedLogicalPlan::CreateView {
+            OptimizerPlan::CreateView {
                 name,
                 query,
                 query_sql,
@@ -359,12 +370,12 @@ impl PhysicalPlan {
                 if_not_exists: *if_not_exists,
             },
 
-            OptimizedLogicalPlan::DropView { name, if_exists } => PhysicalPlan::DropView {
+            OptimizerPlan::DropView { name, if_exists } => PhysicalPlan::DropView {
                 name: name.clone(),
                 if_exists: *if_exists,
             },
 
-            OptimizedLogicalPlan::CreateSchema {
+            OptimizerPlan::CreateSchema {
                 name,
                 if_not_exists,
                 or_replace,
@@ -374,7 +385,7 @@ impl PhysicalPlan {
                 or_replace: *or_replace,
             },
 
-            OptimizedLogicalPlan::DropSchema {
+            OptimizerPlan::DropSchema {
                 name,
                 if_exists,
                 cascade,
@@ -384,7 +395,7 @@ impl PhysicalPlan {
                 cascade: *cascade,
             },
 
-            OptimizedLogicalPlan::UndropSchema {
+            OptimizerPlan::UndropSchema {
                 name,
                 if_not_exists,
             } => PhysicalPlan::UndropSchema {
@@ -392,12 +403,12 @@ impl PhysicalPlan {
                 if_not_exists: *if_not_exists,
             },
 
-            OptimizedLogicalPlan::AlterSchema { name, options } => PhysicalPlan::AlterSchema {
+            OptimizerPlan::AlterSchema { name, options } => PhysicalPlan::AlterSchema {
                 name: name.clone(),
                 options: options.clone(),
             },
 
-            OptimizedLogicalPlan::CreateFunction {
+            OptimizerPlan::CreateFunction {
                 name,
                 args,
                 return_type,
@@ -417,12 +428,12 @@ impl PhysicalPlan {
                 is_aggregate: *is_aggregate,
             },
 
-            OptimizedLogicalPlan::DropFunction { name, if_exists } => PhysicalPlan::DropFunction {
+            OptimizerPlan::DropFunction { name, if_exists } => PhysicalPlan::DropFunction {
                 name: name.clone(),
                 if_exists: *if_exists,
             },
 
-            OptimizedLogicalPlan::CreateProcedure {
+            OptimizerPlan::CreateProcedure {
                 name,
                 args,
                 body,
@@ -436,14 +447,12 @@ impl PhysicalPlan {
                 if_not_exists: *if_not_exists,
             },
 
-            OptimizedLogicalPlan::DropProcedure { name, if_exists } => {
-                PhysicalPlan::DropProcedure {
-                    name: name.clone(),
-                    if_exists: *if_exists,
-                }
-            }
+            OptimizerPlan::DropProcedure { name, if_exists } => PhysicalPlan::DropProcedure {
+                name: name.clone(),
+                if_exists: *if_exists,
+            },
 
-            OptimizedLogicalPlan::Call {
+            OptimizerPlan::Call {
                 procedure_name,
                 args,
             } => PhysicalPlan::Call {
@@ -451,12 +460,12 @@ impl PhysicalPlan {
                 args: args.clone(),
             },
 
-            OptimizedLogicalPlan::ExportData { options, query } => PhysicalPlan::ExportData {
+            OptimizerPlan::ExportData { options, query } => PhysicalPlan::ExportData {
                 options: options.clone(),
                 query: Box::new(Self::from_physical(query)),
             },
 
-            OptimizedLogicalPlan::LoadData {
+            OptimizerPlan::LoadData {
                 table_name,
                 options,
                 temp_table,
@@ -468,7 +477,7 @@ impl PhysicalPlan {
                 temp_schema: temp_schema.clone(),
             },
 
-            OptimizedLogicalPlan::Declare {
+            OptimizerPlan::Declare {
                 name,
                 data_type,
                 default,
@@ -478,19 +487,19 @@ impl PhysicalPlan {
                 default: default.clone(),
             },
 
-            OptimizedLogicalPlan::SetVariable { name, value } => PhysicalPlan::SetVariable {
+            OptimizerPlan::SetVariable { name, value } => PhysicalPlan::SetVariable {
                 name: name.clone(),
                 value: value.clone(),
             },
 
-            OptimizedLogicalPlan::SetMultipleVariables { names, value } => {
+            OptimizerPlan::SetMultipleVariables { names, value } => {
                 PhysicalPlan::SetMultipleVariables {
                     names: names.clone(),
                     value: value.clone(),
                 }
             }
 
-            OptimizedLogicalPlan::If {
+            OptimizerPlan::If {
                 condition,
                 then_branch,
                 else_branch,
@@ -502,7 +511,7 @@ impl PhysicalPlan {
                     .map(|b| b.iter().map(Self::from_physical).collect()),
             },
 
-            OptimizedLogicalPlan::While {
+            OptimizerPlan::While {
                 condition,
                 body,
                 label,
@@ -512,17 +521,17 @@ impl PhysicalPlan {
                 label: label.clone(),
             },
 
-            OptimizedLogicalPlan::Loop { body, label } => PhysicalPlan::Loop {
+            OptimizerPlan::Loop { body, label } => PhysicalPlan::Loop {
                 body: body.iter().map(Self::from_physical).collect(),
                 label: label.clone(),
             },
 
-            OptimizedLogicalPlan::Block { body, label } => PhysicalPlan::Block {
+            OptimizerPlan::Block { body, label } => PhysicalPlan::Block {
                 body: body.iter().map(Self::from_physical).collect(),
                 label: label.clone(),
             },
 
-            OptimizedLogicalPlan::Repeat {
+            OptimizerPlan::Repeat {
                 body,
                 until_condition,
             } => PhysicalPlan::Repeat {
@@ -530,7 +539,7 @@ impl PhysicalPlan {
                 until_condition: until_condition.clone(),
             },
 
-            OptimizedLogicalPlan::For {
+            OptimizerPlan::For {
                 variable,
                 query,
                 body,
@@ -540,16 +549,16 @@ impl PhysicalPlan {
                 body: body.iter().map(Self::from_physical).collect(),
             },
 
-            OptimizedLogicalPlan::Return { value } => PhysicalPlan::Return {
+            OptimizerPlan::Return { value } => PhysicalPlan::Return {
                 value: value.clone(),
             },
 
-            OptimizedLogicalPlan::Raise { message, level } => PhysicalPlan::Raise {
+            OptimizerPlan::Raise { message, level } => PhysicalPlan::Raise {
                 message: message.clone(),
                 level: *level,
             },
 
-            OptimizedLogicalPlan::ExecuteImmediate {
+            OptimizerPlan::ExecuteImmediate {
                 sql_expr,
                 into_variables,
                 using_params,
@@ -559,15 +568,15 @@ impl PhysicalPlan {
                 using_params: using_params.clone(),
             },
 
-            OptimizedLogicalPlan::Break { label } => PhysicalPlan::Break {
+            OptimizerPlan::Break { label } => PhysicalPlan::Break {
                 label: label.clone(),
             },
 
-            OptimizedLogicalPlan::Continue { label } => PhysicalPlan::Continue {
+            OptimizerPlan::Continue { label } => PhysicalPlan::Continue {
                 label: label.clone(),
             },
 
-            OptimizedLogicalPlan::CreateSnapshot {
+            OptimizerPlan::CreateSnapshot {
                 snapshot_name,
                 source_name,
                 if_not_exists,
@@ -577,7 +586,7 @@ impl PhysicalPlan {
                 if_not_exists: *if_not_exists,
             },
 
-            OptimizedLogicalPlan::DropSnapshot {
+            OptimizerPlan::DropSnapshot {
                 snapshot_name,
                 if_exists,
             } => PhysicalPlan::DropSnapshot {
@@ -585,12 +594,12 @@ impl PhysicalPlan {
                 if_exists: *if_exists,
             },
 
-            OptimizedLogicalPlan::Assert { condition, message } => PhysicalPlan::Assert {
+            OptimizerPlan::Assert { condition, message } => PhysicalPlan::Assert {
                 condition: condition.clone(),
                 message: message.clone(),
             },
 
-            OptimizedLogicalPlan::Grant {
+            OptimizerPlan::Grant {
                 roles,
                 resource_type,
                 resource_name,
@@ -602,7 +611,7 @@ impl PhysicalPlan {
                 grantees: grantees.clone(),
             },
 
-            OptimizedLogicalPlan::Revoke {
+            OptimizerPlan::Revoke {
                 roles,
                 resource_type,
                 resource_name,
@@ -614,11 +623,11 @@ impl PhysicalPlan {
                 grantees: grantees.clone(),
             },
 
-            OptimizedLogicalPlan::BeginTransaction => PhysicalPlan::BeginTransaction,
-            OptimizedLogicalPlan::Commit => PhysicalPlan::Commit,
-            OptimizedLogicalPlan::Rollback => PhysicalPlan::Rollback,
+            OptimizerPlan::BeginTransaction => PhysicalPlan::BeginTransaction,
+            OptimizerPlan::Commit => PhysicalPlan::Commit,
+            OptimizerPlan::Rollback => PhysicalPlan::Rollback,
 
-            OptimizedLogicalPlan::TryCatch {
+            OptimizerPlan::TryCatch {
                 try_block,
                 catch_block,
             } => PhysicalPlan::TryCatch {
@@ -632,7 +641,7 @@ impl PhysicalPlan {
                     .collect(),
             },
 
-            OptimizedLogicalPlan::GapFill {
+            OptimizerPlan::GapFill {
                 input,
                 ts_column,
                 bucket_width,
@@ -652,18 +661,18 @@ impl PhysicalPlan {
                 schema: schema.clone(),
             },
 
-            OptimizedLogicalPlan::Explain {
+            OptimizerPlan::Explain {
                 input,
                 analyze,
                 logical_plan_text,
+                physical_plan_text,
             } => {
                 let physical_input = Self::from_physical(input);
-                let physical_plan_text = format!("{:#?}", physical_input);
                 PhysicalPlan::Explain {
                     input: Box::new(physical_input),
                     analyze: *analyze,
                     logical_plan_text: logical_plan_text.clone(),
-                    physical_plan_text,
+                    physical_plan_text: physical_plan_text.clone(),
                 }
             }
         }

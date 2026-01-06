@@ -6,126 +6,187 @@ pub use yachtsql_ir::SampleType;
 use yachtsql_ir::{
     AlterTableOp, Assignment, ColumnDef, CteDefinition, DclResourceType, ExportOptions, Expr,
     FunctionArg, FunctionBody, GapFillColumn, JoinType, LoadOptions, MergeClause, PlanSchema,
-    ProcedureArg, RaiseLevel, SortExpr, UnnestColumn,
+    ProcedureArg, RaiseLevel, ScalarFunction, SortExpr, UnnestColumn,
 };
 
+pub const PARALLEL_ROW_THRESHOLD: u64 = 1000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BoundType {
+    Compute,
+    Memory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionHints {
+    pub parallel: bool,
+    pub bound_type: BoundType,
+    pub estimated_rows: u64,
+}
+
+impl Default for ExecutionHints {
+    fn default() -> Self {
+        Self {
+            parallel: false,
+            bound_type: BoundType::Compute,
+            estimated_rows: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum OptimizedLogicalPlan {
+pub enum PhysicalPlan {
     TableScan {
         table_name: String,
         schema: PlanSchema,
         projection: Option<Vec<usize>>,
+        #[serde(default)]
+        row_count: Option<u64>,
     },
 
     Sample {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         sample_type: SampleType,
         sample_value: i64,
     },
 
     Filter {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         predicate: Expr,
     },
 
     Project {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         expressions: Vec<Expr>,
         schema: PlanSchema,
     },
 
     NestedLoopJoin {
-        left: Box<OptimizedLogicalPlan>,
-        right: Box<OptimizedLogicalPlan>,
+        left: Box<PhysicalPlan>,
+        right: Box<PhysicalPlan>,
         join_type: JoinType,
         condition: Option<Expr>,
         schema: PlanSchema,
+        #[serde(default)]
+        parallel: bool,
+        #[serde(default)]
+        hints: ExecutionHints,
     },
 
     CrossJoin {
-        left: Box<OptimizedLogicalPlan>,
-        right: Box<OptimizedLogicalPlan>,
+        left: Box<PhysicalPlan>,
+        right: Box<PhysicalPlan>,
         schema: PlanSchema,
+        #[serde(default)]
+        parallel: bool,
+        #[serde(default)]
+        hints: ExecutionHints,
     },
 
     HashJoin {
-        left: Box<OptimizedLogicalPlan>,
-        right: Box<OptimizedLogicalPlan>,
+        left: Box<PhysicalPlan>,
+        right: Box<PhysicalPlan>,
         join_type: JoinType,
         left_keys: Vec<Expr>,
         right_keys: Vec<Expr>,
         schema: PlanSchema,
+        #[serde(default)]
+        parallel: bool,
+        #[serde(default)]
+        hints: ExecutionHints,
     },
 
     HashAggregate {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         group_by: Vec<Expr>,
         aggregates: Vec<Expr>,
         schema: PlanSchema,
         grouping_sets: Option<Vec<Vec<usize>>>,
+        #[serde(default)]
+        hints: ExecutionHints,
     },
 
     Sort {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         sort_exprs: Vec<SortExpr>,
+        #[serde(default)]
+        hints: ExecutionHints,
     },
 
     Limit {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         limit: Option<usize>,
         offset: Option<usize>,
     },
 
     TopN {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         sort_exprs: Vec<SortExpr>,
         limit: usize,
     },
 
     Distinct {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
     },
 
     Union {
-        inputs: Vec<OptimizedLogicalPlan>,
+        inputs: Vec<PhysicalPlan>,
         all: bool,
         schema: PlanSchema,
+        #[serde(default)]
+        parallel: bool,
+        #[serde(default)]
+        hints: ExecutionHints,
     },
 
     Intersect {
-        left: Box<OptimizedLogicalPlan>,
-        right: Box<OptimizedLogicalPlan>,
+        left: Box<PhysicalPlan>,
+        right: Box<PhysicalPlan>,
         all: bool,
         schema: PlanSchema,
+        #[serde(default)]
+        parallel: bool,
+        #[serde(default)]
+        hints: ExecutionHints,
     },
 
     Except {
-        left: Box<OptimizedLogicalPlan>,
-        right: Box<OptimizedLogicalPlan>,
+        left: Box<PhysicalPlan>,
+        right: Box<PhysicalPlan>,
         all: bool,
         schema: PlanSchema,
+        #[serde(default)]
+        parallel: bool,
+        #[serde(default)]
+        hints: ExecutionHints,
     },
 
     Window {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         window_exprs: Vec<Expr>,
         schema: PlanSchema,
+        #[serde(default)]
+        hints: ExecutionHints,
     },
 
     Unnest {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         columns: Vec<UnnestColumn>,
         schema: PlanSchema,
     },
 
     Qualify {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         predicate: Expr,
     },
 
     WithCte {
         ctes: Vec<CteDefinition>,
-        body: Box<OptimizedLogicalPlan>,
+        body: Box<PhysicalPlan>,
+        #[serde(default)]
+        parallel_ctes: Vec<usize>,
+        #[serde(default)]
+        hints: ExecutionHints,
     },
 
     Values {
@@ -140,14 +201,14 @@ pub enum OptimizedLogicalPlan {
     Insert {
         table_name: String,
         columns: Vec<String>,
-        source: Box<OptimizedLogicalPlan>,
+        source: Box<PhysicalPlan>,
     },
 
     Update {
         table_name: String,
         alias: Option<String>,
         assignments: Vec<Assignment>,
-        from: Option<Box<OptimizedLogicalPlan>>,
+        from: Option<Box<PhysicalPlan>>,
         filter: Option<Expr>,
     },
 
@@ -159,7 +220,7 @@ pub enum OptimizedLogicalPlan {
 
     Merge {
         target_table: String,
-        source: Box<OptimizedLogicalPlan>,
+        source: Box<PhysicalPlan>,
         on: Expr,
         clauses: Vec<MergeClause>,
     },
@@ -169,7 +230,7 @@ pub enum OptimizedLogicalPlan {
         columns: Vec<ColumnDef>,
         if_not_exists: bool,
         or_replace: bool,
-        query: Option<Box<OptimizedLogicalPlan>>,
+        query: Option<Box<PhysicalPlan>>,
     },
 
     DropTable {
@@ -189,7 +250,7 @@ pub enum OptimizedLogicalPlan {
 
     CreateView {
         name: String,
-        query: Box<OptimizedLogicalPlan>,
+        query: Box<PhysicalPlan>,
         query_sql: String,
         column_aliases: Vec<String>,
         or_replace: bool,
@@ -242,7 +303,7 @@ pub enum OptimizedLogicalPlan {
     CreateProcedure {
         name: String,
         args: Vec<ProcedureArg>,
-        body: Vec<OptimizedLogicalPlan>,
+        body: Vec<PhysicalPlan>,
         or_replace: bool,
         if_not_exists: bool,
     },
@@ -259,7 +320,7 @@ pub enum OptimizedLogicalPlan {
 
     ExportData {
         options: ExportOptions,
-        query: Box<OptimizedLogicalPlan>,
+        query: Box<PhysicalPlan>,
     },
 
     LoadData {
@@ -287,35 +348,35 @@ pub enum OptimizedLogicalPlan {
 
     If {
         condition: Expr,
-        then_branch: Vec<OptimizedLogicalPlan>,
-        else_branch: Option<Vec<OptimizedLogicalPlan>>,
+        then_branch: Vec<PhysicalPlan>,
+        else_branch: Option<Vec<PhysicalPlan>>,
     },
 
     While {
         condition: Expr,
-        body: Vec<OptimizedLogicalPlan>,
+        body: Vec<PhysicalPlan>,
         label: Option<String>,
     },
 
     Loop {
-        body: Vec<OptimizedLogicalPlan>,
+        body: Vec<PhysicalPlan>,
         label: Option<String>,
     },
 
     Block {
-        body: Vec<OptimizedLogicalPlan>,
+        body: Vec<PhysicalPlan>,
         label: Option<String>,
     },
 
     Repeat {
-        body: Vec<OptimizedLogicalPlan>,
+        body: Vec<PhysicalPlan>,
         until_condition: Expr,
     },
 
     For {
         variable: String,
-        query: Box<OptimizedLogicalPlan>,
-        body: Vec<OptimizedLogicalPlan>,
+        query: Box<PhysicalPlan>,
+        body: Vec<PhysicalPlan>,
     },
 
     Return {
@@ -378,12 +439,12 @@ pub enum OptimizedLogicalPlan {
     Rollback,
 
     TryCatch {
-        try_block: Vec<(OptimizedLogicalPlan, Option<String>)>,
-        catch_block: Vec<OptimizedLogicalPlan>,
+        try_block: Vec<(PhysicalPlan, Option<String>)>,
+        catch_block: Vec<PhysicalPlan>,
     },
 
     GapFill {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         ts_column: String,
         bucket_width: Expr,
         value_columns: Vec<GapFillColumn>,
@@ -394,83 +455,291 @@ pub enum OptimizedLogicalPlan {
     },
 
     Explain {
-        input: Box<OptimizedLogicalPlan>,
+        input: Box<PhysicalPlan>,
         analyze: bool,
         logical_plan_text: String,
+        #[serde(default)]
+        physical_plan_text: String,
     },
 }
 
-impl OptimizedLogicalPlan {
+impl PhysicalPlan {
     pub fn schema(&self) -> &PlanSchema {
         use yachtsql_ir::EMPTY_SCHEMA;
         match self {
-            OptimizedLogicalPlan::TableScan { schema, .. } => schema,
-            OptimizedLogicalPlan::Sample { input, .. } => input.schema(),
-            OptimizedLogicalPlan::Filter { input, .. } => input.schema(),
-            OptimizedLogicalPlan::Project { schema, .. } => schema,
-            OptimizedLogicalPlan::NestedLoopJoin { schema, .. } => schema,
-            OptimizedLogicalPlan::CrossJoin { schema, .. } => schema,
-            OptimizedLogicalPlan::HashJoin { schema, .. } => schema,
-            OptimizedLogicalPlan::HashAggregate { schema, .. } => schema,
-            OptimizedLogicalPlan::Sort { input, .. } => input.schema(),
-            OptimizedLogicalPlan::Limit { input, .. } => input.schema(),
-            OptimizedLogicalPlan::TopN { input, .. } => input.schema(),
-            OptimizedLogicalPlan::Distinct { input } => input.schema(),
-            OptimizedLogicalPlan::Union { schema, .. } => schema,
-            OptimizedLogicalPlan::Intersect { schema, .. } => schema,
-            OptimizedLogicalPlan::Except { schema, .. } => schema,
-            OptimizedLogicalPlan::Window { schema, .. } => schema,
-            OptimizedLogicalPlan::Unnest { schema, .. } => schema,
-            OptimizedLogicalPlan::Qualify { input, .. } => input.schema(),
-            OptimizedLogicalPlan::WithCte { body, .. } => body.schema(),
-            OptimizedLogicalPlan::Values { schema, .. } => schema,
-            OptimizedLogicalPlan::Empty { schema } => schema,
-            OptimizedLogicalPlan::Insert { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Update { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Delete { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Merge { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::CreateTable { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::DropTable { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::AlterTable { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Truncate { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::CreateView { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::DropView { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::CreateSchema { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::DropSchema { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::UndropSchema { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::AlterSchema { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::CreateFunction { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::DropFunction { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::CreateProcedure { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::DropProcedure { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Call { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::ExportData { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::LoadData { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Declare { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::SetVariable { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::SetMultipleVariables { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::If { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::While { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Loop { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Block { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Repeat { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::For { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Return { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Raise { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::ExecuteImmediate { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Break { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Continue { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::CreateSnapshot { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::DropSnapshot { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Assert { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Grant { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Revoke { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::BeginTransaction => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Commit => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::Rollback => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::TryCatch { .. } => &EMPTY_SCHEMA,
-            OptimizedLogicalPlan::GapFill { schema, .. } => schema,
-            OptimizedLogicalPlan::Explain { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::TableScan { schema, .. } => schema,
+            PhysicalPlan::Sample { input, .. } => input.schema(),
+            PhysicalPlan::Filter { input, .. } => input.schema(),
+            PhysicalPlan::Project { schema, .. } => schema,
+            PhysicalPlan::NestedLoopJoin { schema, .. } => schema,
+            PhysicalPlan::CrossJoin { schema, .. } => schema,
+            PhysicalPlan::HashJoin { schema, .. } => schema,
+            PhysicalPlan::HashAggregate { schema, .. } => schema,
+            PhysicalPlan::Sort { input, .. } => input.schema(),
+            PhysicalPlan::Limit { input, .. } => input.schema(),
+            PhysicalPlan::TopN { input, .. } => input.schema(),
+            PhysicalPlan::Distinct { input } => input.schema(),
+            PhysicalPlan::Union { schema, .. } => schema,
+            PhysicalPlan::Intersect { schema, .. } => schema,
+            PhysicalPlan::Except { schema, .. } => schema,
+            PhysicalPlan::Window { schema, .. } => schema,
+            PhysicalPlan::Unnest { schema, .. } => schema,
+            PhysicalPlan::Qualify { input, .. } => input.schema(),
+            PhysicalPlan::WithCte { body, .. } => body.schema(),
+            PhysicalPlan::Values { schema, .. } => schema,
+            PhysicalPlan::Empty { schema } => schema,
+            PhysicalPlan::Insert { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Update { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Delete { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Merge { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::CreateTable { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::DropTable { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::AlterTable { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Truncate { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::CreateView { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::DropView { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::CreateSchema { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::DropSchema { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::UndropSchema { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::AlterSchema { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::CreateFunction { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::DropFunction { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::CreateProcedure { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::DropProcedure { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Call { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::ExportData { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::LoadData { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Declare { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::SetVariable { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::SetMultipleVariables { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::If { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::While { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Loop { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Block { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Repeat { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::For { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Return { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Raise { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::ExecuteImmediate { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Break { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Continue { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::CreateSnapshot { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::DropSnapshot { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Assert { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Grant { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::Revoke { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::BeginTransaction => &EMPTY_SCHEMA,
+            PhysicalPlan::Commit => &EMPTY_SCHEMA,
+            PhysicalPlan::Rollback => &EMPTY_SCHEMA,
+            PhysicalPlan::TryCatch { .. } => &EMPTY_SCHEMA,
+            PhysicalPlan::GapFill { schema, .. } => schema,
+            PhysicalPlan::Explain { .. } => &EMPTY_SCHEMA,
+        }
+    }
+
+    pub fn estimate_rows(&self) -> u64 {
+        match self {
+            PhysicalPlan::TableScan { row_count, .. } => row_count.unwrap_or(1000),
+            PhysicalPlan::Values { values, .. } => values.len() as u64,
+            PhysicalPlan::Empty { .. } => 0,
+            PhysicalPlan::Filter { input, .. } => {
+                let input_rows = input.estimate_rows();
+                std::cmp::max(1, (input_rows as f64 * 0.33) as u64)
+            }
+            PhysicalPlan::Project { input, .. } => input.estimate_rows(),
+            PhysicalPlan::Sample { sample_value, .. } => *sample_value as u64,
+            PhysicalPlan::NestedLoopJoin { left, right, .. } => {
+                left.estimate_rows().saturating_mul(right.estimate_rows())
+            }
+            PhysicalPlan::HashJoin { left, right, .. } => {
+                let left_rows = left.estimate_rows();
+                let right_rows = right.estimate_rows();
+                let max_rows = std::cmp::max(left_rows, right_rows);
+                if max_rows == 0 {
+                    0
+                } else {
+                    left_rows.saturating_mul(right_rows) / max_rows
+                }
+            }
+            PhysicalPlan::CrossJoin { left, right, .. } => {
+                left.estimate_rows().saturating_mul(right.estimate_rows())
+            }
+            PhysicalPlan::HashAggregate {
+                input, group_by, ..
+            } => {
+                if group_by.is_empty() {
+                    1
+                } else {
+                    std::cmp::max(1, input.estimate_rows() / 10)
+                }
+            }
+            PhysicalPlan::Sort { input, .. } => input.estimate_rows(),
+            PhysicalPlan::Limit { limit, input, .. } => {
+                std::cmp::min(limit.unwrap_or(usize::MAX) as u64, input.estimate_rows())
+            }
+            PhysicalPlan::TopN { limit, input, .. } => {
+                std::cmp::min(*limit as u64, input.estimate_rows())
+            }
+            PhysicalPlan::Distinct { input } => std::cmp::max(1, input.estimate_rows() / 2),
+            PhysicalPlan::Union { inputs, .. } => inputs.iter().map(|p| p.estimate_rows()).sum(),
+            PhysicalPlan::Intersect { left, right, .. } => {
+                std::cmp::min(left.estimate_rows(), right.estimate_rows())
+            }
+            PhysicalPlan::Except { left, .. } => left.estimate_rows(),
+            PhysicalPlan::Window { input, .. } => input.estimate_rows(),
+            PhysicalPlan::Unnest { input, .. } => input.estimate_rows().saturating_mul(10),
+            PhysicalPlan::Qualify { input, .. } => {
+                std::cmp::max(1, (input.estimate_rows() as f64 * 0.33) as u64)
+            }
+            PhysicalPlan::WithCte { body, .. } => body.estimate_rows(),
+            PhysicalPlan::GapFill { input, .. } => input.estimate_rows().saturating_mul(2),
+            _ => 1,
+        }
+    }
+
+    pub fn bound_type(&self) -> BoundType {
+        match self {
+            PhysicalPlan::TableScan { .. }
+            | PhysicalPlan::Values { .. }
+            | PhysicalPlan::Empty { .. } => BoundType::Memory,
+
+            PhysicalPlan::Limit { input, .. } | PhysicalPlan::Sample { input, .. } => {
+                input.bound_type()
+            }
+
+            PhysicalPlan::Filter { input, predicate } => {
+                if input.bound_type() == BoundType::Memory && !Self::is_expensive_expr(predicate) {
+                    BoundType::Memory
+                } else {
+                    BoundType::Compute
+                }
+            }
+
+            PhysicalPlan::Project {
+                input, expressions, ..
+            } => {
+                if input.bound_type() == BoundType::Memory
+                    && expressions.iter().all(|e| !Self::is_expensive_expr(e))
+                {
+                    BoundType::Memory
+                } else {
+                    BoundType::Compute
+                }
+            }
+
+            PhysicalPlan::Distinct { input } => input.bound_type(),
+
+            PhysicalPlan::Sort { .. }
+            | PhysicalPlan::TopN { .. }
+            | PhysicalPlan::HashAggregate { .. }
+            | PhysicalPlan::Window { .. }
+            | PhysicalPlan::NestedLoopJoin { .. }
+            | PhysicalPlan::HashJoin { .. }
+            | PhysicalPlan::CrossJoin { .. }
+            | PhysicalPlan::Union { .. }
+            | PhysicalPlan::Intersect { .. }
+            | PhysicalPlan::Except { .. }
+            | PhysicalPlan::Unnest { .. }
+            | PhysicalPlan::Qualify { .. }
+            | PhysicalPlan::GapFill { .. }
+            | PhysicalPlan::Merge { .. } => BoundType::Compute,
+
+            _ => BoundType::Compute,
+        }
+    }
+
+    pub fn should_parallelize(left: &Self, right: &Self) -> bool {
+        left.estimate_rows() >= PARALLEL_ROW_THRESHOLD
+            && right.estimate_rows() >= PARALLEL_ROW_THRESHOLD
+    }
+
+    pub fn should_parallelize_union(inputs: &[Self]) -> bool {
+        inputs.len() >= 2
+            && inputs
+                .iter()
+                .filter(|p| p.estimate_rows() >= PARALLEL_ROW_THRESHOLD)
+                .count()
+                >= 2
+    }
+
+    fn is_expensive_expr(expr: &Expr) -> bool {
+        match expr {
+            Expr::ScalarFunction { name, args } => {
+                let expensive = matches!(
+                    name,
+                    ScalarFunction::RegexpContains
+                        | ScalarFunction::RegexpExtract
+                        | ScalarFunction::RegexpExtractAll
+                        | ScalarFunction::RegexpInstr
+                        | ScalarFunction::RegexpReplace
+                        | ScalarFunction::RegexpSubstr
+                        | ScalarFunction::JsonExtract
+                        | ScalarFunction::JsonExtractScalar
+                        | ScalarFunction::JsonExtractArray
+                        | ScalarFunction::JsonValue
+                        | ScalarFunction::JsonQuery
+                        | ScalarFunction::ParseJson
+                        | ScalarFunction::ToJson
+                        | ScalarFunction::ToJsonString
+                        | ScalarFunction::Sqrt
+                        | ScalarFunction::Power
+                        | ScalarFunction::Pow
+                        | ScalarFunction::Log
+                        | ScalarFunction::Log10
+                        | ScalarFunction::Exp
+                        | ScalarFunction::Sin
+                        | ScalarFunction::Cos
+                        | ScalarFunction::Tan
+                        | ScalarFunction::Asin
+                        | ScalarFunction::Acos
+                        | ScalarFunction::Atan
+                        | ScalarFunction::Atan2
+                        | ScalarFunction::Sinh
+                        | ScalarFunction::Cosh
+                        | ScalarFunction::Tanh
+                        | ScalarFunction::Md5
+                        | ScalarFunction::Sha1
+                        | ScalarFunction::Sha256
+                        | ScalarFunction::Sha512
+                );
+                expensive || args.iter().any(Self::is_expensive_expr)
+            }
+            Expr::Case {
+                operand,
+                when_clauses,
+                else_result,
+            } => {
+                operand.as_ref().is_some_and(|e| Self::is_expensive_expr(e))
+                    || when_clauses.iter().any(|wc| {
+                        Self::is_expensive_expr(&wc.condition)
+                            || Self::is_expensive_expr(&wc.result)
+                    })
+                    || else_result
+                        .as_ref()
+                        .is_some_and(|e| Self::is_expensive_expr(e))
+            }
+            Expr::Subquery(_) | Expr::ScalarSubquery(_) | Expr::ArraySubquery(_) => true,
+            Expr::BinaryOp { left, right, .. } => {
+                Self::is_expensive_expr(left) || Self::is_expensive_expr(right)
+            }
+            Expr::UnaryOp { expr, .. } => Self::is_expensive_expr(expr),
+            Expr::Like { expr, pattern, .. } => {
+                Self::is_expensive_expr(expr) || Self::is_expensive_expr(pattern)
+            }
+            Expr::InList { expr, list, .. } => {
+                Self::is_expensive_expr(expr) || list.iter().any(Self::is_expensive_expr)
+            }
+            Expr::Between {
+                expr, low, high, ..
+            } => {
+                Self::is_expensive_expr(expr)
+                    || Self::is_expensive_expr(low)
+                    || Self::is_expensive_expr(high)
+            }
+            Expr::Cast { expr, .. } => Self::is_expensive_expr(expr),
+            _ => false,
         }
     }
 }
+
+pub type OptimizedLogicalPlan = PhysicalPlan;

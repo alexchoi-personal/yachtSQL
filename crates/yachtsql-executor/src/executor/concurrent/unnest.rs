@@ -52,16 +52,16 @@ impl ConcurrentPlanExecutor {
             for row_idx in 0..n {
                 let base_values: Vec<Value> =
                     input_columns.iter().map(|c| c.get_value(row_idx)).collect();
-                let record = Record::from_values(base_values.clone());
+                let record = Record::from_values(base_values);
 
                 if columns.is_empty() {
-                    result.push_row(base_values)?;
+                    result.push_row(record.into_values())?;
                     continue;
                 }
 
                 let first_col = &columns[0];
                 let array_val = evaluator.evaluate(&first_col.expr, &record)?;
-                Self::unnest_array(&array_val, first_col, &base_values, &mut result)?;
+                Self::unnest_array(&array_val, first_col, record.values(), &mut result)?;
             }
         }
 
@@ -126,10 +126,10 @@ impl ConcurrentPlanExecutor {
                 .collect();
             for row_idx in 0..n {
                 let values: Vec<Value> = columns.iter().map(|c| c.get_value(row_idx)).collect();
-                let record = Record::from_values(values.clone());
+                let record = Record::from_values(values);
                 let val = evaluator.evaluate(predicate, &record)?;
                 if val.as_bool().unwrap_or(false) {
-                    result.push_row(values)?;
+                    result.push_row(record.into_values())?;
                 }
             }
 

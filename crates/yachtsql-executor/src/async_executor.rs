@@ -84,24 +84,37 @@ impl AsyncQueryExecutor {
     }
 
     fn get_optimizer_settings(&self) -> OptimizerSettings {
+        use yachtsql_optimizer::OptimizationLevel;
+
         let table_stats = self.catalog.collect_table_stats();
+        let join_reorder = self
+            .session
+            .get_variable("OPTIMIZER_JOIN_REORDER")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let filter_pushdown = self
+            .session
+            .get_variable("OPTIMIZER_FILTER_PUSHDOWN")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let projection_pushdown = self
+            .session
+            .get_variable("OPTIMIZER_PROJECTION_PUSHDOWN")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let level = if !filter_pushdown && !projection_pushdown {
+            OptimizationLevel::None
+        } else if filter_pushdown && projection_pushdown {
+            OptimizationLevel::Standard
+        } else {
+            OptimizationLevel::Basic
+        };
+
         OptimizerSettings {
-            join_reorder: self
-                .session
-                .get_variable("OPTIMIZER_JOIN_REORDER")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            filter_pushdown: self
-                .session
-                .get_variable("OPTIMIZER_FILTER_PUSHDOWN")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            projection_pushdown: self
-                .session
-                .get_variable("OPTIMIZER_PROJECTION_PUSHDOWN")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
+            level,
             table_stats,
+            disable_join_reorder: !join_reorder,
         }
     }
 
