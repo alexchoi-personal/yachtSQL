@@ -21,13 +21,13 @@ pub(crate) use utils::{coerce_value, compare_values_for_sort, default_value_for_
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::Value;
 use yachtsql_ir::{Expr, PlanSchema};
-use yachtsql_optimizer::OptimizedLogicalPlan;
+use yachtsql_optimizer::PhysicalPlan as OptimizerPlan;
 use yachtsql_storage::{Record, Schema, Table};
 
 use crate::concurrent_catalog::{ConcurrentCatalog, TableLockSet};
 use crate::concurrent_session::ConcurrentSession;
 pub(crate) use crate::executor::plan_schema_to_schema;
-use crate::plan::PhysicalPlan;
+use crate::plan::{PhysicalPlan, PhysicalPlanExt};
 use crate::value_evaluator::{UserFunctionDef, ValueEvaluator};
 
 #[derive(Clone)]
@@ -141,9 +141,8 @@ impl ConcurrentPlanExecutor {
             .unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn execute(&self, plan: &OptimizedLogicalPlan) -> Result<Table> {
-        let executor_plan = PhysicalPlan::from_physical(plan);
-        self.execute_plan(&executor_plan)
+    pub fn execute(&self, plan: &OptimizerPlan) -> Result<Table> {
+        self.execute_plan(plan)
     }
 
     #[instrument(skip(self))]

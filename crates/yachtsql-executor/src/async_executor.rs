@@ -18,6 +18,7 @@ use crate::concurrent_session::ConcurrentSession;
 use crate::executor::concurrent::ConcurrentPlanExecutor;
 use crate::metrics::QueryMetrics;
 use crate::physical_planner::PhysicalPlanner;
+use crate::plan::PhysicalPlanExt;
 use crate::plan_cache::{CacheInvalidation, PlanCache, get_cache_invalidation};
 
 const PLAN_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10000).unwrap();

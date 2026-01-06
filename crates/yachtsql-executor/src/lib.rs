@@ -41,157 +41,157 @@ use lru::LruCache;
 pub use physical_planner::PhysicalPlanner;
 pub use session::Session;
 pub use value_evaluator::{UserFunctionDef, ValueEvaluator, cast_value};
-use yachtsql_optimizer::OptimizedLogicalPlan;
+use yachtsql_optimizer::PhysicalPlan;
 pub use yachtsql_storage::{Record, Table};
 
 const PLAN_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10000).unwrap();
 
-fn default_plan_cache() -> LruCache<String, OptimizedLogicalPlan> {
+fn default_plan_cache() -> LruCache<String, PhysicalPlan> {
     LruCache::new(PLAN_CACHE_SIZE)
 }
 
-fn is_cacheable_plan(plan: &OptimizedLogicalPlan) -> bool {
+fn is_cacheable_plan(plan: &PhysicalPlan) -> bool {
     match plan {
-        OptimizedLogicalPlan::TableScan { .. }
-        | OptimizedLogicalPlan::Sample { .. }
-        | OptimizedLogicalPlan::Filter { .. }
-        | OptimizedLogicalPlan::Project { .. }
-        | OptimizedLogicalPlan::NestedLoopJoin { .. }
-        | OptimizedLogicalPlan::CrossJoin { .. }
-        | OptimizedLogicalPlan::HashJoin { .. }
-        | OptimizedLogicalPlan::HashAggregate { .. }
-        | OptimizedLogicalPlan::Sort { .. }
-        | OptimizedLogicalPlan::Limit { .. }
-        | OptimizedLogicalPlan::TopN { .. }
-        | OptimizedLogicalPlan::Distinct { .. }
-        | OptimizedLogicalPlan::Union { .. }
-        | OptimizedLogicalPlan::Intersect { .. }
-        | OptimizedLogicalPlan::Except { .. }
-        | OptimizedLogicalPlan::Window { .. }
-        | OptimizedLogicalPlan::Unnest { .. }
-        | OptimizedLogicalPlan::Qualify { .. }
-        | OptimizedLogicalPlan::WithCte { .. }
-        | OptimizedLogicalPlan::Values { .. }
-        | OptimizedLogicalPlan::Empty { .. } => true,
+        PhysicalPlan::TableScan { .. }
+        | PhysicalPlan::Sample { .. }
+        | PhysicalPlan::Filter { .. }
+        | PhysicalPlan::Project { .. }
+        | PhysicalPlan::NestedLoopJoin { .. }
+        | PhysicalPlan::CrossJoin { .. }
+        | PhysicalPlan::HashJoin { .. }
+        | PhysicalPlan::HashAggregate { .. }
+        | PhysicalPlan::Sort { .. }
+        | PhysicalPlan::Limit { .. }
+        | PhysicalPlan::TopN { .. }
+        | PhysicalPlan::Distinct { .. }
+        | PhysicalPlan::Union { .. }
+        | PhysicalPlan::Intersect { .. }
+        | PhysicalPlan::Except { .. }
+        | PhysicalPlan::Window { .. }
+        | PhysicalPlan::Unnest { .. }
+        | PhysicalPlan::Qualify { .. }
+        | PhysicalPlan::WithCte { .. }
+        | PhysicalPlan::Values { .. }
+        | PhysicalPlan::Empty { .. } => true,
 
-        OptimizedLogicalPlan::Insert { .. }
-        | OptimizedLogicalPlan::Update { .. }
-        | OptimizedLogicalPlan::Delete { .. }
-        | OptimizedLogicalPlan::Merge { .. }
-        | OptimizedLogicalPlan::CreateTable { .. }
-        | OptimizedLogicalPlan::DropTable { .. }
-        | OptimizedLogicalPlan::AlterTable { .. }
-        | OptimizedLogicalPlan::Truncate { .. }
-        | OptimizedLogicalPlan::CreateView { .. }
-        | OptimizedLogicalPlan::DropView { .. }
-        | OptimizedLogicalPlan::CreateSchema { .. }
-        | OptimizedLogicalPlan::DropSchema { .. }
-        | OptimizedLogicalPlan::UndropSchema { .. }
-        | OptimizedLogicalPlan::AlterSchema { .. }
-        | OptimizedLogicalPlan::CreateFunction { .. }
-        | OptimizedLogicalPlan::DropFunction { .. }
-        | OptimizedLogicalPlan::CreateProcedure { .. }
-        | OptimizedLogicalPlan::DropProcedure { .. }
-        | OptimizedLogicalPlan::Call { .. }
-        | OptimizedLogicalPlan::ExportData { .. }
-        | OptimizedLogicalPlan::LoadData { .. }
-        | OptimizedLogicalPlan::Declare { .. }
-        | OptimizedLogicalPlan::SetVariable { .. }
-        | OptimizedLogicalPlan::SetMultipleVariables { .. }
-        | OptimizedLogicalPlan::If { .. }
-        | OptimizedLogicalPlan::While { .. }
-        | OptimizedLogicalPlan::Loop { .. }
-        | OptimizedLogicalPlan::Block { .. }
-        | OptimizedLogicalPlan::Repeat { .. }
-        | OptimizedLogicalPlan::For { .. }
-        | OptimizedLogicalPlan::Return { .. }
-        | OptimizedLogicalPlan::Raise { .. }
-        | OptimizedLogicalPlan::ExecuteImmediate { .. }
-        | OptimizedLogicalPlan::Break { .. }
-        | OptimizedLogicalPlan::Continue { .. }
-        | OptimizedLogicalPlan::CreateSnapshot { .. }
-        | OptimizedLogicalPlan::DropSnapshot { .. }
-        | OptimizedLogicalPlan::Assert { .. }
-        | OptimizedLogicalPlan::Grant { .. }
-        | OptimizedLogicalPlan::Revoke { .. }
-        | OptimizedLogicalPlan::BeginTransaction
-        | OptimizedLogicalPlan::Commit
-        | OptimizedLogicalPlan::Rollback
-        | OptimizedLogicalPlan::TryCatch { .. }
-        | OptimizedLogicalPlan::GapFill { .. }
-        | OptimizedLogicalPlan::Explain { .. } => false,
+        PhysicalPlan::Insert { .. }
+        | PhysicalPlan::Update { .. }
+        | PhysicalPlan::Delete { .. }
+        | PhysicalPlan::Merge { .. }
+        | PhysicalPlan::CreateTable { .. }
+        | PhysicalPlan::DropTable { .. }
+        | PhysicalPlan::AlterTable { .. }
+        | PhysicalPlan::Truncate { .. }
+        | PhysicalPlan::CreateView { .. }
+        | PhysicalPlan::DropView { .. }
+        | PhysicalPlan::CreateSchema { .. }
+        | PhysicalPlan::DropSchema { .. }
+        | PhysicalPlan::UndropSchema { .. }
+        | PhysicalPlan::AlterSchema { .. }
+        | PhysicalPlan::CreateFunction { .. }
+        | PhysicalPlan::DropFunction { .. }
+        | PhysicalPlan::CreateProcedure { .. }
+        | PhysicalPlan::DropProcedure { .. }
+        | PhysicalPlan::Call { .. }
+        | PhysicalPlan::ExportData { .. }
+        | PhysicalPlan::LoadData { .. }
+        | PhysicalPlan::Declare { .. }
+        | PhysicalPlan::SetVariable { .. }
+        | PhysicalPlan::SetMultipleVariables { .. }
+        | PhysicalPlan::If { .. }
+        | PhysicalPlan::While { .. }
+        | PhysicalPlan::Loop { .. }
+        | PhysicalPlan::Block { .. }
+        | PhysicalPlan::Repeat { .. }
+        | PhysicalPlan::For { .. }
+        | PhysicalPlan::Return { .. }
+        | PhysicalPlan::Raise { .. }
+        | PhysicalPlan::ExecuteImmediate { .. }
+        | PhysicalPlan::Break { .. }
+        | PhysicalPlan::Continue { .. }
+        | PhysicalPlan::CreateSnapshot { .. }
+        | PhysicalPlan::DropSnapshot { .. }
+        | PhysicalPlan::Assert { .. }
+        | PhysicalPlan::Grant { .. }
+        | PhysicalPlan::Revoke { .. }
+        | PhysicalPlan::BeginTransaction
+        | PhysicalPlan::Commit
+        | PhysicalPlan::Rollback
+        | PhysicalPlan::TryCatch { .. }
+        | PhysicalPlan::GapFill { .. }
+        | PhysicalPlan::Explain { .. } => false,
     }
 }
 
-fn invalidates_cache(plan: &OptimizedLogicalPlan) -> bool {
+fn invalidates_cache(plan: &PhysicalPlan) -> bool {
     match plan {
-        OptimizedLogicalPlan::CreateTable { .. }
-        | OptimizedLogicalPlan::DropTable { .. }
-        | OptimizedLogicalPlan::AlterTable { .. }
-        | OptimizedLogicalPlan::Truncate { .. }
-        | OptimizedLogicalPlan::CreateView { .. }
-        | OptimizedLogicalPlan::DropView { .. }
-        | OptimizedLogicalPlan::CreateSchema { .. }
-        | OptimizedLogicalPlan::DropSchema { .. }
-        | OptimizedLogicalPlan::UndropSchema { .. }
-        | OptimizedLogicalPlan::AlterSchema { .. }
-        | OptimizedLogicalPlan::CreateFunction { .. }
-        | OptimizedLogicalPlan::DropFunction { .. }
-        | OptimizedLogicalPlan::CreateProcedure { .. }
-        | OptimizedLogicalPlan::DropProcedure { .. }
-        | OptimizedLogicalPlan::CreateSnapshot { .. }
-        | OptimizedLogicalPlan::DropSnapshot { .. } => true,
+        PhysicalPlan::CreateTable { .. }
+        | PhysicalPlan::DropTable { .. }
+        | PhysicalPlan::AlterTable { .. }
+        | PhysicalPlan::Truncate { .. }
+        | PhysicalPlan::CreateView { .. }
+        | PhysicalPlan::DropView { .. }
+        | PhysicalPlan::CreateSchema { .. }
+        | PhysicalPlan::DropSchema { .. }
+        | PhysicalPlan::UndropSchema { .. }
+        | PhysicalPlan::AlterSchema { .. }
+        | PhysicalPlan::CreateFunction { .. }
+        | PhysicalPlan::DropFunction { .. }
+        | PhysicalPlan::CreateProcedure { .. }
+        | PhysicalPlan::DropProcedure { .. }
+        | PhysicalPlan::CreateSnapshot { .. }
+        | PhysicalPlan::DropSnapshot { .. } => true,
 
-        OptimizedLogicalPlan::TableScan { .. }
-        | OptimizedLogicalPlan::Sample { .. }
-        | OptimizedLogicalPlan::Filter { .. }
-        | OptimizedLogicalPlan::Project { .. }
-        | OptimizedLogicalPlan::NestedLoopJoin { .. }
-        | OptimizedLogicalPlan::CrossJoin { .. }
-        | OptimizedLogicalPlan::HashJoin { .. }
-        | OptimizedLogicalPlan::HashAggregate { .. }
-        | OptimizedLogicalPlan::Sort { .. }
-        | OptimizedLogicalPlan::Limit { .. }
-        | OptimizedLogicalPlan::TopN { .. }
-        | OptimizedLogicalPlan::Distinct { .. }
-        | OptimizedLogicalPlan::Union { .. }
-        | OptimizedLogicalPlan::Intersect { .. }
-        | OptimizedLogicalPlan::Except { .. }
-        | OptimizedLogicalPlan::Window { .. }
-        | OptimizedLogicalPlan::Unnest { .. }
-        | OptimizedLogicalPlan::Qualify { .. }
-        | OptimizedLogicalPlan::WithCte { .. }
-        | OptimizedLogicalPlan::Values { .. }
-        | OptimizedLogicalPlan::Empty { .. }
-        | OptimizedLogicalPlan::Insert { .. }
-        | OptimizedLogicalPlan::Update { .. }
-        | OptimizedLogicalPlan::Delete { .. }
-        | OptimizedLogicalPlan::Merge { .. }
-        | OptimizedLogicalPlan::Call { .. }
-        | OptimizedLogicalPlan::ExportData { .. }
-        | OptimizedLogicalPlan::LoadData { .. }
-        | OptimizedLogicalPlan::Declare { .. }
-        | OptimizedLogicalPlan::SetVariable { .. }
-        | OptimizedLogicalPlan::SetMultipleVariables { .. }
-        | OptimizedLogicalPlan::If { .. }
-        | OptimizedLogicalPlan::While { .. }
-        | OptimizedLogicalPlan::Loop { .. }
-        | OptimizedLogicalPlan::Block { .. }
-        | OptimizedLogicalPlan::Repeat { .. }
-        | OptimizedLogicalPlan::For { .. }
-        | OptimizedLogicalPlan::Return { .. }
-        | OptimizedLogicalPlan::Raise { .. }
-        | OptimizedLogicalPlan::ExecuteImmediate { .. }
-        | OptimizedLogicalPlan::Break { .. }
-        | OptimizedLogicalPlan::Continue { .. }
-        | OptimizedLogicalPlan::Assert { .. }
-        | OptimizedLogicalPlan::Grant { .. }
-        | OptimizedLogicalPlan::Revoke { .. }
-        | OptimizedLogicalPlan::BeginTransaction
-        | OptimizedLogicalPlan::Commit
-        | OptimizedLogicalPlan::Rollback
-        | OptimizedLogicalPlan::TryCatch { .. }
-        | OptimizedLogicalPlan::GapFill { .. }
-        | OptimizedLogicalPlan::Explain { .. } => false,
+        PhysicalPlan::TableScan { .. }
+        | PhysicalPlan::Sample { .. }
+        | PhysicalPlan::Filter { .. }
+        | PhysicalPlan::Project { .. }
+        | PhysicalPlan::NestedLoopJoin { .. }
+        | PhysicalPlan::CrossJoin { .. }
+        | PhysicalPlan::HashJoin { .. }
+        | PhysicalPlan::HashAggregate { .. }
+        | PhysicalPlan::Sort { .. }
+        | PhysicalPlan::Limit { .. }
+        | PhysicalPlan::TopN { .. }
+        | PhysicalPlan::Distinct { .. }
+        | PhysicalPlan::Union { .. }
+        | PhysicalPlan::Intersect { .. }
+        | PhysicalPlan::Except { .. }
+        | PhysicalPlan::Window { .. }
+        | PhysicalPlan::Unnest { .. }
+        | PhysicalPlan::Qualify { .. }
+        | PhysicalPlan::WithCte { .. }
+        | PhysicalPlan::Values { .. }
+        | PhysicalPlan::Empty { .. }
+        | PhysicalPlan::Insert { .. }
+        | PhysicalPlan::Update { .. }
+        | PhysicalPlan::Delete { .. }
+        | PhysicalPlan::Merge { .. }
+        | PhysicalPlan::Call { .. }
+        | PhysicalPlan::ExportData { .. }
+        | PhysicalPlan::LoadData { .. }
+        | PhysicalPlan::Declare { .. }
+        | PhysicalPlan::SetVariable { .. }
+        | PhysicalPlan::SetMultipleVariables { .. }
+        | PhysicalPlan::If { .. }
+        | PhysicalPlan::While { .. }
+        | PhysicalPlan::Loop { .. }
+        | PhysicalPlan::Block { .. }
+        | PhysicalPlan::Repeat { .. }
+        | PhysicalPlan::For { .. }
+        | PhysicalPlan::Return { .. }
+        | PhysicalPlan::Raise { .. }
+        | PhysicalPlan::ExecuteImmediate { .. }
+        | PhysicalPlan::Break { .. }
+        | PhysicalPlan::Continue { .. }
+        | PhysicalPlan::Assert { .. }
+        | PhysicalPlan::Grant { .. }
+        | PhysicalPlan::Revoke { .. }
+        | PhysicalPlan::BeginTransaction
+        | PhysicalPlan::Commit
+        | PhysicalPlan::Rollback
+        | PhysicalPlan::TryCatch { .. }
+        | PhysicalPlan::GapFill { .. }
+        | PhysicalPlan::Explain { .. } => false,
     }
 }

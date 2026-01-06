@@ -52,7 +52,7 @@ pub use yachtsql_executor::{
     AsyncQueryExecutor, ConcurrentCatalog, ConcurrentSession, Record, Table,
 };
 pub use yachtsql_ir::LogicalPlan;
-pub use yachtsql_optimizer::OptimizedLogicalPlan;
+pub use yachtsql_optimizer::PhysicalPlan;
 pub use yachtsql_parser::{CatalogProvider, Planner, parse_and_plan, parse_sql};
 pub use yachtsql_storage::{Field, FieldMode, Schema};
 

@@ -1,10 +1,10 @@
 #![coverage(off)]
 
-use yachtsql_optimizer::OptimizedLogicalPlan;
+use yachtsql_optimizer::PhysicalPlan;
 
 use crate::concurrent_catalog::ConcurrentCatalog;
 use crate::concurrent_session::ConcurrentSession;
-use crate::plan::{BoundType, ExecutionHints, PARALLEL_ROW_THRESHOLD, PhysicalPlan};
+use crate::plan::{BoundType, ExecutionHints, PARALLEL_ROW_THRESHOLD, PhysicalPlanExt};
 
 pub struct PhysicalPlanner<'a> {
     catalog: &'a ConcurrentCatalog,
@@ -16,8 +16,8 @@ impl<'a> PhysicalPlanner<'a> {
         Self { catalog, session }
     }
 
-    pub(crate) fn plan(&self, logical: &OptimizedLogicalPlan) -> PhysicalPlan {
-        let mut plan = PhysicalPlan::from_physical(logical);
+    pub(crate) fn plan(&self, logical: &PhysicalPlan) -> PhysicalPlan {
+        let mut plan = logical.clone();
         plan.populate_row_counts(self.catalog);
         self.compute_hints(&mut plan);
         plan
@@ -200,11 +200,10 @@ impl<'a> PhysicalPlanner<'a> {
             .enumerate()
             .filter(|(_, cte)| !cte.recursive)
             .filter(|(_, cte)| {
-                if let Ok(optimized) = yachtsql_optimizer::optimize(&cte.query) {
-                    let mut plan = PhysicalPlan::from_physical(&optimized);
-                    plan.populate_row_counts(self.catalog);
-                    plan.bound_type() == BoundType::Compute
-                        && plan.estimate_rows() >= PARALLEL_ROW_THRESHOLD
+                if let Ok(mut optimized) = yachtsql_optimizer::optimize(&cte.query) {
+                    optimized.populate_row_counts(self.catalog);
+                    optimized.bound_type() == BoundType::Compute
+                        && optimized.estimate_rows() >= PARALLEL_ROW_THRESHOLD
                 } else {
                     false
                 }
