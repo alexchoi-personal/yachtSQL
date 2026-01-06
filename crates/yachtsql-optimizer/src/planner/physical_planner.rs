@@ -9,7 +9,7 @@ use super::predicate::{
     classify_predicates_for_join, combine_predicates, remap_predicate_indices,
     split_and_predicates,
 };
-use crate::optimized_logical_plan::OptimizedLogicalPlan;
+use crate::{ExecutionHints, PhysicalPlan};
 
 pub struct PhysicalPlanner {
     filter_pushdown_enabled: bool,
@@ -29,16 +29,17 @@ impl PhysicalPlanner {
     }
 
     #[allow(clippy::only_used_in_recursion)]
-    pub fn plan(&self, logical: &LogicalPlan) -> Result<OptimizedLogicalPlan> {
+    pub fn plan(&self, logical: &LogicalPlan) -> Result<PhysicalPlan> {
         match logical {
             LogicalPlan::Scan {
                 table_name,
                 schema,
                 projection,
-            } => Ok(OptimizedLogicalPlan::TableScan {
+            } => Ok(PhysicalPlan::TableScan {
                 table_name: table_name.clone(),
                 schema: schema.clone(),
                 projection: projection.clone(),
+                row_count: None,
             }),
 
             LogicalPlan::Sample {
@@ -47,7 +48,7 @@ impl PhysicalPlanner {
                 sample_value,
             } => {
                 let input = self.plan(input)?;
-                Ok(OptimizedLogicalPlan::Sample {
+                Ok(PhysicalPlan::Sample {
                     input: Box::new(input),
                     sample_type: *sample_type,
                     sample_value: *sample_value,
@@ -57,7 +58,7 @@ impl PhysicalPlanner {
             LogicalPlan::Filter { input, predicate } => {
                 if !self.filter_pushdown_enabled {
                     let optimized_input = self.plan(input)?;
-                    return Ok(OptimizedLogicalPlan::Filter {
+                    return Ok(PhysicalPlan::Filter {
                         input: Box::new(optimized_input),
                         predicate: predicate.clone(),
                     });
@@ -84,7 +85,7 @@ impl PhysicalPlanner {
                         let optimized_left =
                             if let Some(left_filter) = combine_predicates(left_preds) {
                                 let base_left = self.plan(left)?;
-                                OptimizedLogicalPlan::Filter {
+                                PhysicalPlan::Filter {
                                     input: Box::new(base_left),
                                     predicate: left_filter,
                                 }
@@ -95,7 +96,7 @@ impl PhysicalPlanner {
                         let optimized_right =
                             if let Some(right_filter) = combine_predicates(right_preds) {
                                 let base_right = self.plan(right)?;
-                                OptimizedLogicalPlan::Filter {
+                                PhysicalPlan::Filter {
                                     input: Box::new(base_right),
                                     predicate: right_filter,
                                 }
@@ -107,26 +108,30 @@ impl PhysicalPlanner {
                             && let Some((left_keys, right_keys)) =
                                 extract_equi_join_keys(cond, left_schema_len)
                         {
-                            OptimizedLogicalPlan::HashJoin {
+                            PhysicalPlan::HashJoin {
                                 left: Box::new(optimized_left),
                                 right: Box::new(optimized_right),
                                 join_type: *join_type,
                                 left_keys,
                                 right_keys,
                                 schema: schema.clone(),
+                                parallel: false,
+                                hints: ExecutionHints::default(),
                             }
                         } else {
-                            OptimizedLogicalPlan::NestedLoopJoin {
+                            PhysicalPlan::NestedLoopJoin {
                                 left: Box::new(optimized_left),
                                 right: Box::new(optimized_right),
                                 join_type: *join_type,
                                 condition: condition.clone(),
                                 schema: schema.clone(),
+                                parallel: false,
+                                hints: ExecutionHints::default(),
                             }
                         };
 
                         if let Some(post_filter) = combine_predicates(post_join_preds) {
-                            Ok(OptimizedLogicalPlan::Filter {
+                            Ok(PhysicalPlan::Filter {
                                 input: Box::new(join_plan),
                                 predicate: post_filter,
                             })
@@ -139,11 +144,11 @@ impl PhysicalPlanner {
                         input: distinct_input,
                     } => {
                         let optimized_input = self.plan(distinct_input)?;
-                        let filtered = OptimizedLogicalPlan::Filter {
+                        let filtered = PhysicalPlan::Filter {
                             input: Box::new(optimized_input),
                             predicate: predicate.clone(),
                         };
-                        Ok(OptimizedLogicalPlan::Distinct {
+                        Ok(PhysicalPlan::Distinct {
                             input: Box::new(filtered),
                         })
                     }
@@ -171,7 +176,7 @@ impl PhysicalPlanner {
                         let optimized_input =
                             if let Some(push_filter) = combine_predicates(remapped_pushable) {
                                 let base_input = self.plan(agg_input)?;
-                                OptimizedLogicalPlan::Filter {
+                                PhysicalPlan::Filter {
                                     input: Box::new(base_input),
                                     predicate: push_filter,
                                 }
@@ -179,16 +184,17 @@ impl PhysicalPlanner {
                                 self.plan(agg_input)?
                             };
 
-                        let agg_plan = OptimizedLogicalPlan::HashAggregate {
+                        let agg_plan = PhysicalPlan::HashAggregate {
                             input: Box::new(optimized_input),
                             group_by: group_by.clone(),
                             aggregates: aggregates.clone(),
                             schema: schema.clone(),
                             grouping_sets: grouping_sets.clone(),
+                            hints: ExecutionHints::default(),
                         };
 
                         if let Some(post_filter) = combine_predicates(post_agg) {
-                            Ok(OptimizedLogicalPlan::Filter {
+                            Ok(PhysicalPlan::Filter {
                                 input: Box::new(agg_plan),
                                 predicate: post_filter,
                             })
@@ -212,7 +218,7 @@ impl PhysicalPlanner {
                         let optimized_input =
                             if let Some(push_filter) = combine_predicates(pushable) {
                                 let base_input = self.plan(window_input)?;
-                                OptimizedLogicalPlan::Filter {
+                                PhysicalPlan::Filter {
                                     input: Box::new(base_input),
                                     predicate: push_filter,
                                 }
@@ -220,14 +226,15 @@ impl PhysicalPlanner {
                                 self.plan(window_input)?
                             };
 
-                        let window_plan = OptimizedLogicalPlan::Window {
+                        let window_plan = PhysicalPlan::Window {
                             input: Box::new(optimized_input),
                             window_exprs: window_exprs.clone(),
                             schema: schema.clone(),
+                            hints: ExecutionHints::default(),
                         };
 
                         if let Some(post_filter) = combine_predicates(post_window) {
-                            Ok(OptimizedLogicalPlan::Filter {
+                            Ok(PhysicalPlan::Filter {
                                 input: Box::new(window_plan),
                                 predicate: post_filter,
                             })
@@ -238,7 +245,7 @@ impl PhysicalPlanner {
 
                     _ => {
                         let optimized_input = self.plan(input)?;
-                        Ok(OptimizedLogicalPlan::Filter {
+                        Ok(PhysicalPlan::Filter {
                             input: Box::new(optimized_input),
                             predicate: predicate.clone(),
                         })
@@ -252,7 +259,7 @@ impl PhysicalPlanner {
                 schema,
             } => {
                 let input = self.plan(input)?;
-                Ok(OptimizedLogicalPlan::Project {
+                Ok(PhysicalPlan::Project {
                     input: Box::new(input),
                     expressions: expressions.clone(),
                     schema: schema.clone(),
@@ -267,12 +274,13 @@ impl PhysicalPlanner {
                 grouping_sets,
             } => {
                 let input = self.plan(input)?;
-                Ok(OptimizedLogicalPlan::HashAggregate {
+                Ok(PhysicalPlan::HashAggregate {
                     input: Box::new(input),
                     group_by: group_by.clone(),
                     aggregates: aggregates.clone(),
                     schema: schema.clone(),
                     grouping_sets: grouping_sets.clone(),
+                    hints: ExecutionHints::default(),
                 })
             }
 
@@ -287,31 +295,37 @@ impl PhysicalPlanner {
                 let optimized_left = self.plan(left)?;
                 let optimized_right = self.plan(right)?;
                 match join_type {
-                    JoinType::Cross => Ok(OptimizedLogicalPlan::CrossJoin {
+                    JoinType::Cross => Ok(PhysicalPlan::CrossJoin {
                         left: Box::new(optimized_left),
                         right: Box::new(optimized_right),
                         schema: schema.clone(),
+                        parallel: false,
+                        hints: ExecutionHints::default(),
                     }),
                     JoinType::Inner => {
                         if let Some(cond) = condition
                             && let Some((left_keys, right_keys)) =
                                 extract_equi_join_keys(cond, left_schema_len)
                         {
-                            return Ok(OptimizedLogicalPlan::HashJoin {
+                            return Ok(PhysicalPlan::HashJoin {
                                 left: Box::new(optimized_left),
                                 right: Box::new(optimized_right),
                                 join_type: *join_type,
                                 left_keys,
                                 right_keys,
                                 schema: schema.clone(),
+                                parallel: false,
+                                hints: ExecutionHints::default(),
                             });
                         }
-                        Ok(OptimizedLogicalPlan::NestedLoopJoin {
+                        Ok(PhysicalPlan::NestedLoopJoin {
                             left: Box::new(optimized_left),
                             right: Box::new(optimized_right),
                             join_type: *join_type,
                             condition: condition.clone(),
                             schema: schema.clone(),
+                            parallel: false,
+                            hints: ExecutionHints::default(),
                         })
                     }
                     JoinType::Left | JoinType::Right | JoinType::Full => {
@@ -319,21 +333,25 @@ impl PhysicalPlanner {
                             && let Some((left_keys, right_keys)) =
                                 extract_equi_join_keys(cond, left_schema_len)
                         {
-                            return Ok(OptimizedLogicalPlan::HashJoin {
+                            return Ok(PhysicalPlan::HashJoin {
                                 left: Box::new(optimized_left),
                                 right: Box::new(optimized_right),
                                 join_type: *join_type,
                                 left_keys,
                                 right_keys,
                                 schema: schema.clone(),
+                                parallel: false,
+                                hints: ExecutionHints::default(),
                             });
                         }
-                        Ok(OptimizedLogicalPlan::NestedLoopJoin {
+                        Ok(PhysicalPlan::NestedLoopJoin {
                             left: Box::new(optimized_left),
                             right: Box::new(optimized_right),
                             join_type: *join_type,
                             condition: condition.clone(),
                             schema: schema.clone(),
+                            parallel: false,
+                            hints: ExecutionHints::default(),
                         })
                     }
                 }
@@ -341,9 +359,10 @@ impl PhysicalPlanner {
 
             LogicalPlan::Sort { input, sort_exprs } => {
                 let input = self.plan(input)?;
-                Ok(OptimizedLogicalPlan::Sort {
+                Ok(PhysicalPlan::Sort {
                     input: Box::new(input),
                     sort_exprs: sort_exprs.clone(),
+                    hints: ExecutionHints::default(),
                 })
             }
 
@@ -355,17 +374,17 @@ impl PhysicalPlanner {
 
             LogicalPlan::Distinct { input } => {
                 let input = self.plan(input)?;
-                Ok(OptimizedLogicalPlan::Distinct {
+                Ok(PhysicalPlan::Distinct {
                     input: Box::new(input),
                 })
             }
 
-            LogicalPlan::Values { values, schema } => Ok(OptimizedLogicalPlan::Values {
+            LogicalPlan::Values { values, schema } => Ok(PhysicalPlan::Values {
                 values: values.clone(),
                 schema: schema.clone(),
             }),
 
-            LogicalPlan::Empty { schema } => Ok(OptimizedLogicalPlan::Empty {
+            LogicalPlan::Empty { schema } => Ok(PhysicalPlan::Empty {
                 schema: schema.clone(),
             }),
 
@@ -379,22 +398,28 @@ impl PhysicalPlanner {
                 let left = self.plan(left)?;
                 let right = self.plan(right)?;
                 match op {
-                    SetOperationType::Union => Ok(OptimizedLogicalPlan::Union {
+                    SetOperationType::Union => Ok(PhysicalPlan::Union {
                         inputs: vec![left, right],
                         all: *all,
                         schema: schema.clone(),
+                        parallel: false,
+                        hints: ExecutionHints::default(),
                     }),
-                    SetOperationType::Intersect => Ok(OptimizedLogicalPlan::Intersect {
+                    SetOperationType::Intersect => Ok(PhysicalPlan::Intersect {
                         left: Box::new(left),
                         right: Box::new(right),
                         all: *all,
                         schema: schema.clone(),
+                        parallel: false,
+                        hints: ExecutionHints::default(),
                     }),
-                    SetOperationType::Except => Ok(OptimizedLogicalPlan::Except {
+                    SetOperationType::Except => Ok(PhysicalPlan::Except {
                         left: Box::new(left),
                         right: Box::new(right),
                         all: *all,
                         schema: schema.clone(),
+                        parallel: false,
+                        hints: ExecutionHints::default(),
                     }),
                 }
             }
@@ -405,10 +430,11 @@ impl PhysicalPlanner {
                 schema,
             } => {
                 let input = self.plan(input)?;
-                Ok(OptimizedLogicalPlan::Window {
+                Ok(PhysicalPlan::Window {
                     input: Box::new(input),
                     window_exprs: window_exprs.clone(),
                     schema: schema.clone(),
+                    hints: ExecutionHints::default(),
                 })
             }
 
@@ -436,9 +462,11 @@ impl PhysicalPlanner {
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
-                Ok(OptimizedLogicalPlan::WithCte {
+                Ok(PhysicalPlan::WithCte {
                     ctes: optimized_ctes,
                     body: Box::new(optimized_body),
+                    parallel_ctes: Vec::new(),
+                    hints: ExecutionHints::default(),
                 })
             }
 
@@ -448,7 +476,7 @@ impl PhysicalPlanner {
                 schema,
             } => {
                 let input = self.plan(input)?;
-                Ok(OptimizedLogicalPlan::Unnest {
+                Ok(PhysicalPlan::Unnest {
                     input: Box::new(input),
                     columns: columns.clone(),
                     schema: schema.clone(),
@@ -457,7 +485,7 @@ impl PhysicalPlanner {
 
             LogicalPlan::Qualify { input, predicate } => {
                 let input = self.plan(input)?;
-                Ok(OptimizedLogicalPlan::Qualify {
+                Ok(PhysicalPlan::Qualify {
                     input: Box::new(input),
                     predicate: predicate.clone(),
                 })
@@ -469,7 +497,7 @@ impl PhysicalPlanner {
                 source,
             } => {
                 let source = self.plan(source)?;
-                Ok(OptimizedLogicalPlan::Insert {
+                Ok(PhysicalPlan::Insert {
                     table_name: table_name.clone(),
                     columns: columns.clone(),
                     source: Box::new(source),
@@ -487,7 +515,7 @@ impl PhysicalPlanner {
                     Some(plan) => Some(Box::new(self.plan(plan)?)),
                     None => None,
                 };
-                Ok(OptimizedLogicalPlan::Update {
+                Ok(PhysicalPlan::Update {
                     table_name: table_name.clone(),
                     alias: alias.clone(),
                     assignments: assignments.clone(),
@@ -500,7 +528,7 @@ impl PhysicalPlanner {
                 table_name,
                 alias,
                 filter,
-            } => Ok(OptimizedLogicalPlan::Delete {
+            } => Ok(PhysicalPlan::Delete {
                 table_name: table_name.clone(),
                 alias: alias.clone(),
                 filter: filter.clone(),
@@ -513,7 +541,7 @@ impl PhysicalPlanner {
                 clauses,
             } => {
                 let source = self.plan(source)?;
-                Ok(OptimizedLogicalPlan::Merge {
+                Ok(PhysicalPlan::Merge {
                     target_table: target_table.clone(),
                     source: Box::new(source),
                     on: on.clone(),
@@ -533,7 +561,7 @@ impl PhysicalPlanner {
                 } else {
                     None
                 };
-                Ok(OptimizedLogicalPlan::CreateTable {
+                Ok(PhysicalPlan::CreateTable {
                     table_name: table_name.clone(),
                     columns: columns.clone(),
                     if_not_exists: *if_not_exists,
@@ -545,7 +573,7 @@ impl PhysicalPlanner {
             LogicalPlan::DropTable {
                 table_names,
                 if_exists,
-            } => Ok(OptimizedLogicalPlan::DropTable {
+            } => Ok(PhysicalPlan::DropTable {
                 table_names: table_names.clone(),
                 if_exists: *if_exists,
             }),
@@ -554,13 +582,13 @@ impl PhysicalPlanner {
                 table_name,
                 operation,
                 if_exists,
-            } => Ok(OptimizedLogicalPlan::AlterTable {
+            } => Ok(PhysicalPlan::AlterTable {
                 table_name: table_name.clone(),
                 operation: operation.clone(),
                 if_exists: *if_exists,
             }),
 
-            LogicalPlan::Truncate { table_name } => Ok(OptimizedLogicalPlan::Truncate {
+            LogicalPlan::Truncate { table_name } => Ok(PhysicalPlan::Truncate {
                 table_name: table_name.clone(),
             }),
 
@@ -573,7 +601,7 @@ impl PhysicalPlanner {
                 if_not_exists,
             } => {
                 let query = self.plan(query)?;
-                Ok(OptimizedLogicalPlan::CreateView {
+                Ok(PhysicalPlan::CreateView {
                     name: name.clone(),
                     query: Box::new(query),
                     query_sql: query_sql.clone(),
@@ -583,7 +611,7 @@ impl PhysicalPlanner {
                 })
             }
 
-            LogicalPlan::DropView { name, if_exists } => Ok(OptimizedLogicalPlan::DropView {
+            LogicalPlan::DropView { name, if_exists } => Ok(PhysicalPlan::DropView {
                 name: name.clone(),
                 if_exists: *if_exists,
             }),
@@ -592,7 +620,7 @@ impl PhysicalPlanner {
                 name,
                 if_not_exists,
                 or_replace,
-            } => Ok(OptimizedLogicalPlan::CreateSchema {
+            } => Ok(PhysicalPlan::CreateSchema {
                 name: name.clone(),
                 if_not_exists: *if_not_exists,
                 or_replace: *or_replace,
@@ -602,7 +630,7 @@ impl PhysicalPlanner {
                 name,
                 if_exists,
                 cascade,
-            } => Ok(OptimizedLogicalPlan::DropSchema {
+            } => Ok(PhysicalPlan::DropSchema {
                 name: name.clone(),
                 if_exists: *if_exists,
                 cascade: *cascade,
@@ -611,12 +639,12 @@ impl PhysicalPlanner {
             LogicalPlan::UndropSchema {
                 name,
                 if_not_exists,
-            } => Ok(OptimizedLogicalPlan::UndropSchema {
+            } => Ok(PhysicalPlan::UndropSchema {
                 name: name.clone(),
                 if_not_exists: *if_not_exists,
             }),
 
-            LogicalPlan::AlterSchema { name, options } => Ok(OptimizedLogicalPlan::AlterSchema {
+            LogicalPlan::AlterSchema { name, options } => Ok(PhysicalPlan::AlterSchema {
                 name: name.clone(),
                 options: options.clone(),
             }),
@@ -630,7 +658,7 @@ impl PhysicalPlanner {
                 if_not_exists,
                 is_temp,
                 is_aggregate,
-            } => Ok(OptimizedLogicalPlan::CreateFunction {
+            } => Ok(PhysicalPlan::CreateFunction {
                 name: name.clone(),
                 args: args.clone(),
                 return_type: return_type.clone(),
@@ -641,12 +669,10 @@ impl PhysicalPlanner {
                 is_aggregate: *is_aggregate,
             }),
 
-            LogicalPlan::DropFunction { name, if_exists } => {
-                Ok(OptimizedLogicalPlan::DropFunction {
-                    name: name.clone(),
-                    if_exists: *if_exists,
-                })
-            }
+            LogicalPlan::DropFunction { name, if_exists } => Ok(PhysicalPlan::DropFunction {
+                name: name.clone(),
+                if_exists: *if_exists,
+            }),
 
             LogicalPlan::CreateProcedure {
                 name,
@@ -659,7 +685,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|stmt| self.plan(stmt))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(OptimizedLogicalPlan::CreateProcedure {
+                Ok(PhysicalPlan::CreateProcedure {
                     name: name.clone(),
                     args: args.clone(),
                     body,
@@ -668,24 +694,22 @@ impl PhysicalPlanner {
                 })
             }
 
-            LogicalPlan::DropProcedure { name, if_exists } => {
-                Ok(OptimizedLogicalPlan::DropProcedure {
-                    name: name.clone(),
-                    if_exists: *if_exists,
-                })
-            }
+            LogicalPlan::DropProcedure { name, if_exists } => Ok(PhysicalPlan::DropProcedure {
+                name: name.clone(),
+                if_exists: *if_exists,
+            }),
 
             LogicalPlan::Call {
                 procedure_name,
                 args,
-            } => Ok(OptimizedLogicalPlan::Call {
+            } => Ok(PhysicalPlan::Call {
                 procedure_name: procedure_name.clone(),
                 args: args.clone(),
             }),
 
             LogicalPlan::ExportData { options, query } => {
                 let query = self.plan(query)?;
-                Ok(OptimizedLogicalPlan::ExportData {
+                Ok(PhysicalPlan::ExportData {
                     options: options.clone(),
                     query: Box::new(query),
                 })
@@ -696,7 +720,7 @@ impl PhysicalPlanner {
                 options,
                 temp_table,
                 temp_schema,
-            } => Ok(OptimizedLogicalPlan::LoadData {
+            } => Ok(PhysicalPlan::LoadData {
                 table_name: table_name.clone(),
                 options: options.clone(),
                 temp_table: *temp_table,
@@ -707,19 +731,19 @@ impl PhysicalPlanner {
                 name,
                 data_type,
                 default,
-            } => Ok(OptimizedLogicalPlan::Declare {
+            } => Ok(PhysicalPlan::Declare {
                 name: name.clone(),
                 data_type: data_type.clone(),
                 default: default.clone(),
             }),
 
-            LogicalPlan::SetVariable { name, value } => Ok(OptimizedLogicalPlan::SetVariable {
+            LogicalPlan::SetVariable { name, value } => Ok(PhysicalPlan::SetVariable {
                 name: name.clone(),
                 value: value.clone(),
             }),
 
             LogicalPlan::SetMultipleVariables { names, value } => {
-                Ok(OptimizedLogicalPlan::SetMultipleVariables {
+                Ok(PhysicalPlan::SetMultipleVariables {
                     names: names.clone(),
                     value: value.clone(),
                 })
@@ -743,7 +767,7 @@ impl PhysicalPlanner {
                             .collect::<Result<Vec<_>>>()
                     })
                     .transpose()?;
-                Ok(OptimizedLogicalPlan::If {
+                Ok(PhysicalPlan::If {
                     condition: condition.clone(),
                     then_branch,
                     else_branch,
@@ -759,7 +783,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|p| self.plan(p))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(OptimizedLogicalPlan::While {
+                Ok(PhysicalPlan::While {
                     condition: condition.clone(),
                     body,
                     label: label.clone(),
@@ -771,7 +795,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|p| self.plan(p))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(OptimizedLogicalPlan::Loop {
+                Ok(PhysicalPlan::Loop {
                     body,
                     label: label.clone(),
                 })
@@ -782,7 +806,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|p| self.plan(p))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(OptimizedLogicalPlan::Block {
+                Ok(PhysicalPlan::Block {
                     body,
                     label: label.clone(),
                 })
@@ -796,7 +820,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|p| self.plan(p))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(OptimizedLogicalPlan::Repeat {
+                Ok(PhysicalPlan::Repeat {
                     body,
                     until_condition: until_condition.clone(),
                 })
@@ -812,18 +836,18 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|p| self.plan(p))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(OptimizedLogicalPlan::For {
+                Ok(PhysicalPlan::For {
                     variable: variable.clone(),
                     query: Box::new(query),
                     body,
                 })
             }
 
-            LogicalPlan::Return { value } => Ok(OptimizedLogicalPlan::Return {
+            LogicalPlan::Return { value } => Ok(PhysicalPlan::Return {
                 value: value.clone(),
             }),
 
-            LogicalPlan::Raise { message, level } => Ok(OptimizedLogicalPlan::Raise {
+            LogicalPlan::Raise { message, level } => Ok(PhysicalPlan::Raise {
                 message: message.clone(),
                 level: *level,
             }),
@@ -832,17 +856,17 @@ impl PhysicalPlanner {
                 sql_expr,
                 into_variables,
                 using_params,
-            } => Ok(OptimizedLogicalPlan::ExecuteImmediate {
+            } => Ok(PhysicalPlan::ExecuteImmediate {
                 sql_expr: sql_expr.clone(),
                 into_variables: into_variables.clone(),
                 using_params: using_params.clone(),
             }),
 
-            LogicalPlan::Break { label } => Ok(OptimizedLogicalPlan::Break {
+            LogicalPlan::Break { label } => Ok(PhysicalPlan::Break {
                 label: label.clone(),
             }),
 
-            LogicalPlan::Continue { label } => Ok(OptimizedLogicalPlan::Continue {
+            LogicalPlan::Continue { label } => Ok(PhysicalPlan::Continue {
                 label: label.clone(),
             }),
 
@@ -850,7 +874,7 @@ impl PhysicalPlanner {
                 snapshot_name,
                 source_name,
                 if_not_exists,
-            } => Ok(OptimizedLogicalPlan::CreateSnapshot {
+            } => Ok(PhysicalPlan::CreateSnapshot {
                 snapshot_name: snapshot_name.clone(),
                 source_name: source_name.clone(),
                 if_not_exists: *if_not_exists,
@@ -859,12 +883,12 @@ impl PhysicalPlanner {
             LogicalPlan::DropSnapshot {
                 snapshot_name,
                 if_exists,
-            } => Ok(OptimizedLogicalPlan::DropSnapshot {
+            } => Ok(PhysicalPlan::DropSnapshot {
                 snapshot_name: snapshot_name.clone(),
                 if_exists: *if_exists,
             }),
 
-            LogicalPlan::Assert { condition, message } => Ok(OptimizedLogicalPlan::Assert {
+            LogicalPlan::Assert { condition, message } => Ok(PhysicalPlan::Assert {
                 condition: condition.clone(),
                 message: message.clone(),
             }),
@@ -874,7 +898,7 @@ impl PhysicalPlanner {
                 resource_type,
                 resource_name,
                 grantees,
-            } => Ok(OptimizedLogicalPlan::Grant {
+            } => Ok(PhysicalPlan::Grant {
                 roles: roles.clone(),
                 resource_type: resource_type.clone(),
                 resource_name: resource_name.clone(),
@@ -886,16 +910,16 @@ impl PhysicalPlanner {
                 resource_type,
                 resource_name,
                 grantees,
-            } => Ok(OptimizedLogicalPlan::Revoke {
+            } => Ok(PhysicalPlan::Revoke {
                 roles: roles.clone(),
                 resource_type: resource_type.clone(),
                 resource_name: resource_name.clone(),
                 grantees: grantees.clone(),
             }),
 
-            LogicalPlan::BeginTransaction => Ok(OptimizedLogicalPlan::BeginTransaction),
-            LogicalPlan::Commit => Ok(OptimizedLogicalPlan::Commit),
-            LogicalPlan::Rollback => Ok(OptimizedLogicalPlan::Rollback),
+            LogicalPlan::BeginTransaction => Ok(PhysicalPlan::BeginTransaction),
+            LogicalPlan::Commit => Ok(PhysicalPlan::Commit),
+            LogicalPlan::Rollback => Ok(PhysicalPlan::Rollback),
 
             LogicalPlan::TryCatch {
                 try_block,
@@ -909,7 +933,7 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|p| self.plan(p))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(OptimizedLogicalPlan::TryCatch {
+                Ok(PhysicalPlan::TryCatch {
                     try_block,
                     catch_block,
                 })
@@ -924,7 +948,7 @@ impl PhysicalPlanner {
                 origin,
                 input_schema,
                 schema,
-            } => Ok(OptimizedLogicalPlan::GapFill {
+            } => Ok(PhysicalPlan::GapFill {
                 input: Box::new(self.plan(input)?),
                 ts_column: ts_column.clone(),
                 bucket_width: bucket_width.clone(),
@@ -938,10 +962,12 @@ impl PhysicalPlanner {
             LogicalPlan::Explain { input, analyze } => {
                 let logical_text = format!("{:#?}", input);
                 let optimized_input = self.plan(input)?;
-                Ok(OptimizedLogicalPlan::Explain {
+                let physical_text = format!("{:#?}", optimized_input);
+                Ok(PhysicalPlan::Explain {
                     input: Box::new(optimized_input),
                     analyze: *analyze,
                     logical_plan_text: logical_text,
+                    physical_plan_text: physical_text,
                 })
             }
         }
@@ -952,7 +978,7 @@ impl PhysicalPlanner {
         input: &LogicalPlan,
         limit: Option<usize>,
         offset: Option<usize>,
-    ) -> Result<OptimizedLogicalPlan> {
+    ) -> Result<PhysicalPlan> {
         match (input, limit, offset) {
             (
                 LogicalPlan::Sort {
@@ -963,7 +989,7 @@ impl PhysicalPlanner {
                 None,
             ) => {
                 let optimized_input = self.plan(sort_input)?;
-                Ok(OptimizedLogicalPlan::TopN {
+                Ok(PhysicalPlan::TopN {
                     input: Box::new(optimized_input),
                     sort_exprs: sort_exprs.clone(),
                     limit: limit_val,
@@ -971,7 +997,7 @@ impl PhysicalPlanner {
             }
             _ => {
                 let optimized_input = self.plan(input)?;
-                Ok(OptimizedLogicalPlan::Limit {
+                Ok(PhysicalPlan::Limit {
                     input: Box::new(optimized_input),
                     limit,
                     offset,

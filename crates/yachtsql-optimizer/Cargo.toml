@@ -27,3 +27,7 @@ yachtsql-storage = { version = "0.1.4", path = "../yachtsql-storage" }
 [[bench]]
 name = "optimizer_bench"
 harness = false
+
+[[bench]]
+name = "optimization_levels"
+harness = false

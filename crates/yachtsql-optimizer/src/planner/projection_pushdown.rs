@@ -4,7 +4,7 @@ use rustc_hash::FxHashSet;
 use yachtsql_ir::Expr;
 
 use super::predicate::collect_column_indices_into;
-use crate::optimized_logical_plan::OptimizedLogicalPlan;
+use crate::PhysicalPlan;
 
 #[derive(Clone, Default)]
 pub struct RequiredColumns {
@@ -40,7 +40,7 @@ impl RequiredColumns {
 pub struct ProjectionPushdown;
 
 impl ProjectionPushdown {
-    pub fn optimize(plan: OptimizedLogicalPlan) -> OptimizedLogicalPlan {
+    pub fn optimize(plan: PhysicalPlan) -> PhysicalPlan {
         let schema_len = plan.schema().fields.len();
         let required = RequiredColumns::all(schema_len);
         Self::push_required(plan, required)
@@ -50,15 +50,13 @@ impl ProjectionPushdown {
         collect_column_indices_into(expr, &mut required.indices);
     }
 
-    fn push_required(
-        plan: OptimizedLogicalPlan,
-        required: RequiredColumns,
-    ) -> OptimizedLogicalPlan {
+    fn push_required(plan: PhysicalPlan, required: RequiredColumns) -> PhysicalPlan {
         match plan {
-            OptimizedLogicalPlan::TableScan {
+            PhysicalPlan::TableScan {
                 table_name,
                 schema,
                 projection,
+                row_count,
             } => {
                 let new_projection = if required.indices.len() < schema.fields.len() {
                     let mut cols: Vec<_> = required.iter().collect();
@@ -67,24 +65,25 @@ impl ProjectionPushdown {
                 } else {
                     projection
                 };
-                OptimizedLogicalPlan::TableScan {
+                PhysicalPlan::TableScan {
                     table_name,
                     schema,
                     projection: new_projection,
+                    row_count,
                 }
             }
 
-            OptimizedLogicalPlan::Filter { input, predicate } => {
+            PhysicalPlan::Filter { input, predicate } => {
                 let mut input_required = required;
                 Self::extract_required_columns(&predicate, &mut input_required);
                 let optimized_input = Self::push_required(*input, input_required);
-                OptimizedLogicalPlan::Filter {
+                PhysicalPlan::Filter {
                     input: Box::new(optimized_input),
                     predicate,
                 }
             }
 
-            OptimizedLogicalPlan::Project {
+            PhysicalPlan::Project {
                 input,
                 expressions,
                 schema,
@@ -96,20 +95,22 @@ impl ProjectionPushdown {
                     }
                 }
                 let optimized_input = Self::push_required(*input, input_required);
-                OptimizedLogicalPlan::Project {
+                PhysicalPlan::Project {
                     input: Box::new(optimized_input),
                     expressions,
                     schema,
                 }
             }
 
-            OptimizedLogicalPlan::HashJoin {
+            PhysicalPlan::HashJoin {
                 left,
                 right,
                 join_type,
                 left_keys,
                 right_keys,
                 schema,
+                parallel,
+                hints,
             } => {
                 let left_schema_len = left.schema().fields.len();
 
@@ -134,22 +135,26 @@ impl ProjectionPushdown {
                 let optimized_left = Self::push_required(*left, left_required);
                 let optimized_right = Self::push_required(*right, right_required);
 
-                OptimizedLogicalPlan::HashJoin {
+                PhysicalPlan::HashJoin {
                     left: Box::new(optimized_left),
                     right: Box::new(optimized_right),
                     join_type,
                     left_keys,
                     right_keys,
                     schema,
+                    parallel,
+                    hints,
                 }
             }
 
-            OptimizedLogicalPlan::NestedLoopJoin {
+            PhysicalPlan::NestedLoopJoin {
                 left,
                 right,
                 join_type,
                 condition,
                 schema,
+                parallel,
+                hints,
             } => {
                 let left_schema_len = left.schema().fields.len();
 
@@ -179,19 +184,23 @@ impl ProjectionPushdown {
                 let optimized_left = Self::push_required(*left, left_required);
                 let optimized_right = Self::push_required(*right, right_required);
 
-                OptimizedLogicalPlan::NestedLoopJoin {
+                PhysicalPlan::NestedLoopJoin {
                     left: Box::new(optimized_left),
                     right: Box::new(optimized_right),
                     join_type,
                     condition,
                     schema,
+                    parallel,
+                    hints,
                 }
             }
 
-            OptimizedLogicalPlan::CrossJoin {
+            PhysicalPlan::CrossJoin {
                 left,
                 right,
                 schema,
+                parallel,
+                hints,
             } => {
                 let left_schema_len = left.schema().fields.len();
 
@@ -209,19 +218,22 @@ impl ProjectionPushdown {
                 let optimized_left = Self::push_required(*left, left_required);
                 let optimized_right = Self::push_required(*right, right_required);
 
-                OptimizedLogicalPlan::CrossJoin {
+                PhysicalPlan::CrossJoin {
                     left: Box::new(optimized_left),
                     right: Box::new(optimized_right),
                     schema,
+                    parallel,
+                    hints,
                 }
             }
 
-            OptimizedLogicalPlan::HashAggregate {
+            PhysicalPlan::HashAggregate {
                 input,
                 group_by,
                 aggregates,
                 schema,
                 grouping_sets,
+                hints,
             } => {
                 let mut input_required = RequiredColumns::new();
                 for expr in &group_by {
@@ -231,41 +243,47 @@ impl ProjectionPushdown {
                     Self::extract_required_columns(expr, &mut input_required);
                 }
                 let optimized_input = Self::push_required(*input, input_required);
-                OptimizedLogicalPlan::HashAggregate {
+                PhysicalPlan::HashAggregate {
                     input: Box::new(optimized_input),
                     group_by,
                     aggregates,
                     schema,
                     grouping_sets,
+                    hints,
                 }
             }
 
-            OptimizedLogicalPlan::Sort { input, sort_exprs } => {
+            PhysicalPlan::Sort {
+                input,
+                sort_exprs,
+                hints,
+            } => {
                 let mut input_required = required;
                 for sort_expr in &sort_exprs {
                     Self::extract_required_columns(&sort_expr.expr, &mut input_required);
                 }
                 let optimized_input = Self::push_required(*input, input_required);
-                OptimizedLogicalPlan::Sort {
+                PhysicalPlan::Sort {
                     input: Box::new(optimized_input),
                     sort_exprs,
+                    hints,
                 }
             }
 
-            OptimizedLogicalPlan::Limit {
+            PhysicalPlan::Limit {
                 input,
                 limit,
                 offset,
             } => {
                 let optimized_input = Self::push_required(*input, required);
-                OptimizedLogicalPlan::Limit {
+                PhysicalPlan::Limit {
                     input: Box::new(optimized_input),
                     limit,
                     offset,
                 }
             }
 
-            OptimizedLogicalPlan::TopN {
+            PhysicalPlan::TopN {
                 input,
                 sort_exprs,
                 limit,
@@ -275,72 +293,85 @@ impl ProjectionPushdown {
                     Self::extract_required_columns(&sort_expr.expr, &mut input_required);
                 }
                 let optimized_input = Self::push_required(*input, input_required);
-                OptimizedLogicalPlan::TopN {
+                PhysicalPlan::TopN {
                     input: Box::new(optimized_input),
                     sort_exprs,
                     limit,
                 }
             }
 
-            OptimizedLogicalPlan::Distinct { input } => {
+            PhysicalPlan::Distinct { input } => {
                 let optimized_input = Self::push_required(*input, required);
-                OptimizedLogicalPlan::Distinct {
+                PhysicalPlan::Distinct {
                     input: Box::new(optimized_input),
                 }
             }
 
-            OptimizedLogicalPlan::Union {
+            PhysicalPlan::Union {
                 inputs,
                 all,
                 schema,
+                parallel,
+                hints,
             } => {
                 let optimized_inputs = inputs
                     .into_iter()
                     .map(|inp| Self::push_required(inp, required.clone()))
                     .collect();
-                OptimizedLogicalPlan::Union {
+                PhysicalPlan::Union {
                     inputs: optimized_inputs,
                     all,
                     schema,
+                    parallel,
+                    hints,
                 }
             }
 
-            OptimizedLogicalPlan::Intersect {
+            PhysicalPlan::Intersect {
                 left,
                 right,
                 all,
                 schema,
+                parallel,
+                hints,
             } => {
                 let optimized_left = Self::push_required(*left, required.clone());
                 let optimized_right = Self::push_required(*right, required);
-                OptimizedLogicalPlan::Intersect {
+                PhysicalPlan::Intersect {
                     left: Box::new(optimized_left),
                     right: Box::new(optimized_right),
                     all,
                     schema,
+                    parallel,
+                    hints,
                 }
             }
 
-            OptimizedLogicalPlan::Except {
+            PhysicalPlan::Except {
                 left,
                 right,
                 all,
                 schema,
+                parallel,
+                hints,
             } => {
                 let optimized_left = Self::push_required(*left, required.clone());
                 let optimized_right = Self::push_required(*right, required);
-                OptimizedLogicalPlan::Except {
+                PhysicalPlan::Except {
                     left: Box::new(optimized_left),
                     right: Box::new(optimized_right),
                     all,
                     schema,
+                    parallel,
+                    hints,
                 }
             }
 
-            OptimizedLogicalPlan::Window {
+            PhysicalPlan::Window {
                 input,
                 window_exprs,
                 schema,
+                hints,
             } => {
                 let input_schema_len = input.schema().fields.len();
                 let mut input_required = RequiredColumns::new();
@@ -356,14 +387,15 @@ impl ProjectionPushdown {
                 }
 
                 let optimized_input = Self::push_required(*input, input_required);
-                OptimizedLogicalPlan::Window {
+                PhysicalPlan::Window {
                     input: Box::new(optimized_input),
                     window_exprs,
                     schema,
+                    hints,
                 }
             }
 
-            OptimizedLogicalPlan::Unnest {
+            PhysicalPlan::Unnest {
                 input,
                 columns,
                 schema,
@@ -373,37 +405,37 @@ impl ProjectionPushdown {
                     Self::extract_required_columns(&col.expr, &mut input_required);
                 }
                 let optimized_input = Self::push_required(*input, input_required);
-                OptimizedLogicalPlan::Unnest {
+                PhysicalPlan::Unnest {
                     input: Box::new(optimized_input),
                     columns,
                     schema,
                 }
             }
 
-            OptimizedLogicalPlan::Qualify { input, predicate } => {
+            PhysicalPlan::Qualify { input, predicate } => {
                 let mut input_required = required;
                 Self::extract_required_columns(&predicate, &mut input_required);
                 let optimized_input = Self::push_required(*input, input_required);
-                OptimizedLogicalPlan::Qualify {
+                PhysicalPlan::Qualify {
                     input: Box::new(optimized_input),
                     predicate,
                 }
             }
 
-            OptimizedLogicalPlan::Sample {
+            PhysicalPlan::Sample {
                 input,
                 sample_type,
                 sample_value,
             } => {
                 let optimized_input = Self::push_required(*input, required);
-                OptimizedLogicalPlan::Sample {
+                PhysicalPlan::Sample {
                     input: Box::new(optimized_input),
                     sample_type,
                     sample_value,
                 }
             }
 
-            OptimizedLogicalPlan::GapFill {
+            PhysicalPlan::GapFill {
                 input,
                 ts_column,
                 bucket_width,
@@ -416,7 +448,7 @@ impl ProjectionPushdown {
                 let input_schema_len = input.schema().fields.len();
                 let input_required = RequiredColumns::all(input_schema_len);
                 let optimized_input = Self::push_required(*input, input_required);
-                OptimizedLogicalPlan::GapFill {
+                PhysicalPlan::GapFill {
                     input: Box::new(optimized_input),
                     ts_column,
                     bucket_width,
@@ -428,26 +460,35 @@ impl ProjectionPushdown {
                 }
             }
 
-            OptimizedLogicalPlan::WithCte { ctes, body } => {
+            PhysicalPlan::WithCte {
+                ctes,
+                body,
+                parallel_ctes,
+                hints,
+            } => {
                 let optimized_body = Self::push_required(*body, required);
-                OptimizedLogicalPlan::WithCte {
+                PhysicalPlan::WithCte {
                     ctes,
                     body: Box::new(optimized_body),
+                    parallel_ctes,
+                    hints,
                 }
             }
 
-            OptimizedLogicalPlan::Explain {
+            PhysicalPlan::Explain {
                 input,
                 analyze,
                 logical_plan_text,
+                physical_plan_text,
             } => {
                 let input_schema_len = input.schema().fields.len();
                 let input_required = RequiredColumns::all(input_schema_len);
                 let optimized_input = Self::push_required(*input, input_required);
-                OptimizedLogicalPlan::Explain {
+                PhysicalPlan::Explain {
                     input: Box::new(optimized_input),
                     analyze,
                     logical_plan_text,
+                    physical_plan_text,
                 }
             }
 

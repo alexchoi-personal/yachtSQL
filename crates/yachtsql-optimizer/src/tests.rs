@@ -859,7 +859,7 @@ mod optimizer_tests {
     use yachtsql_common::types::DataType;
     use yachtsql_ir::{BinaryOp, Expr, JoinType, LogicalPlan, PlanField, PlanSchema, SortExpr};
 
-    use crate::{OptimizedLogicalPlan, PhysicalPlanner};
+    use crate::{PhysicalPlan, PhysicalPlanner};
 
     fn test_schema() -> PlanSchema {
         PlanSchema::from_fields(vec![
@@ -956,7 +956,7 @@ mod optimizer_tests {
         }
     }
 
-    fn optimize(plan: &LogicalPlan) -> OptimizedLogicalPlan {
+    fn optimize(plan: &LogicalPlan) -> PhysicalPlan {
         PhysicalPlanner::new().plan(plan).unwrap()
     }
 
@@ -981,7 +981,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::TopN {
+                PhysicalPlan::TopN {
                     sort_exprs, limit, ..
                 } => {
                     assert_eq!(limit, 10);
@@ -1010,7 +1010,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::Limit { offset, .. } => {
+                PhysicalPlan::Limit { offset, .. } => {
                     assert_eq!(offset, Some(5));
                 }
                 other => panic!("Expected Limit (not TopN due to offset), got {:?}", other),
@@ -1031,7 +1031,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::Sort { sort_exprs, .. } => {
+                PhysicalPlan::Sort { sort_exprs, .. } => {
                     assert_eq!(sort_exprs.len(), 1);
                     assert!(!sort_exprs[0].asc);
                 }
@@ -1050,7 +1050,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::Limit { limit, offset, .. } => {
+                PhysicalPlan::Limit { limit, offset, .. } => {
                     assert_eq!(limit, Some(10));
                     assert_eq!(offset, None);
                 }
@@ -1076,7 +1076,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::Limit { limit, offset, .. } => {
+                PhysicalPlan::Limit { limit, offset, .. } => {
                     assert_eq!(limit, None);
                     assert_eq!(offset, Some(5));
                 }
@@ -1105,10 +1105,10 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::TopN { input, limit, .. } => {
+                PhysicalPlan::TopN { input, limit, .. } => {
                     assert_eq!(limit, 5);
                     match input.as_ref() {
-                        OptimizedLogicalPlan::Filter { .. } => {}
+                        PhysicalPlan::Filter { .. } => {}
                         _ => panic!("Expected Filter under TopN"),
                     }
                 }
@@ -1143,7 +1143,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::HashJoin {
+                PhysicalPlan::HashJoin {
                     join_type,
                     left_keys,
                     right_keys,
@@ -1212,7 +1212,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::HashJoin {
+                PhysicalPlan::HashJoin {
                     left_keys,
                     right_keys,
                     ..
@@ -1237,7 +1237,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::NestedLoopJoin { join_type, .. } => {
+                PhysicalPlan::NestedLoopJoin { join_type, .. } => {
                     assert_eq!(join_type, JoinType::Inner);
                 }
                 other => panic!("Expected NestedLoopJoin (no condition), got {:?}", other),
@@ -1257,7 +1257,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::NestedLoopJoin { .. } => {}
+                PhysicalPlan::NestedLoopJoin { .. } => {}
                 other => panic!("Expected NestedLoopJoin (non-equi), got {:?}", other),
             }
         }
@@ -1275,7 +1275,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::HashJoin { join_type, .. } => {
+                PhysicalPlan::HashJoin { join_type, .. } => {
                     assert_eq!(join_type, JoinType::Left);
                 }
                 other => panic!("Expected HashJoin (left join), got {:?}", other),
@@ -1295,7 +1295,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::HashJoin { join_type, .. } => {
+                PhysicalPlan::HashJoin { join_type, .. } => {
                     assert_eq!(join_type, JoinType::Right);
                 }
                 other => panic!("Expected HashJoin (right join), got {:?}", other),
@@ -1315,7 +1315,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::HashJoin { join_type, .. } => {
+                PhysicalPlan::HashJoin { join_type, .. } => {
                     assert_eq!(join_type, JoinType::Full);
                 }
                 other => panic!("Expected HashJoin (full join), got {:?}", other),
@@ -1335,7 +1335,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::NestedLoopJoin { join_type, .. } => {
+                PhysicalPlan::NestedLoopJoin { join_type, .. } => {
                     assert_eq!(join_type, JoinType::Left);
                 }
                 other => panic!(
@@ -1358,7 +1358,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::NestedLoopJoin { join_type, .. } => {
+                PhysicalPlan::NestedLoopJoin { join_type, .. } => {
                     assert_eq!(join_type, JoinType::Right);
                 }
                 other => panic!(
@@ -1381,7 +1381,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::NestedLoopJoin { join_type, .. } => {
+                PhysicalPlan::NestedLoopJoin { join_type, .. } => {
                     assert_eq!(join_type, JoinType::Full);
                 }
                 other => panic!(
@@ -1404,7 +1404,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::CrossJoin { .. } => {}
+                PhysicalPlan::CrossJoin { .. } => {}
                 other => panic!("Expected CrossJoin, got {:?}", other),
             }
         }
@@ -1422,7 +1422,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match &optimized {
-                OptimizedLogicalPlan::HashJoin { .. } => {}
+                PhysicalPlan::HashJoin { .. } => {}
                 other => panic!("Expected HashJoin, got {:?}", other),
             }
 
@@ -1470,7 +1470,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::HashJoin {
+                PhysicalPlan::HashJoin {
                     left_keys,
                     right_keys,
                     ..
@@ -1515,7 +1515,7 @@ mod optimizer_tests {
             let optimized = optimize(&plan);
 
             match optimized {
-                OptimizedLogicalPlan::HashJoin { .. } => {}
+                PhysicalPlan::HashJoin { .. } => {}
                 other => panic!("Expected HashJoin with qualified columns, got {:?}", other),
             }
         }
@@ -1584,8 +1584,8 @@ mod optimizer_tests {
             let optimized = optimize(&second_join);
 
             match &optimized {
-                OptimizedLogicalPlan::HashJoin { left, .. } => match left.as_ref() {
-                    OptimizedLogicalPlan::HashJoin { .. } => {}
+                PhysicalPlan::HashJoin { left, .. } => match left.as_ref() {
+                    PhysicalPlan::HashJoin { .. } => {}
                     other => panic!("Expected nested HashJoin, got {:?}", other),
                 },
                 other => panic!("Expected outer HashJoin, got {:?}", other),
@@ -1602,8 +1602,8 @@ mod projection_pushdown_tests {
         WindowFunction,
     };
 
-    use crate::OptimizedLogicalPlan;
     use crate::planner::ProjectionPushdown;
+    use crate::{ExecutionHints, PhysicalPlan};
 
     fn make_schema(fields: &[(&str, DataType)]) -> PlanSchema {
         PlanSchema::from_fields(
@@ -1661,16 +1661,17 @@ mod projection_pushdown_tests {
                 ("value", DataType::Float64),
             ]);
 
-            let plan = OptimizedLogicalPlan::TableScan {
+            let plan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let optimized = ProjectionPushdown::optimize(plan);
 
             match optimized {
-                OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::TableScan { projection, .. } => {
                     assert_eq!(projection, None);
                 }
                 other => panic!("Expected TableScan, got {:?}", other),
@@ -1685,16 +1686,17 @@ mod projection_pushdown_tests {
                 ("value", DataType::Float64),
             ]);
 
-            let plan = OptimizedLogicalPlan::TableScan {
+            let plan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: Some(vec![0, 1]),
+                row_count: None,
             };
 
             let optimized = ProjectionPushdown::optimize(plan);
 
             match optimized {
-                OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::TableScan { projection, .. } => {
                     assert_eq!(projection, Some(vec![0, 1]));
                 }
                 other => panic!("Expected TableScan, got {:?}", other),
@@ -1713,19 +1715,20 @@ mod projection_pushdown_tests {
                 ("value", DataType::Float64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let filter = OptimizedLogicalPlan::Filter {
+            let filter = PhysicalPlan::Filter {
                 input: Box::new(scan),
                 predicate: eq(col_idx("id", 0), lit_i64(1)),
             };
 
             let project_schema = make_schema(&[("name", DataType::String)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(filter),
                 expressions: vec![col_idx("name", 1)],
                 schema: project_schema,
@@ -1734,9 +1737,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Filter { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert!(proj.contains(&0));
                             assert!(proj.contains(&1));
@@ -1759,10 +1762,11 @@ mod projection_pushdown_tests {
                 ("e", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let predicate = Expr::BinaryOp {
@@ -1771,13 +1775,13 @@ mod projection_pushdown_tests {
                 right: Box::new(gt(col_idx("c", 2), lit_i64(10))),
             };
 
-            let filter = OptimizedLogicalPlan::Filter {
+            let filter = PhysicalPlan::Filter {
                 input: Box::new(scan),
                 predicate,
             };
 
             let project_schema = make_schema(&[("d", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(filter),
                 expressions: vec![col_idx("d", 3)],
                 schema: project_schema,
@@ -1786,9 +1790,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Filter { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert!(proj.contains(&0));
                             assert!(proj.contains(&1));
@@ -1816,10 +1820,11 @@ mod projection_pushdown_tests {
                 ("c", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let inner_project_schema = make_schema(&[
@@ -1827,14 +1832,14 @@ mod projection_pushdown_tests {
                 ("y", DataType::Int64),
                 ("z", DataType::Int64),
             ]);
-            let inner_project = OptimizedLogicalPlan::Project {
+            let inner_project = PhysicalPlan::Project {
                 input: Box::new(scan),
                 expressions: vec![col_idx("a", 0), col_idx("b", 1), col_idx("c", 2)],
                 schema: inner_project_schema,
             };
 
             let outer_project_schema = make_schema(&[("x", DataType::Int64)]);
-            let outer_project = OptimizedLogicalPlan::Project {
+            let outer_project = PhysicalPlan::Project {
                 input: Box::new(inner_project),
                 expressions: vec![col_idx("x", 0)],
                 schema: outer_project_schema,
@@ -1843,9 +1848,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(outer_project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert_eq!(proj, &vec![0]);
                         }
@@ -1865,14 +1870,15 @@ mod projection_pushdown_tests {
                 ("c", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let project_schema = make_schema(&[("sum", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(scan),
                 expressions: vec![add(col_idx("a", 0), col_idx("b", 1))],
                 schema: project_schema,
@@ -1881,8 +1887,8 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::TableScan { projection, .. } => {
                         let proj = projection.as_ref().expect("Expected projection");
                         assert!(proj.contains(&0));
                         assert!(proj.contains(&1));
@@ -1902,22 +1908,23 @@ mod projection_pushdown_tests {
                 ("c", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let inner_project_schema =
                 make_schema(&[("x", DataType::Int64), ("y", DataType::Int64)]);
-            let inner_project = OptimizedLogicalPlan::Project {
+            let inner_project = PhysicalPlan::Project {
                 input: Box::new(scan),
                 expressions: vec![col_idx("a", 0), col_idx("c", 2)],
                 schema: inner_project_schema,
             };
 
             let outer_project_schema = make_schema(&[("y", DataType::Int64)]);
-            let outer_project = OptimizedLogicalPlan::Project {
+            let outer_project = PhysicalPlan::Project {
                 input: Box::new(inner_project),
                 expressions: vec![col_idx("y", 1)],
                 schema: outer_project_schema,
@@ -1926,9 +1933,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(outer_project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert!(proj.contains(&2));
                         }
@@ -1975,30 +1982,34 @@ mod projection_pushdown_tests {
 
         #[test]
         fn hash_join_splits_required_columns_between_left_and_right() {
-            let left = OptimizedLogicalPlan::TableScan {
+            let left = PhysicalPlan::TableScan {
                 table_name: "users".to_string(),
                 schema: users_schema(),
                 projection: None,
+                row_count: None,
             };
 
-            let right = OptimizedLogicalPlan::TableScan {
+            let right = PhysicalPlan::TableScan {
                 table_name: "orders".to_string(),
                 schema: orders_schema(),
                 projection: None,
+                row_count: None,
             };
 
-            let join = OptimizedLogicalPlan::HashJoin {
+            let join = PhysicalPlan::HashJoin {
                 left: Box::new(left),
                 right: Box::new(right),
                 join_type: JoinType::Inner,
                 left_keys: vec![col_idx("id", 0)],
                 right_keys: vec![col_idx("user_id", 1)],
                 schema: joined_schema(),
+                parallel: false,
+                hints: ExecutionHints::default(),
             };
 
             let project_schema =
                 make_schema(&[("name", DataType::String), ("amount", DataType::Float64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(join),
                 expressions: vec![col_idx("name", 1), col_idx("amount", 5)],
                 schema: project_schema,
@@ -2007,10 +2018,10 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::HashJoin { left, right, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::HashJoin { left, right, .. } => {
                         match left.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert!(proj.contains(&0));
                                 assert!(proj.contains(&1));
@@ -2019,7 +2030,7 @@ mod projection_pushdown_tests {
                             other => panic!("Expected left TableScan, got {:?}", other),
                         }
                         match right.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert!(proj.contains(&1));
                                 assert!(proj.contains(&2));
@@ -2037,29 +2048,33 @@ mod projection_pushdown_tests {
 
         #[test]
         fn hash_join_includes_key_columns() {
-            let left = OptimizedLogicalPlan::TableScan {
+            let left = PhysicalPlan::TableScan {
                 table_name: "users".to_string(),
                 schema: users_schema(),
                 projection: None,
+                row_count: None,
             };
 
-            let right = OptimizedLogicalPlan::TableScan {
+            let right = PhysicalPlan::TableScan {
                 table_name: "orders".to_string(),
                 schema: orders_schema(),
                 projection: None,
+                row_count: None,
             };
 
-            let join = OptimizedLogicalPlan::HashJoin {
+            let join = PhysicalPlan::HashJoin {
                 left: Box::new(left),
                 right: Box::new(right),
                 join_type: JoinType::Inner,
                 left_keys: vec![col_idx("id", 0)],
                 right_keys: vec![col_idx("user_id", 1)],
                 schema: joined_schema(),
+                parallel: false,
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("name", DataType::String)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(join),
                 expressions: vec![col_idx("name", 1)],
                 schema: project_schema,
@@ -2068,10 +2083,10 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::HashJoin { left, right, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::HashJoin { left, right, .. } => {
                         match left.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert!(proj.contains(&0));
                                 assert!(proj.contains(&1));
@@ -2080,7 +2095,7 @@ mod projection_pushdown_tests {
                             other => panic!("Expected left TableScan, got {:?}", other),
                         }
                         match right.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert!(proj.contains(&1));
                                 assert!(!proj.contains(&0));
@@ -2111,26 +2126,30 @@ mod projection_pushdown_tests {
                 ("d", DataType::Int64),
             ]);
 
-            let left = OptimizedLogicalPlan::TableScan {
+            let left = PhysicalPlan::TableScan {
                 table_name: "t1".to_string(),
                 schema: left_schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let right = OptimizedLogicalPlan::TableScan {
+            let right = PhysicalPlan::TableScan {
                 table_name: "t2".to_string(),
                 schema: right_schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let cross_join = OptimizedLogicalPlan::CrossJoin {
+            let cross_join = PhysicalPlan::CrossJoin {
                 left: Box::new(left),
                 right: Box::new(right),
                 schema: joined_schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("a", DataType::Int64), ("d", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(cross_join),
                 expressions: vec![col_idx("a", 0), col_idx("d", 3)],
                 schema: project_schema,
@@ -2139,17 +2158,17 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::CrossJoin { left, right, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::CrossJoin { left, right, .. } => {
                         match left.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert_eq!(proj, &vec![0]);
                             }
                             other => panic!("Expected left TableScan, got {:?}", other),
                         }
                         match right.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert_eq!(proj, &vec![1]);
                             }
@@ -2173,26 +2192,30 @@ mod projection_pushdown_tests {
                 ("d", DataType::Int64),
             ]);
 
-            let left = OptimizedLogicalPlan::TableScan {
+            let left = PhysicalPlan::TableScan {
                 table_name: "t1".to_string(),
                 schema: left_schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let right = OptimizedLogicalPlan::TableScan {
+            let right = PhysicalPlan::TableScan {
                 table_name: "t2".to_string(),
                 schema: right_schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let cross_join = OptimizedLogicalPlan::CrossJoin {
+            let cross_join = PhysicalPlan::CrossJoin {
                 left: Box::new(left),
                 right: Box::new(right),
                 schema: joined_schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("a", DataType::Int64), ("b", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(cross_join),
                 expressions: vec![col_idx("a", 0), col_idx("b", 1)],
                 schema: project_schema,
@@ -2201,16 +2224,16 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::CrossJoin { left, right, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::CrossJoin { left, right, .. } => {
                         match left.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 assert_eq!(projection, &None);
                             }
                             other => panic!("Expected left TableScan, got {:?}", other),
                         }
                         match right.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert!(proj.is_empty());
                             }
@@ -2235,32 +2258,37 @@ mod projection_pushdown_tests {
                 ("c", DataType::Int64),
             ]);
 
-            let scan1 = OptimizedLogicalPlan::TableScan {
+            let scan1 = PhysicalPlan::TableScan {
                 table_name: "t1".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let scan2 = OptimizedLogicalPlan::TableScan {
+            let scan2 = PhysicalPlan::TableScan {
                 table_name: "t2".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let scan3 = OptimizedLogicalPlan::TableScan {
+            let scan3 = PhysicalPlan::TableScan {
                 table_name: "t3".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let union_plan = OptimizedLogicalPlan::Union {
+            let union_plan = PhysicalPlan::Union {
                 inputs: vec![scan1, scan2, scan3],
                 all: true,
                 schema: schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("a", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(union_plan),
                 expressions: vec![col_idx("a", 0)],
                 schema: project_schema,
@@ -2269,12 +2297,12 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Union { inputs, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Union { inputs, .. } => {
                         assert_eq!(inputs.len(), 3);
                         for (i, input) in inputs.iter().enumerate() {
                             match input {
-                                OptimizedLogicalPlan::TableScan { projection, .. } => {
+                                PhysicalPlan::TableScan { projection, .. } => {
                                     let proj = projection.as_ref().unwrap_or_else(|| {
                                         panic!("Expected projection on branch {}", i)
                                     });
@@ -2301,26 +2329,30 @@ mod projection_pushdown_tests {
         fn union_all_false_passes_requirements() {
             let schema = make_schema(&[("x", DataType::Int64), ("y", DataType::Int64)]);
 
-            let scan1 = OptimizedLogicalPlan::TableScan {
+            let scan1 = PhysicalPlan::TableScan {
                 table_name: "t1".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let scan2 = OptimizedLogicalPlan::TableScan {
+            let scan2 = PhysicalPlan::TableScan {
                 table_name: "t2".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let union_plan = OptimizedLogicalPlan::Union {
+            let union_plan = PhysicalPlan::Union {
                 inputs: vec![scan1, scan2],
                 all: false,
                 schema: schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("y", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(union_plan),
                 expressions: vec![col_idx("y", 1)],
                 schema: project_schema,
@@ -2329,12 +2361,12 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Union { inputs, all, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Union { inputs, all, .. } => {
                         assert!(!all);
                         for input in inputs.iter() {
                             match input {
-                                OptimizedLogicalPlan::TableScan { projection, .. } => {
+                                PhysicalPlan::TableScan { projection, .. } => {
                                     let proj = projection.as_ref().expect("Expected projection");
                                     assert_eq!(proj, &vec![1]);
                                 }
@@ -2361,10 +2393,11 @@ mod projection_pushdown_tests {
                 ("extra", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let window_schema = make_schema(&[
@@ -2387,15 +2420,16 @@ mod projection_pushdown_tests {
                 frame: None,
             };
 
-            let window = OptimizedLogicalPlan::Window {
+            let window = PhysicalPlan::Window {
                 input: Box::new(scan),
                 window_exprs: vec![window_expr],
                 schema: window_schema.clone(),
+                hints: ExecutionHints::default(),
             };
 
             let project_schema =
                 make_schema(&[("c", DataType::Int64), ("row_num", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(window),
                 expressions: vec![col_idx("c", 2), col_idx("row_num", 4)],
                 schema: project_schema,
@@ -2404,9 +2438,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Window { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Window { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert!(proj.contains(&0));
                             assert!(proj.contains(&1));
@@ -2429,10 +2463,11 @@ mod projection_pushdown_tests {
                 ("extra", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let window_schema = make_schema(&[
@@ -2451,14 +2486,15 @@ mod projection_pushdown_tests {
                 frame: None,
             };
 
-            let window = OptimizedLogicalPlan::Window {
+            let window = PhysicalPlan::Window {
                 input: Box::new(scan),
                 window_exprs: vec![window_expr],
                 schema: window_schema.clone(),
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("running_sum", DataType::Float64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(window),
                 expressions: vec![col_idx("running_sum", 3)],
                 schema: project_schema,
@@ -2467,9 +2503,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Window { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Window { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert!(proj.contains(&0));
                             assert!(proj.contains(&1));
@@ -2492,10 +2528,11 @@ mod projection_pushdown_tests {
                 ("d", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let window_schema = make_schema(&[
@@ -2518,14 +2555,15 @@ mod projection_pushdown_tests {
                 frame: None,
             };
 
-            let window = OptimizedLogicalPlan::Window {
+            let window = PhysicalPlan::Window {
                 input: Box::new(scan),
                 window_exprs: vec![window_expr],
                 schema: window_schema.clone(),
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("rank", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(window),
                 expressions: vec![col_idx("rank", 4)],
                 schema: project_schema,
@@ -2534,9 +2572,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Window { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Window { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert!(proj.contains(&0));
                             assert!(proj.contains(&1));
@@ -2563,23 +2601,25 @@ mod projection_pushdown_tests {
                 ("c", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let sort = OptimizedLogicalPlan::Sort {
+            let sort = PhysicalPlan::Sort {
                 input: Box::new(scan),
                 sort_exprs: vec![SortExpr {
                     expr: col_idx("b", 1),
                     asc: true,
                     nulls_first: false,
                 }],
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("a", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(sort),
                 expressions: vec![col_idx("a", 0)],
                 schema: project_schema,
@@ -2588,9 +2628,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Sort { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Sort { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert!(proj.contains(&0));
                             assert!(proj.contains(&1));
@@ -2611,20 +2651,21 @@ mod projection_pushdown_tests {
         fn limit_passes_through_required_columns() {
             let schema = make_schema(&[("a", DataType::Int64), ("b", DataType::Int64)]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let limit = OptimizedLogicalPlan::Limit {
+            let limit = PhysicalPlan::Limit {
                 input: Box::new(scan),
                 limit: Some(10),
                 offset: None,
             };
 
             let project_schema = make_schema(&[("a", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(limit),
                 expressions: vec![col_idx("a", 0)],
                 schema: project_schema,
@@ -2633,9 +2674,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Limit { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Limit { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert_eq!(proj, &vec![0]);
                         }
@@ -2655,18 +2696,19 @@ mod projection_pushdown_tests {
         fn distinct_passes_through_required_columns() {
             let schema = make_schema(&[("a", DataType::Int64), ("b", DataType::Int64)]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let distinct = OptimizedLogicalPlan::Distinct {
+            let distinct = PhysicalPlan::Distinct {
                 input: Box::new(scan),
             };
 
             let project_schema = make_schema(&[("b", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(distinct),
                 expressions: vec![col_idx("b", 1)],
                 schema: project_schema,
@@ -2675,9 +2717,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Distinct { input } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Distinct { input } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert_eq!(proj, &vec![1]);
                         }
@@ -2702,16 +2744,17 @@ mod projection_pushdown_tests {
                 ("quantity", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "sales".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let agg_schema =
                 make_schema(&[("category", DataType::String), ("total", DataType::Float64)]);
 
-            let aggregate = OptimizedLogicalPlan::HashAggregate {
+            let aggregate = PhysicalPlan::HashAggregate {
                 input: Box::new(scan),
                 group_by: vec![col_idx("category", 0)],
                 aggregates: vec![Expr::Aggregate {
@@ -2725,13 +2768,14 @@ mod projection_pushdown_tests {
                 }],
                 schema: agg_schema.clone(),
                 grouping_sets: None,
+                hints: ExecutionHints::default(),
             };
 
             let optimized = ProjectionPushdown::optimize(aggregate);
 
             match optimized {
-                OptimizedLogicalPlan::HashAggregate { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::HashAggregate { input, .. } => match input.as_ref() {
+                    PhysicalPlan::TableScan { projection, .. } => {
                         let proj = projection.as_ref().expect("Expected projection");
                         assert!(proj.contains(&0));
                         assert!(proj.contains(&2));
@@ -2756,13 +2800,14 @@ mod projection_pushdown_tests {
                 ("c", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let topn = OptimizedLogicalPlan::TopN {
+            let topn = PhysicalPlan::TopN {
                 input: Box::new(scan),
                 sort_exprs: vec![SortExpr {
                     expr: col_idx("c", 2),
@@ -2773,7 +2818,7 @@ mod projection_pushdown_tests {
             };
 
             let project_schema = make_schema(&[("a", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(topn),
                 expressions: vec![col_idx("a", 0)],
                 schema: project_schema,
@@ -2782,9 +2827,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::TopN { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::TopN { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert!(proj.contains(&0));
                             assert!(proj.contains(&2));
@@ -2822,28 +2867,32 @@ mod projection_pushdown_tests {
                 ("extra_right", DataType::Int64),
             ]);
 
-            let left = OptimizedLogicalPlan::TableScan {
+            let left = PhysicalPlan::TableScan {
                 table_name: "t1".to_string(),
                 schema: left_schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let right = OptimizedLogicalPlan::TableScan {
+            let right = PhysicalPlan::TableScan {
                 table_name: "t2".to_string(),
                 schema: right_schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let join = OptimizedLogicalPlan::NestedLoopJoin {
+            let join = PhysicalPlan::NestedLoopJoin {
                 left: Box::new(left),
                 right: Box::new(right),
                 join_type: JoinType::Inner,
                 condition: Some(gt(col_idx("a", 0), col_idx("c", 3))),
                 schema: joined_schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("d", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(join),
                 expressions: vec![col_idx("d", 4)],
                 schema: project_schema,
@@ -2852,10 +2901,10 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::NestedLoopJoin { left, right, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::NestedLoopJoin { left, right, .. } => {
                         match left.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert!(proj.contains(&0));
                                 assert!(!proj.contains(&1));
@@ -2864,7 +2913,7 @@ mod projection_pushdown_tests {
                             other => panic!("Expected left TableScan, got {:?}", other),
                         }
                         match right.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert!(proj.contains(&0));
                                 assert!(proj.contains(&1));
@@ -2885,28 +2934,32 @@ mod projection_pushdown_tests {
             let right_schema = make_schema(&[("b", DataType::Int64)]);
             let joined_schema = make_schema(&[("a", DataType::Int64), ("b", DataType::Int64)]);
 
-            let left = OptimizedLogicalPlan::TableScan {
+            let left = PhysicalPlan::TableScan {
                 table_name: "t1".to_string(),
                 schema: left_schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let right = OptimizedLogicalPlan::TableScan {
+            let right = PhysicalPlan::TableScan {
                 table_name: "t2".to_string(),
                 schema: right_schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let join = OptimizedLogicalPlan::NestedLoopJoin {
+            let join = PhysicalPlan::NestedLoopJoin {
                 left: Box::new(left),
                 right: Box::new(right),
                 join_type: JoinType::Inner,
                 condition: None,
                 schema: joined_schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("a", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(join),
                 expressions: vec![col_idx("a", 0)],
                 schema: project_schema,
@@ -2915,16 +2968,16 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::NestedLoopJoin { left, right, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::NestedLoopJoin { left, right, .. } => {
                         match left.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 assert_eq!(projection, &None);
                             }
                             other => panic!("Expected left TableScan, got {:?}", other),
                         }
                         match right.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert!(proj.is_empty());
                             }
@@ -2945,27 +2998,31 @@ mod projection_pushdown_tests {
         fn intersect_passes_requirements_to_both_branches() {
             let schema = make_schema(&[("a", DataType::Int64), ("b", DataType::Int64)]);
 
-            let left = OptimizedLogicalPlan::TableScan {
+            let left = PhysicalPlan::TableScan {
                 table_name: "t1".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let right = OptimizedLogicalPlan::TableScan {
+            let right = PhysicalPlan::TableScan {
                 table_name: "t2".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let intersect = OptimizedLogicalPlan::Intersect {
+            let intersect = PhysicalPlan::Intersect {
                 left: Box::new(left),
                 right: Box::new(right),
                 all: false,
                 schema: schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("a", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(intersect),
                 expressions: vec![col_idx("a", 0)],
                 schema: project_schema,
@@ -2974,17 +3031,17 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Intersect { left, right, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Intersect { left, right, .. } => {
                         match left.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert_eq!(proj, &vec![0]);
                             }
                             other => panic!("Expected left TableScan, got {:?}", other),
                         }
                         match right.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert_eq!(proj, &vec![0]);
                             }
@@ -3001,27 +3058,31 @@ mod projection_pushdown_tests {
         fn except_passes_requirements_to_both_branches() {
             let schema = make_schema(&[("x", DataType::Int64), ("y", DataType::Int64)]);
 
-            let left = OptimizedLogicalPlan::TableScan {
+            let left = PhysicalPlan::TableScan {
                 table_name: "t1".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let right = OptimizedLogicalPlan::TableScan {
+            let right = PhysicalPlan::TableScan {
                 table_name: "t2".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let except = OptimizedLogicalPlan::Except {
+            let except = PhysicalPlan::Except {
                 left: Box::new(left),
                 right: Box::new(right),
                 all: true,
                 schema: schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
             };
 
             let project_schema = make_schema(&[("y", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(except),
                 expressions: vec![col_idx("y", 1)],
                 schema: project_schema,
@@ -3030,20 +3091,20 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Except {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Except {
                         left, right, all, ..
                     } => {
                         assert!(*all);
                         match left.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert_eq!(proj, &vec![1]);
                             }
                             other => panic!("Expected left TableScan, got {:?}", other),
                         }
                         match right.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("Expected projection");
                                 assert_eq!(proj, &vec![1]);
                             }
@@ -3068,19 +3129,20 @@ mod projection_pushdown_tests {
                 ("c", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let qualify = OptimizedLogicalPlan::Qualify {
+            let qualify = PhysicalPlan::Qualify {
                 input: Box::new(scan),
                 predicate: gt(col_idx("b", 1), lit_i64(5)),
             };
 
             let project_schema = make_schema(&[("a", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(qualify),
                 expressions: vec![col_idx("a", 0)],
                 schema: project_schema,
@@ -3089,9 +3151,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Qualify { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Qualify { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert!(proj.contains(&0));
                             assert!(proj.contains(&1));
@@ -3114,20 +3176,21 @@ mod projection_pushdown_tests {
         fn sample_passes_through_required_columns() {
             let schema = make_schema(&[("a", DataType::Int64), ("b", DataType::Int64)]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
-            let sample = OptimizedLogicalPlan::Sample {
+            let sample = PhysicalPlan::Sample {
                 input: Box::new(scan),
                 sample_type: SampleType::Rows,
                 sample_value: 100,
             };
 
             let project_schema = make_schema(&[("b", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(sample),
                 expressions: vec![col_idx("b", 1)],
                 schema: project_schema,
@@ -3136,9 +3199,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Sample { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Sample { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert_eq!(proj, &vec![1]);
                         }
@@ -3164,10 +3227,11 @@ mod projection_pushdown_tests {
                 ("extra", DataType::Int64),
             ]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let unnest_schema = make_schema(&[
@@ -3177,7 +3241,7 @@ mod projection_pushdown_tests {
                 ("elem", DataType::Int64),
             ]);
 
-            let unnest = OptimizedLogicalPlan::Unnest {
+            let unnest = PhysicalPlan::Unnest {
                 input: Box::new(scan),
                 columns: vec![UnnestColumn {
                     expr: col_idx("arr", 1),
@@ -3189,7 +3253,7 @@ mod projection_pushdown_tests {
             };
 
             let project_schema = make_schema(&[("elem", DataType::Int64)]);
-            let project = OptimizedLogicalPlan::Project {
+            let project = PhysicalPlan::Project {
                 input: Box::new(unnest),
                 expressions: vec![col_idx("elem", 3)],
                 schema: project_schema,
@@ -3198,9 +3262,9 @@ mod projection_pushdown_tests {
             let optimized = ProjectionPushdown::optimize(project);
 
             match optimized {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::Unnest { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Unnest { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert!(proj.contains(&1));
                             assert!(!proj.contains(&0));
@@ -3222,30 +3286,33 @@ mod projection_pushdown_tests {
         fn with_cte_pushes_to_body() {
             let schema = make_schema(&[("a", DataType::Int64), ("b", DataType::Int64)]);
 
-            let scan = OptimizedLogicalPlan::TableScan {
+            let scan = PhysicalPlan::TableScan {
                 table_name: "test".to_string(),
                 schema: schema.clone(),
                 projection: None,
+                row_count: None,
             };
 
             let project_schema = make_schema(&[("a", DataType::Int64)]);
-            let body = OptimizedLogicalPlan::Project {
+            let body = PhysicalPlan::Project {
                 input: Box::new(scan),
                 expressions: vec![col_idx("a", 0)],
                 schema: project_schema.clone(),
             };
 
-            let with_cte = OptimizedLogicalPlan::WithCte {
+            let with_cte = PhysicalPlan::WithCte {
                 ctes: vec![],
                 body: Box::new(body),
+                parallel_ctes: Vec::new(),
+                hints: ExecutionHints::default(),
             };
 
             let optimized = ProjectionPushdown::optimize(with_cte);
 
             match optimized {
-                OptimizedLogicalPlan::WithCte { body, .. } => match body.as_ref() {
-                    OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                        OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::WithCte { body, .. } => match body.as_ref() {
+                    PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                        PhysicalPlan::TableScan { projection, .. } => {
                             let proj = projection.as_ref().expect("Expected projection");
                             assert_eq!(proj, &vec![0]);
                         }
@@ -4593,7 +4660,7 @@ mod predicate_tests {
 mod sql_optimizer_tests {
     use yachtsql_ir::JoinType;
 
-    use crate::OptimizedLogicalPlan;
+    use crate::PhysicalPlan;
     use crate::test_utils::{assert_plan, optimize_sql_default};
 
     mod filter_pushdown {
@@ -4811,8 +4878,8 @@ mod sql_optimizer_tests {
             let plan = optimize_sql_default("SELECT id, amount FROM orders");
 
             match &plan {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::TableScan { projection, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::TableScan { projection, .. } => {
                         let proj = projection.as_ref().expect("projection should exist");
                         assert!(proj.contains(&0), "id (index 0) should be projected");
                         assert!(proj.contains(&2), "amount (index 2) should be projected");
@@ -4832,10 +4899,10 @@ mod sql_optimizer_tests {
             );
 
             match &plan {
-                OptimizedLogicalPlan::Project { input, .. } => match input.as_ref() {
-                    OptimizedLogicalPlan::HashJoin { left, right, .. } => {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::HashJoin { left, right, .. } => {
                         match left.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("projection should exist");
                                 assert!(proj.contains(&0), "id should be projected");
                                 assert!(proj.contains(&1), "customer_id needed for join");
@@ -4843,7 +4910,7 @@ mod sql_optimizer_tests {
                             other => panic!("Expected TableScan on left, got {:?}", other),
                         }
                         match right.as_ref() {
-                            OptimizedLogicalPlan::TableScan { projection, .. } => {
+                            PhysicalPlan::TableScan { projection, .. } => {
                                 let proj = projection.as_ref().expect("projection should exist");
                                 assert!(proj.contains(&0), "id needed for join");
                             }
