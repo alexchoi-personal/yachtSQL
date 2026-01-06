@@ -7,7 +7,7 @@ use yachtsql_optimizer::optimize;
 use yachtsql_storage::{Column, Record, Schema, Table};
 
 use super::{ConcurrentPlanExecutor, default_value_for_type};
-use crate::plan::PhysicalPlan;
+use crate::plan::{PhysicalPlan, PhysicalPlanExt};
 use crate::value_evaluator::ValueEvaluator;
 
 impl ConcurrentPlanExecutor {
@@ -789,8 +789,7 @@ impl ConcurrentPlanExecutor {
 
     fn execute_dynamic_sql(&self, sql: &str) -> Result<Table> {
         let logical_plan = yachtsql_parser::parse_and_plan(sql, &*self.catalog)?;
-        let physical = optimize(&logical_plan)?;
-        let executor_plan = PhysicalPlan::from_physical(&physical);
+        let executor_plan = optimize(&logical_plan)?;
 
         let accesses = executor_plan.extract_table_accesses();
         for (table_name, access_type) in accesses.accesses.iter() {

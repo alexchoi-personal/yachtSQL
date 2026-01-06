@@ -41,8 +41,7 @@ impl ConcurrentPlanExecutor {
                 let results: Vec<Result<(String, Table, Option<Vec<String>>)>> = wave_ctes
                     .par_iter()
                     .map(|(_, cte)| {
-                        let physical_cte = yachtsql_optimizer::optimize(&cte.query)?;
-                        let cte_plan = PhysicalPlan::from_physical(&physical_cte);
+                        let cte_plan = yachtsql_optimizer::optimize(&cte.query)?;
                         let cte_result = self.execute_plan(&cte_plan)?;
                         Ok((cte.name.to_uppercase(), cte_result, cte.columns.clone()))
                     })
@@ -63,8 +62,7 @@ impl ConcurrentPlanExecutor {
                     if cte.recursive {
                         self.execute_recursive_cte(cte)?;
                     } else {
-                        let physical_cte = yachtsql_optimizer::optimize(&cte.query)?;
-                        let cte_plan = PhysicalPlan::from_physical(&physical_cte);
+                        let cte_plan = yachtsql_optimizer::optimize(&cte.query)?;
                         let mut cte_result = self.execute_plan(&cte_plan)?;
 
                         if let Some(ref columns) = cte.columns {
@@ -165,8 +163,7 @@ impl ConcurrentPlanExecutor {
 
         let mut all_results = Vec::new();
         for anchor in &anchor_terms {
-            let physical = yachtsql_optimizer::optimize(anchor)?;
-            let anchor_plan = PhysicalPlan::from_physical(&physical);
+            let anchor_plan = yachtsql_optimizer::optimize(anchor)?;
             let result = self.execute_plan(&anchor_plan)?;
             let n = result.row_count();
             let columns: Vec<&Column> = result.columns().iter().map(|(_, c)| c.as_ref()).collect();
@@ -201,8 +198,7 @@ impl ConcurrentPlanExecutor {
 
             let mut new_rows = Vec::new();
             for recursive_term in &recursive_terms {
-                let physical = yachtsql_optimizer::optimize(recursive_term)?;
-                let rec_plan = PhysicalPlan::from_physical(&physical);
+                let rec_plan = yachtsql_optimizer::optimize(recursive_term)?;
                 let result = self.execute_plan(&rec_plan)?;
                 let n = result.row_count();
                 let columns: Vec<&Column> =

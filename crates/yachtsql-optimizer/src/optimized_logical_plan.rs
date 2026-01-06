@@ -741,5 +741,3 @@ impl PhysicalPlan {
         }
     }
 }
-
-pub type OptimizedLogicalPlan = PhysicalPlan;

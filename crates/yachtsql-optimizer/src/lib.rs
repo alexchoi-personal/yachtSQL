@@ -15,8 +15,7 @@ pub use join_order::{
     CostModel, GreedyJoinReorderer, JoinEdge, JoinGraph, JoinRelation, PredicateCollector,
 };
 pub use optimized_logical_plan::{
-    BoundType, ExecutionHints, OptimizedLogicalPlan, PARALLEL_ROW_THRESHOLD, PhysicalPlan,
-    SampleType,
+    BoundType, ExecutionHints, PARALLEL_ROW_THRESHOLD, PhysicalPlan, SampleType,
 };
 pub use pass::{OptimizationPass, PassOverhead, PassTarget};
 pub use planner::{

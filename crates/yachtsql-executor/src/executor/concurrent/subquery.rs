@@ -8,7 +8,6 @@ use yachtsql_optimizer::optimize;
 use yachtsql_storage::{Column, Record, Schema, Table};
 
 use super::ConcurrentPlanExecutor;
-use crate::plan::PhysicalPlan;
 use crate::value_evaluator::{ValueEvaluator, cast_value};
 
 impl ConcurrentPlanExecutor {
@@ -134,8 +133,7 @@ impl ConcurrentPlanExecutor {
         outer_record: &Record,
     ) -> Result<Value> {
         let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
-        let physical = optimize(&substituted)?;
-        let executor_plan = PhysicalPlan::from_physical(&physical);
+        let executor_plan = optimize(&substituted)?;
         let result_table = self.execute_plan(&executor_plan)?;
 
         if result_table.row_count() == 0 || result_table.num_columns() == 0 {
@@ -149,8 +147,7 @@ impl ConcurrentPlanExecutor {
     }
 
     pub(crate) fn eval_scalar_subquery_as_row(&self, plan: &LogicalPlan) -> Result<Value> {
-        let physical = optimize(plan)?;
-        let executor_plan = PhysicalPlan::from_physical(&physical);
+        let executor_plan = optimize(plan)?;
         let result_table = self.execute_plan(&executor_plan)?;
 
         if result_table.row_count() == 0 {
@@ -181,8 +178,7 @@ impl ConcurrentPlanExecutor {
         outer_record: &Record,
     ) -> Result<bool> {
         let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
-        let physical = optimize(&substituted)?;
-        let executor_plan = PhysicalPlan::from_physical(&physical);
+        let executor_plan = optimize(&substituted)?;
         let result_table = self.execute_plan(&executor_plan)?;
         Ok(!result_table.is_empty())
     }
@@ -194,8 +190,7 @@ impl ConcurrentPlanExecutor {
         outer_record: &Record,
     ) -> Result<Value> {
         let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
-        let physical = optimize(&substituted)?;
-        let executor_plan = PhysicalPlan::from_physical(&physical);
+        let executor_plan = optimize(&substituted)?;
         let result_table = self.execute_plan(&executor_plan)?;
 
         let result_schema = result_table.schema();
@@ -237,8 +232,7 @@ impl ConcurrentPlanExecutor {
         }
 
         let substituted = self.substitute_outer_refs_in_plan(plan, outer_schema, outer_record)?;
-        let physical = optimize(&substituted)?;
-        let executor_plan = PhysicalPlan::from_physical(&physical);
+        let executor_plan = optimize(&substituted)?;
         let result_table = self.execute_plan(&executor_plan)?;
 
         if result_table.num_columns() == 0 {
@@ -743,8 +737,7 @@ impl ConcurrentPlanExecutor {
                 let empty_record = Record::new();
                 let substituted =
                     self.substitute_outer_refs_in_plan(subquery, &empty_schema, &empty_record)?;
-                let physical = optimize(&substituted)?;
-                let executor_plan = PhysicalPlan::from_physical(&physical);
+                let executor_plan = optimize(&substituted)?;
                 let result_table = self.execute_plan(&executor_plan)?;
 
                 let mut list_exprs = Vec::new();
@@ -769,8 +762,7 @@ impl ConcurrentPlanExecutor {
                 let empty_record = Record::new();
                 let substituted =
                     self.substitute_outer_refs_in_plan(subquery, &empty_schema, &empty_record)?;
-                let physical = optimize(&substituted)?;
-                let executor_plan = PhysicalPlan::from_physical(&physical);
+                let executor_plan = optimize(&substituted)?;
                 let result_table = self.execute_plan(&executor_plan)?;
                 let has_rows = !result_table.is_empty();
                 let result = if *negated { !has_rows } else { has_rows };
@@ -781,8 +773,7 @@ impl ConcurrentPlanExecutor {
                 let empty_record = Record::new();
                 let substituted =
                     self.substitute_outer_refs_in_plan(plan, &empty_schema, &empty_record)?;
-                let physical = optimize(&substituted)?;
-                let executor_plan = PhysicalPlan::from_physical(&physical);
+                let executor_plan = optimize(&substituted)?;
                 let result_table = self.execute_plan(&executor_plan)?;
 
                 if result_table.row_count() == 0 || result_table.num_columns() == 0 {
@@ -800,8 +791,7 @@ impl ConcurrentPlanExecutor {
                 let empty_record = Record::new();
                 let substituted =
                     self.substitute_outer_refs_in_plan(plan, &empty_schema, &empty_record)?;
-                let physical = optimize(&substituted)?;
-                let executor_plan = PhysicalPlan::from_physical(&physical);
+                let executor_plan = optimize(&substituted)?;
                 let result_table = self.execute_plan(&executor_plan)?;
 
                 let mut array_elements = Vec::new();
