@@ -4934,8 +4934,8 @@ mod sql_optimizer_tests {
 
             assert_plan!(
                 plan,
-                Limit {
-                    input: (Project {
+                Project {
+                    input: (Limit {
                         input: (Sort {
                             input: (TableScan {
                                 table_name: "orders"
@@ -4968,13 +4968,737 @@ mod sql_optimizer_tests {
 
             assert_plan!(
                 plan,
-                Limit {
-                    input: (Project {
+                Project {
+                    input: (Limit {
                         input: (TableScan {
                             table_name: "orders"
                         })
                     })
                 }
+            );
+        }
+    }
+
+    mod cross_to_hash_join {
+        use super::*;
+
+        #[test]
+        fn cross_join_with_equality_becomes_hash_join() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o, customers c
+                 WHERE o.customer_id = c.id",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (TableScan {
+                            table_name: "orders"
+                        }),
+                        right: (TableScan {
+                            table_name: "customers"
+                        }),
+                        join_type: JoinType::Inner
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn cross_join_with_non_equality_stays_nested_loop() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o, customers c
+                 WHERE o.amount > 100",
+            );
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { input, .. } => {
+                        assert!(matches!(input.as_ref(), PhysicalPlan::CrossJoin { .. }));
+                    }
+                    other => panic!("Expected Filter, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn cross_join_with_equality_and_residual() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o, customers c
+                 WHERE o.customer_id = c.id AND o.amount > 100",
+            );
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { input, .. } => {
+                        assert!(matches!(input.as_ref(), PhysicalPlan::HashJoin { .. }));
+                    }
+                    PhysicalPlan::HashJoin { .. } => {}
+                    other => panic!("Expected Filter or HashJoin, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn multiple_equi_keys_converted() {
+            let plan = optimize_sql_default(
+                "SELECT o.id
+                 FROM orders o, customers c
+                 WHERE o.customer_id = c.id AND o.id = c.id",
+            );
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::HashJoin {
+                        left_keys,
+                        right_keys,
+                        ..
+                    } => {
+                        assert_eq!(left_keys.len(), 2);
+                        assert_eq!(right_keys.len(), 2);
+                    }
+                    other => panic!("Expected HashJoin, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+    }
+
+    mod sort_elimination {
+        use yachtsql_common::types::DataType;
+
+        use super::*;
+        use crate::apply_sort_elimination;
+
+        fn count_sorts(plan: &PhysicalPlan, count: &mut usize) {
+            match plan {
+                PhysicalPlan::Sort { input, .. } => {
+                    *count += 1;
+                    count_sorts(input, count);
+                }
+                PhysicalPlan::Project { input, .. } => count_sorts(input, count),
+                PhysicalPlan::Filter { input, .. } => count_sorts(input, count),
+                PhysicalPlan::Limit { input, .. } => count_sorts(input, count),
+                PhysicalPlan::HashJoin { left, right, .. } => {
+                    count_sorts(left, count);
+                    count_sorts(right, count);
+                }
+                PhysicalPlan::TopN { input, .. } => count_sorts(input, count),
+                _ => {}
+            }
+        }
+
+        #[test]
+        fn subquery_with_different_projections_keeps_both_sorts() {
+            let plan = optimize_sql_default(
+                "SELECT * FROM (SELECT id FROM orders ORDER BY id) ORDER BY id",
+            );
+
+            let mut sort_count = 0;
+            count_sorts(&plan, &mut sort_count);
+            assert!(
+                sort_count >= 1,
+                "Expected at least one Sort node, got {}",
+                sort_count
+            );
+        }
+
+        #[test]
+        fn different_sort_order_preserved() {
+            let plan = optimize_sql_default(
+                "SELECT * FROM (SELECT id, amount FROM orders ORDER BY id) ORDER BY amount",
+            );
+
+            let mut sort_count = 0;
+            count_sorts(&plan, &mut sort_count);
+            assert_eq!(
+                sort_count, 2,
+                "Expected two Sort nodes for different columns"
+            );
+        }
+
+        #[test]
+        fn sort_elimination_removes_redundant_directly_adjacent_sort() {
+            use yachtsql_ir::{Expr, PlanField, PlanSchema, SortExpr};
+
+            let schema = PlanSchema::from_fields(vec![
+                PlanField::new("id", DataType::Int64),
+                PlanField::new("name", DataType::String),
+            ]);
+
+            let table_scan = PhysicalPlan::TableScan {
+                table_name: "test".to_string(),
+                schema: schema.clone(),
+                projection: None,
+                row_count: None,
+            };
+
+            let sort_expr = vec![SortExpr {
+                expr: Expr::Column {
+                    table: None,
+                    name: "id".to_string(),
+                    index: Some(0),
+                },
+                asc: true,
+                nulls_first: false,
+            }];
+
+            let inner_sort = PhysicalPlan::Sort {
+                input: Box::new(table_scan),
+                sort_exprs: sort_expr.clone(),
+                hints: Default::default(),
+            };
+
+            let outer_sort = PhysicalPlan::Sort {
+                input: Box::new(inner_sort),
+                sort_exprs: sort_expr,
+                hints: Default::default(),
+            };
+
+            let optimized = apply_sort_elimination(outer_sort);
+
+            let mut sort_count = 0;
+            count_sorts(&optimized, &mut sort_count);
+            assert_eq!(
+                sort_count, 1,
+                "Adjacent duplicate sorts should be eliminated"
+            );
+        }
+
+        #[test]
+        fn sort_elimination_keeps_different_sort_orders() {
+            use yachtsql_ir::{Expr, PlanField, PlanSchema, SortExpr};
+
+            let schema = PlanSchema::from_fields(vec![
+                PlanField::new("id", DataType::Int64),
+                PlanField::new("name", DataType::String),
+            ]);
+
+            let table_scan = PhysicalPlan::TableScan {
+                table_name: "test".to_string(),
+                schema: schema.clone(),
+                projection: None,
+                row_count: None,
+            };
+
+            let inner_sort_expr = vec![SortExpr {
+                expr: Expr::Column {
+                    table: None,
+                    name: "id".to_string(),
+                    index: Some(0),
+                },
+                asc: true,
+                nulls_first: false,
+            }];
+
+            let outer_sort_expr = vec![SortExpr {
+                expr: Expr::Column {
+                    table: None,
+                    name: "name".to_string(),
+                    index: Some(1),
+                },
+                asc: false,
+                nulls_first: true,
+            }];
+
+            let inner_sort = PhysicalPlan::Sort {
+                input: Box::new(table_scan),
+                sort_exprs: inner_sort_expr,
+                hints: Default::default(),
+            };
+
+            let outer_sort = PhysicalPlan::Sort {
+                input: Box::new(inner_sort),
+                sort_exprs: outer_sort_expr,
+                hints: Default::default(),
+            };
+
+            let optimized = apply_sort_elimination(outer_sort);
+
+            let mut sort_count = 0;
+            count_sorts(&optimized, &mut sort_count);
+            assert_eq!(
+                sort_count, 2,
+                "Different sort orders should both be preserved"
+            );
+        }
+    }
+
+    mod limit_pushdown {
+        use super::*;
+
+        #[test]
+        fn limit_pushed_through_project() {
+            let plan = optimize_sql_default("SELECT id, amount FROM orders LIMIT 10");
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (Limit {
+                        input: (TableScan {
+                            table_name: "orders"
+                        })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn limit_pushed_through_union_all() {
+            let plan = optimize_sql_default(
+                "SELECT id FROM orders
+                 UNION ALL
+                 SELECT id FROM customers
+                 LIMIT 10",
+            );
+
+            match &plan {
+                PhysicalPlan::Limit { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Union { inputs, all, .. } => {
+                        assert!(*all, "Expected UNION ALL");
+                        for branch in inputs {
+                            assert!(
+                                matches!(branch, PhysicalPlan::Limit { .. }),
+                                "Expected Limit pushed to each branch"
+                            );
+                        }
+                    }
+                    other => panic!("Expected Union, got {:?}", other),
+                },
+                other => panic!("Expected Limit at top, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn limit_not_pushed_through_union_distinct() {
+            let plan = optimize_sql_default(
+                "SELECT id FROM orders
+                 UNION
+                 SELECT id FROM customers
+                 LIMIT 10",
+            );
+
+            match &plan {
+                PhysicalPlan::Limit { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Union { inputs, all, .. } => {
+                        assert!(!*all, "Expected UNION (not ALL)");
+                        for branch in inputs {
+                            assert!(
+                                !matches!(branch, PhysicalPlan::Limit { .. }),
+                                "Limit should not be pushed through UNION DISTINCT"
+                            );
+                        }
+                    }
+                    other => panic!("Expected Union, got {:?}", other),
+                },
+                other => panic!("Expected Limit at top, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn limit_with_offset_adds_both_to_union_branches() {
+            let plan = optimize_sql_default(
+                "SELECT id FROM orders
+                 UNION ALL
+                 SELECT id FROM customers
+                 LIMIT 10 OFFSET 5",
+            );
+
+            match &plan {
+                PhysicalPlan::Limit {
+                    input,
+                    limit,
+                    offset,
+                } => {
+                    assert_eq!(*limit, Some(10));
+                    assert_eq!(*offset, Some(5));
+                    match input.as_ref() {
+                        PhysicalPlan::Union { inputs, .. } => {
+                            for branch in inputs {
+                                match branch {
+                                    PhysicalPlan::Limit {
+                                        limit: branch_limit,
+                                        ..
+                                    } => {
+                                        assert_eq!(
+                                            *branch_limit,
+                                            Some(15),
+                                            "Branch limit should be limit + offset"
+                                        );
+                                    }
+                                    _ => panic!("Expected Limit in branch"),
+                                }
+                            }
+                        }
+                        other => panic!("Expected Union, got {:?}", other),
+                    }
+                }
+                other => panic!("Expected Limit at top, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn limit_not_pushed_through_aggregate() {
+            let plan =
+                optimize_sql_default("SELECT status, COUNT(*) FROM orders GROUP BY status LIMIT 5");
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Limit { input, .. } => {
+                        assert!(
+                            matches!(input.as_ref(), PhysicalPlan::HashAggregate { .. }),
+                            "Limit should not be pushed through aggregate"
+                        );
+                    }
+                    other => panic!("Expected Limit, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+    }
+
+    mod predicate_simplification {
+        use yachtsql_ir::{BinaryOp, Expr};
+
+        use super::*;
+
+        #[test]
+        fn in_single_element_becomes_equality() {
+            let plan = optimize_sql_default("SELECT * FROM orders WHERE id IN (1)");
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { predicate, .. } => match predicate {
+                        Expr::BinaryOp { op, .. } => {
+                            assert_eq!(*op, BinaryOp::Eq, "IN (1) should become = 1");
+                        }
+                        other => panic!("Expected BinaryOp Eq, got {:?}", other),
+                    },
+                    other => panic!("Expected Filter, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn in_multiple_elements_preserved() {
+            let plan = optimize_sql_default("SELECT * FROM orders WHERE id IN (1, 2, 3)");
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { predicate, .. } => {
+                        assert!(
+                            matches!(predicate, Expr::InList { .. }),
+                            "IN (1,2,3) should remain as InList"
+                        );
+                    }
+                    other => panic!("Expected Filter, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn not_in_single_element_becomes_not_equal() {
+            let plan = optimize_sql_default("SELECT * FROM orders WHERE id NOT IN (1)");
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { predicate, .. } => match predicate {
+                        Expr::BinaryOp { op, .. } => {
+                            assert_eq!(*op, BinaryOp::NotEq, "NOT IN (1) should become != 1");
+                        }
+                        other => panic!("Expected BinaryOp NotEq, got {:?}", other),
+                    },
+                    other => panic!("Expected Filter, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn between_equal_bounds_becomes_equality() {
+            let plan =
+                optimize_sql_default("SELECT * FROM orders WHERE amount BETWEEN 100 AND 100");
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { predicate, .. } => match predicate {
+                        Expr::BinaryOp { op, .. } => {
+                            assert_eq!(
+                                *op,
+                                BinaryOp::Eq,
+                                "BETWEEN 100 AND 100 should become = 100"
+                            );
+                        }
+                        other => panic!("Expected BinaryOp Eq, got {:?}", other),
+                    },
+                    other => panic!("Expected Filter, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn between_different_bounds_preserved() {
+            let plan =
+                optimize_sql_default("SELECT * FROM orders WHERE amount BETWEEN 100 AND 200");
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { predicate, .. } => {
+                        assert!(
+                            matches!(predicate, Expr::Between { .. }),
+                            "BETWEEN with different bounds should remain"
+                        );
+                    }
+                    other => panic!("Expected Filter, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+    }
+
+    mod short_circuit_ordering {
+        use yachtsql_ir::{BinaryOp, Expr};
+        use yachtsql_parser::parse_and_plan;
+
+        use super::*;
+        use crate::test_utils::test_catalog;
+        use crate::{OptimizationLevel, OptimizerSettings, optimize_with_settings};
+
+        fn optimize_aggressive(sql: &str) -> PhysicalPlan {
+            let catalog = test_catalog();
+            let logical = parse_and_plan(sql, &catalog).expect("failed to parse SQL");
+            let settings = OptimizerSettings::with_level(OptimizationLevel::Aggressive);
+            optimize_with_settings(&logical, &settings).expect("failed to optimize")
+        }
+
+        #[test]
+        fn and_predicates_reordered_by_selectivity() {
+            let plan = optimize_aggressive(
+                "SELECT * FROM orders WHERE status IS NOT NULL AND id = 1 AND amount IS NULL",
+            );
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { predicate, .. } => {
+                        let predicates = collect_and_predicates(predicate);
+                        assert!(predicates.len() >= 2, "Expected multiple AND predicates");
+                        if let Some(first) = predicates.first() {
+                            assert!(
+                                matches!(first, Expr::IsNull { negated: false, .. })
+                                    || matches!(
+                                        first,
+                                        Expr::BinaryOp {
+                                            op: BinaryOp::Eq,
+                                            ..
+                                        }
+                                    ),
+                                "Most selective predicate (IS NULL or =) should be first"
+                            );
+                        }
+                    }
+                    other => panic!("Expected Filter, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+
+        fn collect_and_predicates(expr: &Expr) -> Vec<&Expr> {
+            match expr {
+                Expr::BinaryOp {
+                    left,
+                    op: BinaryOp::And,
+                    right,
+                } => {
+                    let mut result = collect_and_predicates(left);
+                    result.push(right.as_ref());
+                    result
+                }
+                other => vec![other],
+            }
+        }
+
+        #[test]
+        fn or_predicates_reordered_by_selectivity() {
+            let plan = optimize_aggressive(
+                "SELECT * FROM orders WHERE amount IS NULL OR status IS NOT NULL OR id = 1",
+            );
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { predicate, .. } => {
+                        let predicates = collect_or_predicates(predicate);
+                        assert!(predicates.len() >= 2, "Expected multiple OR predicates");
+                        if let Some(first) = predicates.first() {
+                            assert!(
+                                matches!(first, Expr::IsNull { negated: true, .. }),
+                                "Least selective predicate (IS NOT NULL) should be first for OR"
+                            );
+                        }
+                    }
+                    other => panic!("Expected Filter, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+
+        fn collect_or_predicates(expr: &Expr) -> Vec<&Expr> {
+            match expr {
+                Expr::BinaryOp {
+                    left,
+                    op: BinaryOp::Or,
+                    right,
+                } => {
+                    let mut result = collect_or_predicates(left);
+                    result.push(right.as_ref());
+                    result
+                }
+                other => vec![other],
+            }
+        }
+
+        #[test]
+        fn not_applied_at_standard_level() {
+            let plan =
+                optimize_sql_default("SELECT * FROM orders WHERE status IS NOT NULL AND id = 1");
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::Filter { predicate, .. } => {
+                        let predicates = collect_and_predicates(predicate);
+                        assert!(predicates.len() >= 2, "Expected multiple AND predicates");
+                    }
+                    other => panic!("Expected Filter, got {:?}", other),
+                },
+                other => panic!("Expected Project, got {:?}", other),
+            }
+        }
+    }
+
+    mod trivial_predicate_removal {
+        use super::*;
+
+        #[test]
+        fn where_true_removed() {
+            let plan = optimize_sql_default("SELECT * FROM orders WHERE true");
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (TableScan {
+                        table_name: "orders"
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn where_false_becomes_empty() {
+            let plan = optimize_sql_default("SELECT * FROM orders WHERE false");
+
+            fn is_empty(plan: &PhysicalPlan) -> bool {
+                match plan {
+                    PhysicalPlan::Empty { .. } => true,
+                    PhysicalPlan::Project { input, .. } => is_empty(input),
+                    _ => false,
+                }
+            }
+
+            assert!(
+                is_empty(&plan),
+                "WHERE false should become Empty, got {:?}",
+                plan
+            );
+        }
+    }
+
+    mod empty_propagation {
+        use super::*;
+
+        #[test]
+        fn empty_union_branch_removed() {
+            let plan = optimize_sql_default(
+                "SELECT id FROM orders WHERE false
+                 UNION ALL
+                 SELECT id FROM customers",
+            );
+
+            fn find_table_scan(plan: &PhysicalPlan) -> Option<&str> {
+                match plan {
+                    PhysicalPlan::TableScan { table_name, .. } => Some(table_name),
+                    PhysicalPlan::Project { input, .. } => find_table_scan(input),
+                    PhysicalPlan::Limit { input, .. } => find_table_scan(input),
+                    _ => None,
+                }
+            }
+
+            match &plan {
+                PhysicalPlan::Project { input, .. } => match input.as_ref() {
+                    PhysicalPlan::TableScan { table_name, .. } => {
+                        assert!(
+                            table_name.eq_ignore_ascii_case("customers"),
+                            "If only one branch left, should be customers, got {}",
+                            table_name
+                        );
+                    }
+                    other => {
+                        if let Some(name) = find_table_scan(other) {
+                            assert!(
+                                name.eq_ignore_ascii_case("customers"),
+                                "Should have customers table"
+                            );
+                        } else {
+                            panic!("Expected TableScan somewhere in plan, got {:?}", other);
+                        }
+                    }
+                },
+                PhysicalPlan::TableScan { table_name, .. } => {
+                    assert!(
+                        table_name.eq_ignore_ascii_case("customers"),
+                        "Should be customers table"
+                    );
+                }
+                other => {
+                    if let Some(name) = find_table_scan(other) {
+                        assert!(
+                            name.eq_ignore_ascii_case("customers"),
+                            "Should have customers table"
+                        );
+                    } else {
+                        panic!("Expected plan with customers table, got {:?}", other);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn inner_join_with_empty_becomes_empty() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 JOIN (SELECT * FROM customers WHERE false) c ON o.customer_id = c.id",
+            );
+
+            fn is_empty(plan: &PhysicalPlan) -> bool {
+                match plan {
+                    PhysicalPlan::Empty { .. } => true,
+                    PhysicalPlan::Project { input, .. } => is_empty(input),
+                    _ => false,
+                }
+            }
+
+            assert!(
+                is_empty(&plan),
+                "Inner join with empty should become empty, got {:?}",
+                plan
             );
         }
     }

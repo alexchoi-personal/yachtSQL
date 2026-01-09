@@ -3,8 +3,8 @@
 use rustc_hash::FxHashSet;
 use yachtsql_ir::Expr;
 
-use super::predicate::collect_column_indices_into;
 use crate::PhysicalPlan;
+use crate::planner::predicate::collect_column_indices_into;
 
 #[derive(Clone, Default)]
 pub struct RequiredColumns {
