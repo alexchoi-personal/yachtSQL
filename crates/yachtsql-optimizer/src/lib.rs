@@ -19,10 +19,11 @@ pub use optimized_logical_plan::{
 };
 pub use pass::{OptimizationPass, PassOverhead, PassTarget};
 pub use planner::{
-    PhysicalPlanner, ProjectionPushdown, apply_cross_to_hash_join, apply_empty_propagation,
-    apply_filter_merging, apply_limit_pushdown, apply_predicate_simplification,
-    apply_short_circuit_ordering, apply_sort_elimination, apply_trivial_predicate_removal,
-    fold_constants,
+    PhysicalPlanner, ProjectionPushdown, apply_cross_to_hash_join, apply_distinct_elimination,
+    apply_empty_propagation, apply_filter_merging, apply_filter_pushdown_aggregate,
+    apply_limit_pushdown, apply_outer_to_inner_join, apply_predicate_inference,
+    apply_predicate_simplification, apply_project_merging, apply_short_circuit_ordering,
+    apply_sort_elimination, apply_topn_pushdown, apply_trivial_predicate_removal, fold_constants,
 };
 use rustc_hash::FxHashMap;
 pub use stats::{ColumnStats, TableStats};
@@ -136,16 +137,23 @@ pub fn optimize_with_settings(
         physical_plan = apply_empty_propagation(physical_plan);
         physical_plan = apply_filter_merging(physical_plan);
         physical_plan = apply_predicate_simplification(physical_plan);
+        physical_plan = apply_project_merging(physical_plan);
+        physical_plan = apply_distinct_elimination(physical_plan);
     }
 
     if settings.level >= OptimizationLevel::Standard {
         physical_plan = apply_cross_to_hash_join(physical_plan);
+        physical_plan = apply_outer_to_inner_join(physical_plan);
+        physical_plan = apply_filter_pushdown_aggregate(physical_plan);
         physical_plan = apply_sort_elimination(physical_plan);
         physical_plan = apply_limit_pushdown(physical_plan);
+        physical_plan = apply_topn_pushdown(physical_plan);
     }
 
     if settings.level >= OptimizationLevel::Aggressive {
+        physical_plan = apply_predicate_inference(physical_plan);
         physical_plan = apply_short_circuit_ordering(physical_plan);
+        physical_plan = apply_filter_pushdown_aggregate(physical_plan);
     }
 
     if settings.projection_pushdown_enabled() {

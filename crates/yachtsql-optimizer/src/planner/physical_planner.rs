@@ -3,11 +3,11 @@
 use yachtsql_common::error::Result;
 use yachtsql_ir::{JoinType, LogicalPlan, SetOperationType};
 
-use super::equi_join::extract_equi_join_keys;
+use super::equi_join::{extract_equi_join_keys, extract_equi_join_keys_partial};
 use super::predicate::{
     build_aggregate_output_to_input_map, can_push_through_aggregate, can_push_through_window,
-    classify_predicates_for_join, combine_predicates, remap_predicate_indices,
-    split_and_predicates,
+    classify_join_condition_predicates, classify_predicates_for_join, combine_predicates,
+    remap_predicate_indices, split_and_predicates,
 };
 use crate::{ExecutionHints, PhysicalPlan};
 
@@ -292,68 +292,28 @@ impl PhysicalPlanner {
                 schema,
             } => {
                 let left_schema_len = left.schema().fields.len();
-                let optimized_left = self.plan(left)?;
-                let optimized_right = self.plan(right)?;
+
                 match join_type {
-                    JoinType::Cross => Ok(PhysicalPlan::CrossJoin {
-                        left: Box::new(optimized_left),
-                        right: Box::new(optimized_right),
-                        schema: schema.clone(),
-                        parallel: false,
-                        hints: ExecutionHints::default(),
-                    }),
-                    JoinType::Inner => {
-                        if let Some(cond) = condition
-                            && let Some((left_keys, right_keys)) =
-                                extract_equi_join_keys(cond, left_schema_len)
-                        {
-                            return Ok(PhysicalPlan::HashJoin {
-                                left: Box::new(optimized_left),
-                                right: Box::new(optimized_right),
-                                join_type: *join_type,
-                                left_keys,
-                                right_keys,
-                                schema: schema.clone(),
-                                parallel: false,
-                                hints: ExecutionHints::default(),
-                            });
-                        }
-                        Ok(PhysicalPlan::NestedLoopJoin {
+                    JoinType::Cross => {
+                        let optimized_left = self.plan(left)?;
+                        let optimized_right = self.plan(right)?;
+                        Ok(PhysicalPlan::CrossJoin {
                             left: Box::new(optimized_left),
                             right: Box::new(optimized_right),
-                            join_type: *join_type,
-                            condition: condition.clone(),
                             schema: schema.clone(),
                             parallel: false,
                             hints: ExecutionHints::default(),
                         })
                     }
-                    JoinType::Left | JoinType::Right | JoinType::Full => {
-                        if let Some(cond) = condition
-                            && let Some((left_keys, right_keys)) =
-                                extract_equi_join_keys(cond, left_schema_len)
-                        {
-                            return Ok(PhysicalPlan::HashJoin {
-                                left: Box::new(optimized_left),
-                                right: Box::new(optimized_right),
-                                join_type: *join_type,
-                                left_keys,
-                                right_keys,
-                                schema: schema.clone(),
-                                parallel: false,
-                                hints: ExecutionHints::default(),
-                            });
-                        }
-                        Ok(PhysicalPlan::NestedLoopJoin {
-                            left: Box::new(optimized_left),
-                            right: Box::new(optimized_right),
-                            join_type: *join_type,
-                            condition: condition.clone(),
-                            schema: schema.clone(),
-                            parallel: false,
-                            hints: ExecutionHints::default(),
-                        })
-                    }
+                    JoinType::Inner | JoinType::Left | JoinType::Right | JoinType::Full => self
+                        .plan_equi_or_nested_join(
+                            left,
+                            right,
+                            *join_type,
+                            condition.as_ref(),
+                            schema,
+                            left_schema_len,
+                        ),
                 }
             }
 
@@ -1003,6 +963,89 @@ impl PhysicalPlanner {
                     offset,
                 })
             }
+        }
+    }
+
+    fn plan_equi_or_nested_join(
+        &self,
+        left: &LogicalPlan,
+        right: &LogicalPlan,
+        join_type: JoinType,
+        condition: Option<&yachtsql_ir::Expr>,
+        schema: &yachtsql_ir::PlanSchema,
+        left_schema_len: usize,
+    ) -> Result<PhysicalPlan> {
+        let Some(cond) = condition else {
+            let optimized_left = self.plan(left)?;
+            let optimized_right = self.plan(right)?;
+            return Ok(PhysicalPlan::NestedLoopJoin {
+                left: Box::new(optimized_left),
+                right: Box::new(optimized_right),
+                join_type,
+                condition: None,
+                schema: schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
+            });
+        };
+
+        if let Some((left_keys, right_keys, remaining)) =
+            extract_equi_join_keys_partial(cond, left_schema_len)
+        {
+            let (left_preds, right_preds, post_preds) =
+                classify_join_condition_predicates(join_type, &remaining, left_schema_len);
+
+            let optimized_left = if let Some(filter) = combine_predicates(left_preds) {
+                let base_left = self.plan(left)?;
+                PhysicalPlan::Filter {
+                    input: Box::new(base_left),
+                    predicate: filter,
+                }
+            } else {
+                self.plan(left)?
+            };
+
+            let optimized_right = if let Some(filter) = combine_predicates(right_preds) {
+                let base_right = self.plan(right)?;
+                PhysicalPlan::Filter {
+                    input: Box::new(base_right),
+                    predicate: filter,
+                }
+            } else {
+                self.plan(right)?
+            };
+
+            let hash_join = PhysicalPlan::HashJoin {
+                left: Box::new(optimized_left),
+                right: Box::new(optimized_right),
+                join_type,
+                left_keys,
+                right_keys,
+                schema: schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
+            };
+
+            if let Some(post_filter) = combine_predicates(post_preds) {
+                Ok(PhysicalPlan::Filter {
+                    input: Box::new(hash_join),
+                    predicate: post_filter,
+                })
+            } else {
+                Ok(hash_join)
+            }
+        } else {
+            let optimized_left = self.plan(left)?;
+            let optimized_right = self.plan(right)?;
+            Ok(PhysicalPlan::NestedLoopJoin {
+                left: Box::new(optimized_left),
+                right: Box::new(optimized_right),
+                join_type,
+                condition: Some(cond.clone()),
+                schema: schema.clone(),
+                parallel: false,
+                hints: ExecutionHints::default(),
+            })
         }
     }
 }

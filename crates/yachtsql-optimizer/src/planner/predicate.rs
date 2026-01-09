@@ -124,6 +124,40 @@ pub fn combine_predicates(predicates: Vec<Expr>) -> Option<Expr> {
     })
 }
 
+pub fn classify_join_condition_predicates(
+    join_type: JoinType,
+    remaining: &[Expr],
+    left_schema_len: usize,
+) -> (Vec<Expr>, Vec<Expr>, Vec<Expr>) {
+    let mut pushable_left = Vec::new();
+    let mut pushable_right = Vec::new();
+    let mut post_join = Vec::new();
+
+    for pred in remaining {
+        let side = classify_predicate_side(pred, left_schema_len);
+
+        match (join_type, side) {
+            (JoinType::Inner, Some(PredicateSide::Left)) => {
+                pushable_left.push(pred.clone());
+            }
+            (JoinType::Inner, Some(PredicateSide::Right)) => {
+                pushable_right.push(adjust_predicate_indices(pred, left_schema_len));
+            }
+            (JoinType::Left, Some(PredicateSide::Right)) => {
+                pushable_right.push(adjust_predicate_indices(pred, left_schema_len));
+            }
+            (JoinType::Right, Some(PredicateSide::Left)) => {
+                pushable_left.push(pred.clone());
+            }
+            _ => {
+                post_join.push(pred.clone());
+            }
+        }
+    }
+
+    (pushable_left, pushable_right, post_join)
+}
+
 pub fn adjust_predicate_indices(expr: &Expr, offset: usize) -> Expr {
     match expr {
         Expr::Column { table, name, index } => Expr::Column {
