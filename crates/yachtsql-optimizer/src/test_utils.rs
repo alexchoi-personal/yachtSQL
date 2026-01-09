@@ -271,6 +271,57 @@ macro_rules! assert_plan {
             ),
         }
     };
+
+    ($plan:expr, Union { inputs: [$($($input:tt)+),+] }) => {
+        match &$plan {
+            PhysicalPlan::Union { inputs, .. } => {
+                let mut idx = 0;
+                $(
+                    assert_plan!(inputs[idx], $($input)+);
+                    idx += 1;
+                )+
+                let _ = idx;
+            }
+            other => panic!(
+                "Expected Union, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
+
+    ($plan:expr, Union { all: $all:expr }) => {
+        match &$plan {
+            PhysicalPlan::Union { all, .. } => {
+                assert_eq!(*all, $all, "Union all mismatch");
+            }
+            other => panic!(
+                "Expected Union, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
+
+    ($plan:expr, Empty) => {
+        match &$plan {
+            PhysicalPlan::Empty { .. } => {}
+            other => panic!(
+                "Expected Empty, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
+
+    ($plan:expr, Window { input: ($($input:tt)+) }) => {
+        match &$plan {
+            PhysicalPlan::Window { input, .. } => {
+                assert_plan!(**input, $($input)+);
+            }
+            other => panic!(
+                "Expected Window, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
 }
 
 pub(crate) use assert_plan;
