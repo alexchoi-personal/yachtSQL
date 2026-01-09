@@ -10,10 +10,10 @@ fn input_is_unique(plan: &PhysicalPlan) -> bool {
         PhysicalPlan::Values { values, .. } => values.len() <= 1,
         PhysicalPlan::TopN { limit: 1, .. } => true,
         PhysicalPlan::Distinct { input } => input_is_unique(input),
+        PhysicalPlan::Project { input, .. } => input_is_unique(input),
+        PhysicalPlan::Filter { input, .. } => input_is_unique(input),
         PhysicalPlan::TableScan { .. }
         | PhysicalPlan::Sample { .. }
-        | PhysicalPlan::Filter { .. }
-        | PhysicalPlan::Project { .. }
         | PhysicalPlan::NestedLoopJoin { .. }
         | PhysicalPlan::CrossJoin { .. }
         | PhysicalPlan::HashJoin { .. }

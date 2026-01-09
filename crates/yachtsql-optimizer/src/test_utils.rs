@@ -78,6 +78,36 @@ pub(crate) fn optimize_sql_default(sql: &str) -> PhysicalPlan {
     optimize_sql(sql, &test_catalog())
 }
 
+#[allow(dead_code)]
+pub(crate) fn get_plan_children(plan: &PhysicalPlan) -> Vec<&PhysicalPlan> {
+    match plan {
+        PhysicalPlan::Project { input, .. }
+        | PhysicalPlan::Filter { input, .. }
+        | PhysicalPlan::Sort { input, .. }
+        | PhysicalPlan::Limit { input, .. }
+        | PhysicalPlan::TopN { input, .. }
+        | PhysicalPlan::HashAggregate { input, .. }
+        | PhysicalPlan::Distinct { input }
+        | PhysicalPlan::Window { input, .. }
+        | PhysicalPlan::Unnest { input, .. }
+        | PhysicalPlan::Qualify { input, .. }
+        | PhysicalPlan::Sample { input, .. }
+        | PhysicalPlan::GapFill { input, .. } => vec![input.as_ref()],
+
+        PhysicalPlan::HashJoin { left, right, .. }
+        | PhysicalPlan::NestedLoopJoin { left, right, .. }
+        | PhysicalPlan::CrossJoin { left, right, .. }
+        | PhysicalPlan::Intersect { left, right, .. }
+        | PhysicalPlan::Except { left, right, .. } => vec![left.as_ref(), right.as_ref()],
+
+        PhysicalPlan::Union { inputs, .. } => inputs.iter().collect(),
+
+        PhysicalPlan::WithCte { body, .. } => vec![body.as_ref()],
+
+        _ => vec![],
+    }
+}
+
 macro_rules! assert_plan {
     ($plan:expr, _) => {};
 
@@ -113,6 +143,7 @@ macro_rules! assert_plan {
     ($plan:expr, Filter { input: ($($input:tt)+) }) => {
         match &$plan {
             PhysicalPlan::Filter { input, .. } => {
+                let _ = &input;
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Filter, got {:?}", std::mem::discriminant(other)),
@@ -122,6 +153,7 @@ macro_rules! assert_plan {
     ($plan:expr, Filter { input: ($($input:tt)+), predicate: _ }) => {
         match &$plan {
             PhysicalPlan::Filter { input, .. } => {
+                let _ = &input;
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Filter, got {:?}", std::mem::discriminant(other)),
@@ -131,6 +163,7 @@ macro_rules! assert_plan {
     ($plan:expr, Project { input: ($($input:tt)+) }) => {
         match &$plan {
             PhysicalPlan::Project { input, .. } => {
+                let _ = &input;
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Project, got {:?}", std::mem::discriminant(other)),
@@ -251,6 +284,7 @@ macro_rules! assert_plan {
     ($plan:expr, HashAggregate { input: ($($input:tt)+) }) => {
         match &$plan {
             PhysicalPlan::HashAggregate { input, .. } => {
+                let _ = &input;
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
@@ -263,6 +297,7 @@ macro_rules! assert_plan {
     ($plan:expr, Distinct { input: ($($input:tt)+) }) => {
         match &$plan {
             PhysicalPlan::Distinct { input } => {
+                let _ = &input;
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
@@ -321,6 +356,91 @@ macro_rules! assert_plan {
                 std::mem::discriminant(other)
             ),
         }
+    };
+
+    ($plan:expr, contains HashJoin { join_type: $jt:expr }) => {
+        fn find_join(plan: &PhysicalPlan, target: yachtsql_ir::JoinType) -> bool {
+            match plan {
+                PhysicalPlan::HashJoin { join_type, .. } if *join_type == target => true,
+                PhysicalPlan::NestedLoopJoin { join_type, .. } if *join_type == target => true,
+                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_join(c, target)),
+            }
+        }
+        assert!(
+            find_join(&$plan, $jt),
+            "Expected plan to contain HashJoin/NestedLoopJoin with join_type {:?}",
+            $jt
+        );
+    };
+
+    ($plan:expr, contains Distinct) => {
+        fn find_distinct(plan: &PhysicalPlan) -> bool {
+            match plan {
+                PhysicalPlan::Distinct { .. } => true,
+                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_distinct(c)),
+            }
+        }
+        assert!(find_distinct(&$plan), "Expected plan to contain Distinct");
+    };
+
+    ($plan:expr, contains Filter) => {
+        fn find_filter(plan: &PhysicalPlan) -> bool {
+            match plan {
+                PhysicalPlan::Filter { .. } => true,
+                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_filter(c)),
+            }
+        }
+        assert!(find_filter(&$plan), "Expected plan to contain Filter");
+    };
+
+    ($plan:expr, contains HashAggregate) => {
+        fn find_agg(plan: &PhysicalPlan) -> bool {
+            match plan {
+                PhysicalPlan::HashAggregate { .. } => true,
+                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_agg(c)),
+            }
+        }
+        assert!(find_agg(&$plan), "Expected plan to contain HashAggregate");
+    };
+
+    ($plan:expr, contains TopN) => {
+        fn find_topn(plan: &PhysicalPlan) -> bool {
+            match plan {
+                PhysicalPlan::TopN { .. } => true,
+                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_topn(c)),
+            }
+        }
+        assert!(find_topn(&$plan), "Expected plan to contain TopN");
+    };
+
+    ($plan:expr, contains Limit) => {
+        fn find_limit(plan: &PhysicalPlan) -> bool {
+            match plan {
+                PhysicalPlan::Limit { .. } => true,
+                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_limit(c)),
+            }
+        }
+        assert!(find_limit(&$plan), "Expected plan to contain Limit");
+    };
+
+    ($plan:expr, not_contains Distinct) => {
+        fn find_distinct(plan: &PhysicalPlan) -> bool {
+            match plan {
+                PhysicalPlan::Distinct { .. } => true,
+                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_distinct(c)),
+            }
+        }
+        assert!(!find_distinct(&$plan), "Expected plan to NOT contain Distinct");
+    };
+
+    ($plan:expr, not_contains Filter) => {
+        fn find_filter(plan: &PhysicalPlan) -> bool {
+            match plan {
+                PhysicalPlan::Filter { .. } => true,
+                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_filter(c)),
+            }
+        }
+        assert!(!find_filter(&$plan), "Expected plan to NOT contain Filter");
     };
 }
 

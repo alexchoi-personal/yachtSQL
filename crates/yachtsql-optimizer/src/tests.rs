@@ -5702,4 +5702,406 @@ mod sql_optimizer_tests {
             );
         }
     }
+
+    mod outer_to_inner_join {
+        use super::*;
+
+        #[test]
+        fn left_join_with_is_not_null_becomes_inner() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 LEFT JOIN customers c ON o.customer_id = c.id
+                 WHERE c.id IS NOT NULL",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (Filter {
+                        input: (HashJoin {
+                            left: (TableScan {
+                                table_name: "orders"
+                            }),
+                            right: (TableScan {
+                                table_name: "customers"
+                            }),
+                            join_type: JoinType::Inner
+                        })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn left_join_with_equality_on_right_becomes_inner() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 LEFT JOIN customers c ON o.customer_id = c.id
+                 WHERE c.country = 'USA'",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (Filter {
+                        input: (HashJoin {
+                            left: (TableScan {
+                                table_name: "orders"
+                            }),
+                            right: (TableScan {
+                                table_name: "customers"
+                            }),
+                            join_type: JoinType::Inner
+                        })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn left_join_with_is_null_stays_left() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 LEFT JOIN customers c ON o.customer_id = c.id
+                 WHERE c.id IS NULL",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (Filter {
+                        input: (HashJoin {
+                            left: (TableScan {
+                                table_name: "orders"
+                            }),
+                            right: (TableScan {
+                                table_name: "customers"
+                            }),
+                            join_type: JoinType::Left
+                        })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn left_join_with_filter_on_left_only_stays_left() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 LEFT JOIN customers c ON o.customer_id = c.id
+                 WHERE o.amount > 100",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (Filter {
+                            input: (TableScan {
+                                table_name: "orders"
+                            })
+                        }),
+                        right: (TableScan {
+                            table_name: "customers"
+                        }),
+                        join_type: JoinType::Left
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn left_join_with_comparison_on_right_becomes_inner() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 LEFT JOIN customers c ON o.customer_id = c.id
+                 WHERE c.id > 5",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (Filter {
+                        input: (HashJoin {
+                            left: (TableScan {
+                                table_name: "orders"
+                            }),
+                            right: (TableScan {
+                                table_name: "customers"
+                            }),
+                            join_type: JoinType::Inner
+                        })
+                    })
+                }
+            );
+        }
+    }
+
+    mod filter_pushdown_aggregate {
+        use super::*;
+
+        #[test]
+        fn filter_on_group_by_column_pushed_below_aggregate() {
+            let plan = optimize_sql_default(
+                "SELECT customer_id, SUM(amount) as total
+                 FROM orders
+                 GROUP BY customer_id
+                 HAVING customer_id > 10",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashAggregate {
+                        input: (Filter { input: (_) })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn filter_on_aggregate_result_stays_above() {
+            let plan = optimize_sql_default(
+                "SELECT customer_id, SUM(amount) as total
+                 FROM orders
+                 GROUP BY customer_id
+                 HAVING SUM(amount) > 1000",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (Filter {
+                        input: (HashAggregate { input: (_) })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn mixed_having_splits_predicates() {
+            let plan = optimize_sql_default(
+                "SELECT customer_id, SUM(amount) as total
+                 FROM orders
+                 GROUP BY customer_id
+                 HAVING customer_id > 10 AND SUM(amount) > 1000",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (Filter {
+                        input: (HashAggregate {
+                            input: (Filter { input: (_) })
+                        })
+                    })
+                }
+            );
+        }
+    }
+
+    mod distinct_elimination {
+        use super::*;
+
+        #[test]
+        fn distinct_on_aggregate_with_group_by_eliminated() {
+            let plan = optimize_sql_default(
+                "SELECT DISTINCT customer_id, COUNT(*)
+                 FROM orders
+                 GROUP BY customer_id",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashAggregate { input: (_) })
+                }
+            );
+        }
+
+        #[test]
+        fn distinct_on_limit_one_eliminated() {
+            let plan =
+                optimize_sql_default("SELECT DISTINCT * FROM (SELECT * FROM orders LIMIT 1) t");
+
+            fn has_distinct(plan: &PhysicalPlan) -> bool {
+                match plan {
+                    PhysicalPlan::Distinct { .. } => true,
+                    PhysicalPlan::Project { input, .. } => has_distinct(input),
+                    PhysicalPlan::Filter { input, .. } => has_distinct(input),
+                    PhysicalPlan::Limit { input, .. } => has_distinct(input),
+                    _ => false,
+                }
+            }
+
+            assert!(
+                !has_distinct(&plan),
+                "DISTINCT should be eliminated when input is LIMIT 1"
+            );
+        }
+
+        #[test]
+        fn distinct_on_regular_table_preserved() {
+            let plan = optimize_sql_default("SELECT DISTINCT status FROM orders");
+
+            assert_plan!(
+                plan,
+                Distinct {
+                    input: (Project { input: (_) })
+                }
+            );
+        }
+    }
+
+    mod project_merging {
+        use super::*;
+
+        #[test]
+        fn nested_selects_merged_into_single_project() {
+            let plan = optimize_sql_default(
+                "SELECT id FROM (SELECT id, customer_id FROM (SELECT * FROM orders) t1) t2",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (TableScan {
+                        table_name: "orders"
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn expression_composition_works() {
+            let plan =
+                optimize_sql_default("SELECT x * 2 FROM (SELECT amount + 1 AS x FROM orders) t");
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (TableScan {
+                        table_name: "orders"
+                    })
+                }
+            );
+        }
+    }
+
+    mod topn_pushdown {
+        use super::*;
+
+        fn count_limits_in_union(plan: &PhysicalPlan) -> usize {
+            match plan {
+                PhysicalPlan::TopN { input, .. } | PhysicalPlan::Limit { input, .. } => {
+                    1 + count_limits_in_union(input)
+                }
+                PhysicalPlan::Union {
+                    inputs, all: true, ..
+                } => inputs.iter().map(count_limits_in_union).sum(),
+                PhysicalPlan::Project { input, .. }
+                | PhysicalPlan::Sort { input, .. }
+                | PhysicalPlan::Filter { input, .. } => count_limits_in_union(input),
+                _ => 0,
+            }
+        }
+
+        #[test]
+        fn topn_pushed_through_union_all() {
+            let plan = optimize_sql_default(
+                "SELECT * FROM (
+                    SELECT id, amount FROM orders
+                    UNION ALL
+                    SELECT id, amount FROM orders
+                 ) t
+                 ORDER BY amount
+                 LIMIT 10",
+            );
+
+            let limit_count = count_limits_in_union(&plan);
+            assert!(
+                limit_count >= 1,
+                "Should have TopN/Limit in plan with UNION ALL (got {} limit nodes)",
+                limit_count
+            );
+        }
+
+        #[test]
+        fn union_distinct_query_has_limit() {
+            let plan = optimize_sql_default(
+                "SELECT * FROM (
+                    SELECT id, amount FROM orders
+                    UNION
+                    SELECT id, amount FROM orders
+                 ) t
+                 ORDER BY amount
+                 LIMIT 10",
+            );
+
+            fn has_limit_or_topn(plan: &PhysicalPlan) -> bool {
+                match plan {
+                    PhysicalPlan::TopN { .. } | PhysicalPlan::Limit { .. } => true,
+                    PhysicalPlan::Project { input, .. }
+                    | PhysicalPlan::Sort { input, .. }
+                    | PhysicalPlan::Filter { input, .. }
+                    | PhysicalPlan::Distinct { input } => has_limit_or_topn(input),
+                    PhysicalPlan::Union { inputs, .. } => inputs.iter().any(has_limit_or_topn),
+                    _ => false,
+                }
+            }
+
+            assert!(
+                has_limit_or_topn(&plan),
+                "UNION DISTINCT query with LIMIT should have limit/topn in plan"
+            );
+        }
+    }
+
+    mod predicate_inference {
+        use yachtsql_parser::parse_and_plan;
+
+        use super::*;
+        use crate::test_utils::test_catalog;
+        use crate::{OptimizationLevel, OptimizerSettings, optimize_with_settings};
+
+        fn optimize_aggressive(sql: &str) -> PhysicalPlan {
+            let catalog = test_catalog();
+            let logical = parse_and_plan(sql, &catalog).expect("failed to parse SQL");
+            let settings = OptimizerSettings::with_level(OptimizationLevel::Aggressive);
+            optimize_with_settings(&logical, &settings).expect("failed to optimize")
+        }
+
+        fn count_filters(plan: &PhysicalPlan) -> usize {
+            match plan {
+                PhysicalPlan::Filter { input, .. } => 1 + count_filters(input),
+                PhysicalPlan::Project { input, .. } => count_filters(input),
+                PhysicalPlan::HashJoin { left, right, .. } => {
+                    count_filters(left) + count_filters(right)
+                }
+                _ => 0,
+            }
+        }
+
+        #[test]
+        fn transitivity_infers_predicates() {
+            let plan = optimize_aggressive(
+                "SELECT *
+                 FROM orders o
+                 JOIN customers c ON o.customer_id = c.id
+                 WHERE o.customer_id = 5",
+            );
+
+            let filter_count = count_filters(&plan);
+            assert!(
+                filter_count >= 1,
+                "Should have at least one filter after inference, got {}",
+                filter_count
+            );
+        }
+    }
 }
