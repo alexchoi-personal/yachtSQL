@@ -1,6 +1,202 @@
 #![coverage(off)]
 
 #[cfg(test)]
+mod benchmark_query_analysis {
+    use yachtsql_common::types::DataType;
+    use yachtsql_storage::{Field, Schema};
+
+    use crate::test_utils::MockCatalog;
+    use crate::{OptimizerSettings, PhysicalPlan, RuleFlags, optimize_with_settings};
+
+    fn users_schema() -> Schema {
+        Schema::from_fields(vec![
+            Field::nullable("id", DataType::Int64),
+            Field::nullable("name", DataType::String),
+            Field::nullable("status", DataType::String),
+            Field::nullable("country", DataType::String),
+            Field::nullable("score", DataType::Int64),
+        ])
+    }
+
+    fn test_catalog() -> MockCatalog {
+        MockCatalog::new().with_table("users", users_schema())
+    }
+
+    fn plan_variant_name(plan: &PhysicalPlan) -> &'static str {
+        match plan {
+            PhysicalPlan::TableScan { .. } => "TableScan",
+            PhysicalPlan::Filter { .. } => "Filter",
+            PhysicalPlan::Project { .. } => "Project",
+            PhysicalPlan::HashAggregate { .. } => "HashAggregate",
+            PhysicalPlan::HashJoin { .. } => "HashJoin",
+            PhysicalPlan::Sort { .. } => "Sort",
+            PhysicalPlan::TopN { .. } => "TopN",
+            PhysicalPlan::Limit { .. } => "Limit",
+            PhysicalPlan::Distinct { .. } => "Distinct",
+            PhysicalPlan::Union { .. } => "Union",
+            PhysicalPlan::WithCte { .. } => "WithCte",
+            PhysicalPlan::Empty { .. } => "Empty",
+            _ => "Other",
+        }
+    }
+
+    fn print_plan_tree(plan: &PhysicalPlan, indent: usize) {
+        let prefix = "  ".repeat(indent);
+        print!("{}{}", prefix, plan_variant_name(plan));
+
+        match plan {
+            PhysicalPlan::TableScan { table_name, .. } => println!("({})", table_name),
+            PhysicalPlan::Filter { input, .. } => {
+                println!();
+                print_plan_tree(input, indent + 1);
+            }
+            PhysicalPlan::Project { input, .. } => {
+                println!();
+                print_plan_tree(input, indent + 1);
+            }
+            PhysicalPlan::HashAggregate { input, .. } => {
+                println!();
+                print_plan_tree(input, indent + 1);
+            }
+            PhysicalPlan::Sort { input, .. } => {
+                println!();
+                print_plan_tree(input, indent + 1);
+            }
+            PhysicalPlan::TopN { input, limit, .. } => {
+                println!("(limit={})", limit);
+                print_plan_tree(input, indent + 1);
+            }
+            PhysicalPlan::Limit { input, limit, .. } => {
+                println!("(limit={:?})", limit);
+                print_plan_tree(input, indent + 1);
+            }
+            PhysicalPlan::Distinct { input } => {
+                println!();
+                print_plan_tree(input, indent + 1);
+            }
+            PhysicalPlan::Union { inputs, all, .. } => {
+                println!("(all={})", all);
+                for inp in inputs {
+                    print_plan_tree(inp, indent + 1);
+                }
+            }
+            PhysicalPlan::WithCte { body, .. } => {
+                println!();
+                print_plan_tree(body, indent + 1);
+            }
+            _ => println!(),
+        }
+    }
+
+    fn optimize_with_rule(sql: &str, rule_flag: fn(&mut RuleFlags)) -> PhysicalPlan {
+        let catalog = test_catalog();
+        let logical = yachtsql_parser::parse_and_plan(sql, &catalog).expect("failed to parse SQL");
+
+        let mut flags = RuleFlags::all_disabled();
+        rule_flag(&mut flags);
+
+        let settings = OptimizerSettings {
+            rules: flags,
+            ..Default::default()
+        };
+
+        optimize_with_settings(&logical, &settings).expect("failed to optimize")
+    }
+
+    fn optimize_without_rules(sql: &str) -> PhysicalPlan {
+        let catalog = test_catalog();
+        let logical = yachtsql_parser::parse_and_plan(sql, &catalog).expect("failed to parse SQL");
+
+        let settings = OptimizerSettings {
+            rules: RuleFlags::all_disabled(),
+            ..Default::default()
+        };
+
+        optimize_with_settings(&logical, &settings).expect("failed to optimize")
+    }
+
+    #[test]
+    fn analyze_filter_merging() {
+        let sql = "WITH base AS (SELECT * FROM users WHERE status = 'active') SELECT * FROM base WHERE country = 'US' AND score > 50";
+
+        println!("\n=== FILTER_MERGING ===");
+        println!("Query: {}", sql);
+
+        println!("\nWithout optimization:");
+        let plan_off = optimize_without_rules(sql);
+        print_plan_tree(&plan_off, 0);
+
+        println!("\nWith filter_merging:");
+        let plan_on = optimize_with_rule(sql, |f| f.filter_merging = Some(true));
+        print_plan_tree(&plan_on, 0);
+    }
+
+    #[test]
+    fn analyze_distinct_elimination() {
+        let sql = "SELECT DISTINCT * FROM (SELECT * FROM users LIMIT 1) sub";
+
+        println!("\n=== DISTINCT_ELIMINATION ===");
+        println!("Query: {}", sql);
+
+        println!("\nWithout optimization:");
+        let plan_off = optimize_without_rules(sql);
+        print_plan_tree(&plan_off, 0);
+
+        println!("\nWith distinct_elimination:");
+        let plan_on = optimize_with_rule(sql, |f| f.distinct_elimination = Some(true));
+        print_plan_tree(&plan_on, 0);
+    }
+
+    #[test]
+    fn analyze_sort_elimination() {
+        let sql = "WITH ordered AS (SELECT * FROM users ORDER BY score) SELECT * FROM ordered ORDER BY score";
+
+        println!("\n=== SORT_ELIMINATION ===");
+        println!("Query: {}", sql);
+
+        println!("\nWithout optimization:");
+        let plan_off = optimize_without_rules(sql);
+        print_plan_tree(&plan_off, 0);
+
+        println!("\nWith sort_elimination:");
+        let plan_on = optimize_with_rule(sql, |f| f.sort_elimination = Some(true));
+        print_plan_tree(&plan_on, 0);
+    }
+
+    #[test]
+    fn analyze_topn_pushdown() {
+        let sql = "SELECT * FROM (SELECT * FROM users UNION ALL SELECT * FROM users) ORDER BY score DESC LIMIT 10";
+
+        println!("\n=== TOPN_PUSHDOWN ===");
+        println!("Query: {}", sql);
+
+        println!("\nWithout optimization:");
+        let plan_off = optimize_without_rules(sql);
+        print_plan_tree(&plan_off, 0);
+
+        println!("\nWith topn_pushdown:");
+        let plan_on = optimize_with_rule(sql, |f| f.topn_pushdown = Some(true));
+        print_plan_tree(&plan_on, 0);
+    }
+
+    #[test]
+    fn analyze_filter_pushdown_agg() {
+        let sql = "SELECT country, cnt FROM (SELECT country, COUNT(*) as cnt FROM users GROUP BY country) WHERE country = 'US'";
+
+        println!("\n=== FILTER_PUSHDOWN_AGG ===");
+        println!("Query: {}", sql);
+
+        println!("\nWithout optimization:");
+        let plan_off = optimize_without_rules(sql);
+        print_plan_tree(&plan_off, 0);
+
+        println!("\nWith filter_pushdown_aggregate:");
+        let plan_on = optimize_with_rule(sql, |f| f.filter_pushdown_aggregate = Some(true));
+        print_plan_tree(&plan_on, 0);
+    }
+}
+
+#[cfg(test)]
 mod join_order_tests {
     use rustc_hash::FxHashMap;
     use yachtsql_common::types::DataType;

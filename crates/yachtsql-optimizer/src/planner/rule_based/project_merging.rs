@@ -124,7 +124,7 @@ fn can_merge_projects(outer_exprs: &[Expr], inner_exprs: &[Expr]) -> bool {
     true
 }
 
-fn substitute_column_refs(expr: &Expr, inner_exprs: &[Expr]) -> Expr {
+pub(crate) fn substitute_column_refs(expr: &Expr, inner_exprs: &[Expr]) -> Expr {
     match expr {
         Expr::Column { index: Some(i), .. } => {
             if *i < inner_exprs.len() {
