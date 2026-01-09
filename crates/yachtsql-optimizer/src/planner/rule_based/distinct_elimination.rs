@@ -4,7 +4,6 @@ use crate::PhysicalPlan;
 
 fn input_is_unique(plan: &PhysicalPlan) -> bool {
     match plan {
-        PhysicalPlan::HashAggregate { group_by, .. } => !group_by.is_empty(),
         PhysicalPlan::Limit { limit: Some(1), .. } => true,
         PhysicalPlan::Empty { .. } => true,
         PhysicalPlan::Values { values, .. } => values.len() <= 1,
@@ -13,6 +12,7 @@ fn input_is_unique(plan: &PhysicalPlan) -> bool {
         PhysicalPlan::Project { input, .. } => input_is_unique(input),
         PhysicalPlan::Filter { input, .. } => input_is_unique(input),
         PhysicalPlan::TableScan { .. }
+        | PhysicalPlan::HashAggregate { .. }
         | PhysicalPlan::Sample { .. }
         | PhysicalPlan::NestedLoopJoin { .. }
         | PhysicalPlan::CrossJoin { .. }
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn eliminates_distinct_over_hash_aggregate_with_group_by() {
+    fn preserves_distinct_over_hash_aggregate_with_group_by() {
         let scan = make_scan("t", 3);
         let agg = PhysicalPlan::HashAggregate {
             input: Box::new(scan),
@@ -529,7 +529,7 @@ mod tests {
 
         let result = apply_distinct_elimination(distinct);
 
-        assert!(matches!(result, PhysicalPlan::HashAggregate { .. }));
+        assert!(matches!(result, PhysicalPlan::Distinct { .. }));
     }
 
     #[test]

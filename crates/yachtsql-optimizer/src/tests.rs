@@ -5909,7 +5909,7 @@ mod sql_optimizer_tests {
         use super::*;
 
         #[test]
-        fn distinct_on_aggregate_with_group_by_eliminated() {
+        fn distinct_on_aggregate_with_group_by_preserved() {
             let plan = optimize_sql_default(
                 "SELECT DISTINCT customer_id, COUNT(*)
                  FROM orders
@@ -5918,8 +5918,10 @@ mod sql_optimizer_tests {
 
             assert_plan!(
                 plan,
-                Project {
-                    input: (HashAggregate { input: (_) })
+                Distinct {
+                    input: (Project {
+                        input: (HashAggregate { input: (_) })
+                    })
                 }
             );
         }
