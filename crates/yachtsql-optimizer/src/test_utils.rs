@@ -78,36 +78,6 @@ pub(crate) fn optimize_sql_default(sql: &str) -> PhysicalPlan {
     optimize_sql(sql, &test_catalog())
 }
 
-#[allow(dead_code)]
-pub(crate) fn get_plan_children(plan: &PhysicalPlan) -> Vec<&PhysicalPlan> {
-    match plan {
-        PhysicalPlan::Project { input, .. }
-        | PhysicalPlan::Filter { input, .. }
-        | PhysicalPlan::Sort { input, .. }
-        | PhysicalPlan::Limit { input, .. }
-        | PhysicalPlan::TopN { input, .. }
-        | PhysicalPlan::HashAggregate { input, .. }
-        | PhysicalPlan::Distinct { input }
-        | PhysicalPlan::Window { input, .. }
-        | PhysicalPlan::Unnest { input, .. }
-        | PhysicalPlan::Qualify { input, .. }
-        | PhysicalPlan::Sample { input, .. }
-        | PhysicalPlan::GapFill { input, .. } => vec![input.as_ref()],
-
-        PhysicalPlan::HashJoin { left, right, .. }
-        | PhysicalPlan::NestedLoopJoin { left, right, .. }
-        | PhysicalPlan::CrossJoin { left, right, .. }
-        | PhysicalPlan::Intersect { left, right, .. }
-        | PhysicalPlan::Except { left, right, .. } => vec![left.as_ref(), right.as_ref()],
-
-        PhysicalPlan::Union { inputs, .. } => inputs.iter().collect(),
-
-        PhysicalPlan::WithCte { body, .. } => vec![body.as_ref()],
-
-        _ => vec![],
-    }
-}
-
 macro_rules! assert_plan {
     ($plan:expr, _) => {};
 
@@ -142,9 +112,8 @@ macro_rules! assert_plan {
 
     ($plan:expr, Filter { input: ($($input:tt)+) }) => {
         match &$plan {
-            PhysicalPlan::Filter { input, .. } => {
-                let _ = &input;
-                assert_plan!(**input, $($input)+);
+            PhysicalPlan::Filter { input: _input, .. } => {
+                assert_plan!(**_input, $($input)+);
             }
             other => panic!("Expected Filter, got {:?}", std::mem::discriminant(other)),
         }
@@ -152,8 +121,17 @@ macro_rules! assert_plan {
 
     ($plan:expr, Filter { input: ($($input:tt)+), predicate: _ }) => {
         match &$plan {
-            PhysicalPlan::Filter { input, .. } => {
-                let _ = &input;
+            PhysicalPlan::Filter { input: _input, .. } => {
+                assert_plan!(**_input, $($input)+);
+            }
+            other => panic!("Expected Filter, got {:?}", std::mem::discriminant(other)),
+        }
+    };
+
+    ($plan:expr, Filter { input: ($($input:tt)+), predicate: $pred_check:expr }) => {
+        match &$plan {
+            PhysicalPlan::Filter { input, predicate } => {
+                assert!($pred_check(predicate), "Filter predicate check failed: {:?}", predicate);
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Filter, got {:?}", std::mem::discriminant(other)),
@@ -162,8 +140,17 @@ macro_rules! assert_plan {
 
     ($plan:expr, Project { input: ($($input:tt)+) }) => {
         match &$plan {
-            PhysicalPlan::Project { input, .. } => {
-                let _ = &input;
+            PhysicalPlan::Project { input: _input, .. } => {
+                assert_plan!(**_input, $($input)+);
+            }
+            other => panic!("Expected Project, got {:?}", std::mem::discriminant(other)),
+        }
+    };
+
+    ($plan:expr, Project { input: ($($input:tt)+), expressions: $expr_check:expr }) => {
+        match &$plan {
+            PhysicalPlan::Project { input, expressions, .. } => {
+                assert!($expr_check(expressions), "Project expressions check failed: {:?}", expressions);
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Project, got {:?}", std::mem::discriminant(other)),
@@ -202,6 +189,39 @@ macro_rules! assert_plan {
         }
     };
 
+    ($plan:expr, HashJoin {
+        left: ($($left:tt)+),
+        right: ($($right:tt)+),
+        join_type: $jt:expr,
+        join_on: [$(($lk:expr, $rk:expr)),+ $(,)?]
+    }) => {
+        match &$plan {
+            PhysicalPlan::HashJoin {
+                left,
+                right,
+                join_type,
+                left_keys,
+                right_keys,
+                ..
+            } => {
+                assert_eq!(*join_type, $jt, "HashJoin join_type mismatch");
+                $(
+                    assert!(
+                        $crate::test_utils::join_keys_match(left_keys, right_keys, $lk, $rk),
+                        "HashJoin join_on missing ('{}', '{}'): left_keys={:?}, right_keys={:?}",
+                        $lk, $rk, left_keys, right_keys
+                    );
+                )+
+                assert_plan!(**left, $($left)+);
+                assert_plan!(**right, $($right)+);
+            }
+            other => panic!(
+                "Expected HashJoin, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
+
     ($plan:expr, NestedLoopJoin { left: ($($left:tt)+), right: ($($right:tt)+), join_type: $jt:expr }) => {
         match &$plan {
             PhysicalPlan::NestedLoopJoin {
@@ -211,6 +231,62 @@ macro_rules! assert_plan {
                 ..
             } => {
                 assert_eq!(*join_type, $jt, "NestedLoopJoin join_type mismatch");
+                assert_plan!(**left, $($left)+);
+                assert_plan!(**right, $($right)+);
+            }
+            other => panic!(
+                "Expected NestedLoopJoin, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
+
+    ($plan:expr, NestedLoopJoin {
+        left: ($($left:tt)+),
+        right: ($($right:tt)+),
+        join_type: $jt:expr,
+        condition: ($lc:expr, $op:expr, $rc:expr)
+    }) => {
+        match &$plan {
+            PhysicalPlan::NestedLoopJoin {
+                left,
+                right,
+                join_type,
+                condition,
+                ..
+            } => {
+                assert_eq!(*join_type, $jt, "NestedLoopJoin join_type mismatch");
+                assert!(
+                    condition.as_ref().is_some_and(|e| $crate::test_utils::is_binary_op_columns(e, $lc, $op, $rc)),
+                    "NestedLoopJoin condition mismatch: expected ({} {} {}), got {:?}",
+                    $lc, $op, $rc, condition
+                );
+                assert_plan!(**left, $($left)+);
+                assert_plan!(**right, $($right)+);
+            }
+            other => panic!(
+                "Expected NestedLoopJoin, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
+
+    ($plan:expr, NestedLoopJoin {
+        left: ($($left:tt)+),
+        right: ($($right:tt)+),
+        join_type: $jt:expr,
+        condition: $cond_check:expr
+    }) => {
+        match &$plan {
+            PhysicalPlan::NestedLoopJoin {
+                left,
+                right,
+                join_type,
+                condition,
+                ..
+            } => {
+                assert_eq!(*join_type, $jt, "NestedLoopJoin join_type mismatch");
+                assert!($cond_check(condition), "NestedLoopJoin condition check failed: {:?}", condition);
                 assert_plan!(**left, $($left)+);
                 assert_plan!(**right, $($right)+);
             }
@@ -243,6 +319,16 @@ macro_rules! assert_plan {
         }
     };
 
+    ($plan:expr, Sort { input: ($($input:tt)+), sort_exprs: $sort_check:expr }) => {
+        match &$plan {
+            PhysicalPlan::Sort { input, sort_exprs, .. } => {
+                assert!($sort_check(sort_exprs), "Sort sort_exprs check failed: {:?}", sort_exprs);
+                assert_plan!(**input, $($input)+);
+            }
+            other => panic!("Expected Sort, got {:?}", std::mem::discriminant(other)),
+        }
+    };
+
     ($plan:expr, Limit { input: ($($input:tt)+) }) => {
         match &$plan {
             PhysicalPlan::Limit { input, .. } => {
@@ -256,6 +342,17 @@ macro_rules! assert_plan {
         match &$plan {
             PhysicalPlan::Limit { input, limit, .. } => {
                 assert_eq!(*limit, $lim, "Limit value mismatch");
+                assert_plan!(**input, $($input)+);
+            }
+            other => panic!("Expected Limit, got {:?}", std::mem::discriminant(other)),
+        }
+    };
+
+    ($plan:expr, Limit { input: ($($input:tt)+), limit: $lim:expr, offset: $off:expr }) => {
+        match &$plan {
+            PhysicalPlan::Limit { input, limit, offset } => {
+                assert_eq!(*limit, $lim, "Limit value mismatch");
+                assert_eq!(*offset, $off, "Limit offset mismatch");
                 assert_plan!(**input, $($input)+);
             }
             other => panic!("Expected Limit, got {:?}", std::mem::discriminant(other)),
@@ -281,10 +378,47 @@ macro_rules! assert_plan {
         }
     };
 
+    ($plan:expr, TopN { input: ($($input:tt)+), limit: $lim:expr, sort_exprs: $sort_check:expr }) => {
+        match &$plan {
+            PhysicalPlan::TopN { input, limit, sort_exprs, .. } => {
+                assert_eq!(*limit, $lim, "TopN limit mismatch");
+                assert!($sort_check(sort_exprs), "TopN sort_exprs check failed: {:?}", sort_exprs);
+                assert_plan!(**input, $($input)+);
+            }
+            other => panic!("Expected TopN, got {:?}", std::mem::discriminant(other)),
+        }
+    };
+
     ($plan:expr, HashAggregate { input: ($($input:tt)+) }) => {
         match &$plan {
-            PhysicalPlan::HashAggregate { input, .. } => {
-                let _ = &input;
+            PhysicalPlan::HashAggregate { input: _input, .. } => {
+                assert_plan!(**_input, $($input)+);
+            }
+            other => panic!(
+                "Expected HashAggregate, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
+
+    ($plan:expr, HashAggregate { input: ($($input:tt)+), group_exprs: $grp_check:expr }) => {
+        match &$plan {
+            PhysicalPlan::HashAggregate { input, group_exprs, .. } => {
+                assert!($grp_check(group_exprs), "HashAggregate group_exprs check failed: {:?}", group_exprs);
+                assert_plan!(**input, $($input)+);
+            }
+            other => panic!(
+                "Expected HashAggregate, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
+
+    ($plan:expr, HashAggregate { input: ($($input:tt)+), group_exprs: $grp_check:expr, aggregates: $agg_check:expr }) => {
+        match &$plan {
+            PhysicalPlan::HashAggregate { input, group_exprs, aggregates, .. } => {
+                assert!($grp_check(group_exprs), "HashAggregate group_exprs check failed: {:?}", group_exprs);
+                assert!($agg_check(aggregates), "HashAggregate aggregates check failed: {:?}", aggregates);
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
@@ -297,7 +431,6 @@ macro_rules! assert_plan {
     ($plan:expr, Distinct { input: ($($input:tt)+) }) => {
         match &$plan {
             PhysicalPlan::Distinct { input } => {
-                let _ = &input;
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
@@ -306,142 +439,85 @@ macro_rules! assert_plan {
             ),
         }
     };
-
-    ($plan:expr, Union { inputs: [$($($input:tt)+),+] }) => {
-        match &$plan {
-            PhysicalPlan::Union { inputs, .. } => {
-                let mut idx = 0;
-                $(
-                    assert_plan!(inputs[idx], $($input)+);
-                    idx += 1;
-                )+
-                let _ = idx;
-            }
-            other => panic!(
-                "Expected Union, got {:?}",
-                std::mem::discriminant(other)
-            ),
-        }
-    };
-
-    ($plan:expr, Union { all: $all:expr }) => {
-        match &$plan {
-            PhysicalPlan::Union { all, .. } => {
-                assert_eq!(*all, $all, "Union all mismatch");
-            }
-            other => panic!(
-                "Expected Union, got {:?}",
-                std::mem::discriminant(other)
-            ),
-        }
-    };
-
-    ($plan:expr, Empty) => {
-        match &$plan {
-            PhysicalPlan::Empty { .. } => {}
-            other => panic!(
-                "Expected Empty, got {:?}",
-                std::mem::discriminant(other)
-            ),
-        }
-    };
-
-    ($plan:expr, Window { input: ($($input:tt)+) }) => {
-        match &$plan {
-            PhysicalPlan::Window { input, .. } => {
-                assert_plan!(**input, $($input)+);
-            }
-            other => panic!(
-                "Expected Window, got {:?}",
-                std::mem::discriminant(other)
-            ),
-        }
-    };
-
-    ($plan:expr, contains HashJoin { join_type: $jt:expr }) => {
-        fn find_join(plan: &PhysicalPlan, target: yachtsql_ir::JoinType) -> bool {
-            match plan {
-                PhysicalPlan::HashJoin { join_type, .. } if *join_type == target => true,
-                PhysicalPlan::NestedLoopJoin { join_type, .. } if *join_type == target => true,
-                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_join(c, target)),
-            }
-        }
-        assert!(
-            find_join(&$plan, $jt),
-            "Expected plan to contain HashJoin/NestedLoopJoin with join_type {:?}",
-            $jt
-        );
-    };
-
-    ($plan:expr, contains Distinct) => {
-        fn find_distinct(plan: &PhysicalPlan) -> bool {
-            match plan {
-                PhysicalPlan::Distinct { .. } => true,
-                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_distinct(c)),
-            }
-        }
-        assert!(find_distinct(&$plan), "Expected plan to contain Distinct");
-    };
-
-    ($plan:expr, contains Filter) => {
-        fn find_filter(plan: &PhysicalPlan) -> bool {
-            match plan {
-                PhysicalPlan::Filter { .. } => true,
-                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_filter(c)),
-            }
-        }
-        assert!(find_filter(&$plan), "Expected plan to contain Filter");
-    };
-
-    ($plan:expr, contains HashAggregate) => {
-        fn find_agg(plan: &PhysicalPlan) -> bool {
-            match plan {
-                PhysicalPlan::HashAggregate { .. } => true,
-                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_agg(c)),
-            }
-        }
-        assert!(find_agg(&$plan), "Expected plan to contain HashAggregate");
-    };
-
-    ($plan:expr, contains TopN) => {
-        fn find_topn(plan: &PhysicalPlan) -> bool {
-            match plan {
-                PhysicalPlan::TopN { .. } => true,
-                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_topn(c)),
-            }
-        }
-        assert!(find_topn(&$plan), "Expected plan to contain TopN");
-    };
-
-    ($plan:expr, contains Limit) => {
-        fn find_limit(plan: &PhysicalPlan) -> bool {
-            match plan {
-                PhysicalPlan::Limit { .. } => true,
-                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_limit(c)),
-            }
-        }
-        assert!(find_limit(&$plan), "Expected plan to contain Limit");
-    };
-
-    ($plan:expr, not_contains Distinct) => {
-        fn find_distinct(plan: &PhysicalPlan) -> bool {
-            match plan {
-                PhysicalPlan::Distinct { .. } => true,
-                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_distinct(c)),
-            }
-        }
-        assert!(!find_distinct(&$plan), "Expected plan to NOT contain Distinct");
-    };
-
-    ($plan:expr, not_contains Filter) => {
-        fn find_filter(plan: &PhysicalPlan) -> bool {
-            match plan {
-                PhysicalPlan::Filter { .. } => true,
-                _ => crate::test_utils::get_plan_children(plan).iter().any(|c| find_filter(c)),
-            }
-        }
-        assert!(!find_filter(&$plan), "Expected plan to NOT contain Filter");
-    };
 }
 
 pub(crate) use assert_plan;
+
+pub(crate) fn is_eq_column_literal(
+    expr: &yachtsql_ir::Expr,
+    col_name: &str,
+    lit_val: &str,
+) -> bool {
+    use yachtsql_ir::{BinaryOp, Expr, Literal};
+    match expr {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOp::Eq,
+            right,
+        } => {
+            let col_match = matches!(left.as_ref(), Expr::Column { name, .. } if name == col_name)
+                || matches!(right.as_ref(), Expr::Column { name, .. } if name == col_name);
+            let lit_match = matches!(left.as_ref(), Expr::Literal(Literal::String(s)) if s == lit_val)
+                || matches!(right.as_ref(), Expr::Literal(Literal::String(s)) if s == lit_val);
+            col_match && lit_match
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn is_gt_column_literal(expr: &yachtsql_ir::Expr, col_name: &str, lit_val: i64) -> bool {
+    use yachtsql_ir::{BinaryOp, Expr, Literal};
+    match expr {
+        Expr::BinaryOp {
+            left,
+            op: BinaryOp::Gt,
+            right,
+        } => {
+            let col_match = matches!(left.as_ref(), Expr::Column { name, .. } if name == col_name);
+            let lit_match =
+                matches!(right.as_ref(), Expr::Literal(Literal::Int64(v)) if *v == lit_val);
+            col_match && lit_match
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn is_column(expr: &yachtsql_ir::Expr, col_name: &str) -> bool {
+    matches!(expr, yachtsql_ir::Expr::Column { name, .. } if name == col_name)
+}
+
+pub(crate) fn join_keys_match(
+    left_keys: &[yachtsql_ir::Expr],
+    right_keys: &[yachtsql_ir::Expr],
+    left_col: &str,
+    right_col: &str,
+) -> bool {
+    left_keys
+        .iter()
+        .zip(right_keys.iter())
+        .any(|(lk, rk)| is_column(lk, left_col) && is_column(rk, right_col))
+}
+
+pub(crate) fn is_binary_op_columns(
+    expr: &yachtsql_ir::Expr,
+    left_col: &str,
+    op_str: &str,
+    right_col: &str,
+) -> bool {
+    use yachtsql_ir::{BinaryOp, Expr};
+    let expected_op = match op_str {
+        "=" => BinaryOp::Eq,
+        "!=" | "<>" => BinaryOp::NotEq,
+        ">" => BinaryOp::Gt,
+        "<" => BinaryOp::Lt,
+        ">=" => BinaryOp::GtEq,
+        "<=" => BinaryOp::LtEq,
+        _ => return false,
+    };
+    match expr {
+        Expr::BinaryOp { left, op, right } if *op == expected_op => {
+            is_column(left, left_col) && is_column(right, right_col)
+        }
+        _ => false,
+    }
+}

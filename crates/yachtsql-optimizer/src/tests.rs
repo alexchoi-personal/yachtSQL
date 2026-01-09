@@ -6104,4 +6104,199 @@ mod sql_optimizer_tests {
             );
         }
     }
+
+    mod join_condition_decomposition {
+        use super::*;
+        use crate::test_utils::{is_eq_column_literal, is_gt_column_literal};
+
+        #[test]
+        fn left_join_with_right_side_filter_uses_hash_join() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, o.amount
+                 FROM customers c
+                 LEFT JOIN orders o ON c.id = o.customer_id AND o.status = 'Completed'",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (TableScan {
+                            table_name: "customers"
+                        }),
+                        right: (Filter {
+                            input: (TableScan {
+                                table_name: "orders"
+                            }),
+                            predicate: |p| is_eq_column_literal(p, "status", "Completed")
+                        }),
+                        join_type: JoinType::Left,
+                        join_on: [("id", "customer_id")]
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn inner_join_with_mixed_conditions_uses_hash_join() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, o.amount
+                 FROM customers c
+                 INNER JOIN orders o ON c.id = o.customer_id AND c.country = 'US' AND o.amount > 100",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (Filter {
+                            input: (TableScan {
+                                table_name: "customers"
+                            }),
+                            predicate: |p| is_eq_column_literal(p, "country", "US")
+                        }),
+                        right: (Filter {
+                            input: (TableScan {
+                                table_name: "orders"
+                            }),
+                            predicate: |p| is_gt_column_literal(p, "amount", 100)
+                        }),
+                        join_type: JoinType::Inner,
+                        join_on: [("id", "customer_id")]
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn right_join_with_left_side_filter_uses_hash_join() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, o.amount
+                 FROM customers c
+                 RIGHT JOIN orders o ON c.id = o.customer_id AND c.country = 'US'",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (Filter {
+                            input: (TableScan {
+                                table_name: "customers"
+                            }),
+                            predicate: |p| is_eq_column_literal(p, "country", "US")
+                        }),
+                        right: (TableScan {
+                            table_name: "orders"
+                        }),
+                        join_type: JoinType::Right,
+                        join_on: [("id", "customer_id")]
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn full_join_with_non_equi_predicate_uses_post_join_filter() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, o.amount
+                 FROM customers c
+                 FULL OUTER JOIN orders o ON c.id = o.customer_id AND c.country = 'US'",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (Filter {
+                        input: (HashJoin {
+                            left: (TableScan {
+                                table_name: "customers"
+                            }),
+                            right: (TableScan {
+                                table_name: "orders"
+                            }),
+                            join_type: JoinType::Right,
+                            join_on: [("id", "customer_id")]
+                        }),
+                        predicate: |p| is_eq_column_literal(p, "country", "US")
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn pure_equi_join_uses_hash_join_without_filters() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, o.amount
+                 FROM customers c
+                 LEFT JOIN orders o ON c.id = o.customer_id",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (TableScan {
+                            table_name: "customers"
+                        }),
+                        right: (TableScan {
+                            table_name: "orders"
+                        }),
+                        join_type: JoinType::Left,
+                        join_on: [("id", "customer_id")]
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn no_equi_keys_uses_nested_loop_join() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, o.amount
+                 FROM customers c
+                 INNER JOIN orders o ON c.id > o.customer_id",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (NestedLoopJoin {
+                        left: (TableScan {
+                            table_name: "customers"
+                        }),
+                        right: (TableScan {
+                            table_name: "orders"
+                        }),
+                        join_type: JoinType::Inner,
+                        condition: ("id", ">", "customer_id")
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn multi_key_equi_join_uses_hash_join() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, o.amount
+                 FROM customers c
+                 INNER JOIN orders o ON c.id = o.customer_id AND c.name = o.status",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (TableScan {
+                            table_name: "customers"
+                        }),
+                        right: (TableScan {
+                            table_name: "orders"
+                        }),
+                        join_type: JoinType::Inner,
+                        join_on: [("id", "customer_id"), ("name", "status")]
+                    })
+                }
+            );
+        }
+    }
 }
