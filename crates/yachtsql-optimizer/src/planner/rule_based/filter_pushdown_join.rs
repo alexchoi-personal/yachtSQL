@@ -7,7 +7,20 @@ use super::super::predicate::{
     PredicateSide, classify_predicate_side, combine_predicates, remap_predicate_indices,
     split_and_predicates,
 };
+use super::project_merging::substitute_column_refs;
 use crate::PhysicalPlan;
+
+fn is_simple_column_ref(expr: &Expr) -> bool {
+    match expr {
+        Expr::Column { .. } => true,
+        Expr::Alias { expr: inner, .. } => is_simple_column_ref(inner),
+        _ => false,
+    }
+}
+
+fn all_simple_refs(expressions: &[Expr]) -> bool {
+    expressions.iter().all(is_simple_column_ref)
+}
 
 pub fn apply_filter_pushdown_join(plan: PhysicalPlan) -> PhysicalPlan {
     match plan {
@@ -313,6 +326,30 @@ fn try_push_filter_through_join(input: PhysicalPlan, predicate: Expr) -> Physica
             };
 
             wrap_with_filter(join, remaining)
+        }
+        PhysicalPlan::Project {
+            input: proj_input,
+            expressions,
+            schema,
+        } => {
+            if all_simple_refs(&expressions) {
+                let remapped_predicate = substitute_column_refs(&predicate, &expressions);
+                let pushed = try_push_filter_through_join(*proj_input, remapped_predicate);
+                PhysicalPlan::Project {
+                    input: Box::new(pushed),
+                    expressions,
+                    schema,
+                }
+            } else {
+                PhysicalPlan::Filter {
+                    input: Box::new(PhysicalPlan::Project {
+                        input: proj_input,
+                        expressions,
+                        schema,
+                    }),
+                    predicate,
+                }
+            }
         }
         other => PhysicalPlan::Filter {
             input: Box::new(other),

@@ -322,8 +322,18 @@ const RULES: &[RuleBench] = &[
     },
     RuleBench {
         name: "filter_pushdown_join",
-        query: "SELECT u.name, o.amount FROM users u JOIN orders o ON u.id = o.user_id WHERE u.country = 'US' AND o.status = 'active'",
-        variants: &[("off", &[]), ("on", &["OPTIMIZER_FILTER_PUSHDOWN_JOIN"])],
+        query: "SELECT * FROM (SELECT u.name as user_name, u.country, o.amount, o.status as order_status FROM users u JOIN orders o ON u.id = o.user_id) sub WHERE sub.country = 'US' AND sub.order_status = 'active'",
+        variants: &[
+            ("off", &[]),
+            ("pushdown_proj_only", &["OPTIMIZER_FILTER_PUSHDOWN_PROJECT"]),
+            (
+                "pushdown_proj+join",
+                &[
+                    "OPTIMIZER_FILTER_PUSHDOWN_PROJECT",
+                    "OPTIMIZER_FILTER_PUSHDOWN_JOIN",
+                ],
+            ),
+        ],
     },
 ];
 
@@ -471,6 +481,52 @@ fn bench_all_rules_combined(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_rule_speedup, bench_all_rules_combined);
+fn bench_filter_pushdown_join_scale(c: &mut Criterion) {
+    let mut group = c.benchmark_group("filter_pushdown_join_scale");
+    group.sample_size(10);
+
+    for scale in [10000, 25000, 50000] {
+        let rt = Runtime::new().unwrap();
+        let executor = AsyncQueryExecutor::new();
+        setup_data(&executor, &rt, scale);
+
+        let query = "SELECT * FROM (SELECT u.name as user_name, u.country, u.score, o.amount, o.status as order_status FROM users u JOIN orders o ON u.id = o.user_id) sub WHERE sub.country = 'US' AND sub.order_status = 'active' AND sub.score < 10";
+
+        disable_all_rules(&executor, &rt);
+        group.bench_with_input(BenchmarkId::new("off", scale), &scale, |b, _| {
+            b.to_async(&rt)
+                .iter(|| async { executor.execute_sql(query).await.unwrap() });
+        });
+
+        enable_rules(&executor, &rt, &["OPTIMIZER_FILTER_PUSHDOWN_PROJECT"]);
+        group.bench_with_input(
+            BenchmarkId::new("pushdown_proj_only", scale),
+            &scale,
+            |b, _| {
+                b.to_async(&rt)
+                    .iter(|| async { executor.execute_sql(query).await.unwrap() });
+            },
+        );
+
+        enable_rules(&executor, &rt, &["OPTIMIZER_FILTER_PUSHDOWN_JOIN"]);
+        group.bench_with_input(
+            BenchmarkId::new("pushdown_proj+join", scale),
+            &scale,
+            |b, _| {
+                b.to_async(&rt)
+                    .iter(|| async { executor.execute_sql(query).await.unwrap() });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_rule_speedup,
+    bench_all_rules_combined,
+    bench_filter_pushdown_join_scale
+);
 
 criterion_main!(benches);
