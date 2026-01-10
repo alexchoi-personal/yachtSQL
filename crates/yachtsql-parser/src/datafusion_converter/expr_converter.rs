@@ -924,7 +924,75 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             Ok(datetime::make_date(years, months, days))
         }
 
-        ScalarFunction::JsonValue | ScalarFunction::JsonExtractScalar => Ok(lit(ScalarValue::Null)),
+        ScalarFunction::JsonValue | ScalarFunction::JsonExtractScalar => {
+            let mut iter = args.into_iter();
+            let json_expr = iter.next().unwrap();
+            let path_expr = iter.next().unwrap_or_else(|| lit("$"));
+            Ok(json_value_udf().call(vec![json_expr, path_expr]))
+        }
+
+        ScalarFunction::JsonExtract => {
+            let mut iter = args.into_iter();
+            let json_expr = iter.next().unwrap();
+            let path_expr = iter.next().unwrap_or_else(|| lit("$"));
+            Ok(json_extract_udf().call(vec![json_expr, path_expr]))
+        }
+
+        ScalarFunction::JsonQuery => {
+            let mut iter = args.into_iter();
+            let json_expr = iter.next().unwrap();
+            let path_expr = iter.next().unwrap_or_else(|| lit("$"));
+            Ok(json_query_udf().call(vec![json_expr, path_expr]))
+        }
+
+        ScalarFunction::JsonExtractArray | ScalarFunction::JsonQueryArray => {
+            let mut iter = args.into_iter();
+            let json_expr = iter.next().unwrap();
+            let path_expr = iter.next().unwrap_or_else(|| lit("$"));
+            Ok(json_extract_array_udf().call(vec![json_expr, path_expr]))
+        }
+
+        ScalarFunction::JsonExtractStringArray | ScalarFunction::JsonValueArray => {
+            let mut iter = args.into_iter();
+            let json_expr = iter.next().unwrap();
+            let path_expr = iter.next().unwrap_or_else(|| lit("$"));
+            Ok(json_extract_string_array_udf().call(vec![json_expr, path_expr]))
+        }
+
+        ScalarFunction::ToJson => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(to_json_udf().call(vec![arg]))
+        }
+
+        ScalarFunction::ToJsonString => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(to_json_string_udf().call(vec![arg]))
+        }
+
+        ScalarFunction::ParseJson => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(parse_json_udf().call(vec![arg]))
+        }
+
+        ScalarFunction::JsonType => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(json_type_udf().call(vec![arg]))
+        }
+
+        ScalarFunction::JsonKeys => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(json_keys_udf().call(vec![arg]))
+        }
+
+        ScalarFunction::JsonArrayLength => {
+            let mut iter = args.into_iter();
+            let json_expr = iter.next().unwrap();
+            let path_expr = iter.next();
+            match path_expr {
+                Some(p) => Ok(json_array_length_udf().call(vec![json_expr, p])),
+                None => Ok(json_array_length_udf().call(vec![json_expr, lit("$")])),
+            }
+        }
 
         ScalarFunction::String => {
             let arg = args.into_iter().next().unwrap();
@@ -989,11 +1057,25 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             Ok(arg)
         }
 
-        ScalarFunction::Int64FromJson | ScalarFunction::Float64FromJson => {
-            Ok(lit(ScalarValue::Null))
+        ScalarFunction::Int64FromJson => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(int64_from_json_udf().call(vec![arg]))
         }
 
-        ScalarFunction::StringFromJson | ScalarFunction::BoolFromJson => Ok(lit(ScalarValue::Null)),
+        ScalarFunction::Float64FromJson => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(float64_from_json_udf().call(vec![arg]))
+        }
+
+        ScalarFunction::BoolFromJson => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(bool_from_json_udf().call(vec![arg]))
+        }
+
+        ScalarFunction::StringFromJson => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(string_from_json_udf().call(vec![arg]))
+        }
 
         ScalarFunction::CurrentDatetime => Ok(DFExpr::Cast(Cast::new(
             Box::new(datetime::now()),
@@ -1608,4 +1690,1332 @@ fn convert_window_frame_bound(bound: &yachtsql_ir::WindowFrameBound) -> DFResult
             Ok(WindowFrameBound::Following(ScalarValue::UInt64(Some(*n))))
         }
     }
+}
+
+fn extract_json_path(json: &serde_json::Value, path: &str) -> Option<serde_json::Value> {
+    let path = path.trim_start_matches('$');
+    let mut current = json.clone();
+
+    for segment in path.split('.').filter(|s| !s.is_empty()) {
+        let (key, index) = if segment.contains('[') {
+            let parts: Vec<&str> = segment.split('[').collect();
+            let key = parts[0];
+            let idx_str = parts[1].trim_end_matches(']');
+            let idx: usize = match idx_str.parse() {
+                Ok(i) => i,
+                Err(_) => return None,
+            };
+            (key, Some(idx))
+        } else {
+            (segment, None)
+        };
+
+        if !key.is_empty() {
+            current = match current {
+                serde_json::Value::Object(map) => {
+                    map.get(key).cloned().unwrap_or(serde_json::Value::Null)
+                }
+                _ => return None,
+            };
+        }
+
+        if let Some(idx) = index {
+            current = match current {
+                serde_json::Value::Array(arr) => {
+                    arr.get(idx).cloned().unwrap_or(serde_json::Value::Null)
+                }
+                _ => return None,
+            };
+        }
+    }
+
+    if current == serde_json::Value::Null {
+        None
+    } else {
+        Some(current)
+    }
+}
+
+fn json_value_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct JsonValueUdf {
+        signature: Signature,
+    }
+
+    impl JsonValueUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for JsonValueUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "json_value"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Utf8)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let json_arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let path_arr = match &args[1] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let json_strs = json_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for JSON".to_string(),
+                    )
+                })?;
+            let path_strs = path_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for path".to_string(),
+                    )
+                })?;
+
+            let mut builder = datafusion::arrow::array::StringBuilder::new();
+            for i in 0..json_strs.len() {
+                if json_strs.is_null(i) || path_strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let json_str = json_strs.value(i);
+                let path = path_strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(json_str) {
+                    Ok(json) => match extract_json_path(&json, path) {
+                        Some(serde_json::Value::String(s)) => builder.append_value(&s),
+                        Some(serde_json::Value::Number(n)) => builder.append_value(n.to_string()),
+                        Some(serde_json::Value::Bool(b)) => builder.append_value(b.to_string()),
+                        _ => builder.append_null(),
+                    },
+                    Err(_) => builder.append_null(),
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(JsonValueUdf::new())
+}
+
+fn json_extract_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct JsonExtractUdf {
+        signature: Signature,
+    }
+
+    impl JsonExtractUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for JsonExtractUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "json_extract"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Utf8)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let json_arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let path_arr = match &args[1] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let json_strs = json_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for JSON".to_string(),
+                    )
+                })?;
+            let path_strs = path_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for path".to_string(),
+                    )
+                })?;
+
+            let mut builder = datafusion::arrow::array::StringBuilder::new();
+            for i in 0..json_strs.len() {
+                if json_strs.is_null(i) || path_strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let json_str = json_strs.value(i);
+                let path = path_strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(json_str) {
+                    Ok(json) => match extract_json_path(&json, path) {
+                        Some(v) => builder.append_value(v.to_string()),
+                        None => builder.append_null(),
+                    },
+                    Err(_) => builder.append_null(),
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(JsonExtractUdf::new())
+}
+
+fn json_query_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct JsonQueryUdf {
+        signature: Signature,
+    }
+
+    impl JsonQueryUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for JsonQueryUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "json_query"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Utf8)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let json_arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let path_arr = match &args[1] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let json_strs = json_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for JSON".to_string(),
+                    )
+                })?;
+            let path_strs = path_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for path".to_string(),
+                    )
+                })?;
+
+            let mut builder = datafusion::arrow::array::StringBuilder::new();
+            for i in 0..json_strs.len() {
+                if json_strs.is_null(i) || path_strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let json_str = json_strs.value(i);
+                let path = path_strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(json_str) {
+                    Ok(json) => match extract_json_path(&json, path) {
+                        Some(v) => builder.append_value(v.to_string()),
+                        None => builder.append_null(),
+                    },
+                    Err(_) => builder.append_null(),
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(JsonQueryUdf::new())
+}
+
+fn json_extract_array_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, ListBuilder, StringArray, StringBuilder};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct JsonExtractArrayUdf {
+        signature: Signature,
+    }
+
+    impl JsonExtractArrayUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for JsonExtractArrayUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "json_extract_array"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::List(Arc::new(ArrowField::new(
+                "item",
+                ArrowDataType::Utf8,
+                true,
+            ))))
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let json_arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let path_arr = match &args[1] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let json_strs = json_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for JSON".to_string(),
+                    )
+                })?;
+            let path_strs = path_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for path".to_string(),
+                    )
+                })?;
+
+            let mut builder = ListBuilder::new(StringBuilder::new());
+            for i in 0..json_strs.len() {
+                if json_strs.is_null(i) || path_strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let json_str = json_strs.value(i);
+                let path = path_strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(json_str) {
+                    Ok(json) => {
+                        let target = if path == "$" {
+                            Some(json)
+                        } else {
+                            extract_json_path(&json, path)
+                        };
+                        match target {
+                            Some(serde_json::Value::Array(arr)) => {
+                                for v in arr {
+                                    builder.values().append_value(v.to_string());
+                                }
+                                builder.append(true);
+                            }
+                            _ => {
+                                builder.append(true);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        builder.append(true);
+                    }
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(JsonExtractArrayUdf::new())
+}
+
+fn json_extract_string_array_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, ListBuilder, StringArray, StringBuilder};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct JsonExtractStringArrayUdf {
+        signature: Signature,
+    }
+
+    impl JsonExtractStringArrayUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for JsonExtractStringArrayUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "json_extract_string_array"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::List(Arc::new(ArrowField::new(
+                "item",
+                ArrowDataType::Utf8,
+                true,
+            ))))
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let json_arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let path_arr = match &args[1] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let json_strs = json_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for JSON".to_string(),
+                    )
+                })?;
+            let path_strs = path_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for path".to_string(),
+                    )
+                })?;
+
+            let mut builder = ListBuilder::new(StringBuilder::new());
+            for i in 0..json_strs.len() {
+                if json_strs.is_null(i) || path_strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let json_str = json_strs.value(i);
+                let path = path_strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(json_str) {
+                    Ok(json) => {
+                        let target = if path == "$" {
+                            Some(json)
+                        } else {
+                            extract_json_path(&json, path)
+                        };
+                        match target {
+                            Some(serde_json::Value::Array(arr)) => {
+                                for v in arr {
+                                    match v {
+                                        serde_json::Value::String(s) => {
+                                            builder.values().append_value(&s)
+                                        }
+                                        serde_json::Value::Number(n) => {
+                                            builder.values().append_value(n.to_string())
+                                        }
+                                        serde_json::Value::Bool(b) => {
+                                            builder.values().append_value(b.to_string())
+                                        }
+                                        serde_json::Value::Null => builder.values().append_null(),
+                                        _ => builder.values().append_value(v.to_string()),
+                                    }
+                                }
+                                builder.append(true);
+                            }
+                            _ => {
+                                builder.append(true);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        builder.append(true);
+                    }
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(JsonExtractStringArrayUdf::new())
+}
+
+fn to_json_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct ToJsonUdf {
+        signature: Signature,
+    }
+
+    impl ToJsonUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for ToJsonUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "to_json"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Utf8)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let strs = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected string array".to_string())
+            })?;
+
+            let mut builder = datafusion::arrow::array::StringBuilder::new();
+            for i in 0..strs.len() {
+                if strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let s = strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(_) => builder.append_value(s),
+                    Err(_) => {
+                        let json_str =
+                            serde_json::to_string(&serde_json::Value::String(s.to_string()))
+                                .unwrap_or_else(|_| "null".to_string());
+                        builder.append_value(&json_str);
+                    }
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(ToJsonUdf::new())
+}
+
+fn to_json_string_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct ToJsonStringUdf {
+        signature: Signature,
+    }
+
+    impl ToJsonStringUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for ToJsonStringUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "to_json_string"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Utf8)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let strs = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected string array".to_string())
+            })?;
+
+            let mut builder = datafusion::arrow::array::StringBuilder::new();
+            for i in 0..strs.len() {
+                if strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let s = strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(_) => builder.append_value(s),
+                    Err(_) => {
+                        let json_str =
+                            serde_json::to_string(&serde_json::Value::String(s.to_string()))
+                                .unwrap_or_else(|_| "null".to_string());
+                        builder.append_value(&json_str);
+                    }
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(ToJsonStringUdf::new())
+}
+
+fn parse_json_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct ParseJsonUdf {
+        signature: Signature,
+    }
+
+    impl ParseJsonUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for ParseJsonUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "parse_json"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Utf8)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let strs = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected string array".to_string())
+            })?;
+
+            let mut builder = datafusion::arrow::array::StringBuilder::new();
+            for i in 0..strs.len() {
+                if strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let s = strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(json) => builder.append_value(json.to_string()),
+                    Err(_) => builder.append_null(),
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(ParseJsonUdf::new())
+}
+
+fn json_type_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct JsonTypeUdf {
+        signature: Signature,
+    }
+
+    impl JsonTypeUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for JsonTypeUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "json_type"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Utf8)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let strs = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected string array".to_string())
+            })?;
+
+            let mut builder = datafusion::arrow::array::StringBuilder::new();
+            for i in 0..strs.len() {
+                if strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let s = strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(json) => {
+                        let type_name = match json {
+                            serde_json::Value::Null => "null",
+                            serde_json::Value::Bool(_) => "boolean",
+                            serde_json::Value::Number(_) => "number",
+                            serde_json::Value::String(_) => "string",
+                            serde_json::Value::Array(_) => "array",
+                            serde_json::Value::Object(_) => "object",
+                        };
+                        builder.append_value(type_name);
+                    }
+                    Err(_) => builder.append_null(),
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(JsonTypeUdf::new())
+}
+
+fn json_keys_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, ListBuilder, StringArray, StringBuilder};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct JsonKeysUdf {
+        signature: Signature,
+    }
+
+    impl JsonKeysUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for JsonKeysUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "json_keys"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::List(Arc::new(ArrowField::new(
+                "item",
+                ArrowDataType::Utf8,
+                true,
+            ))))
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let strs = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected string array".to_string())
+            })?;
+
+            let mut builder = ListBuilder::new(StringBuilder::new());
+            for i in 0..strs.len() {
+                if strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let s = strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(serde_json::Value::Object(obj)) => {
+                        for key in obj.keys() {
+                            builder.values().append_value(key);
+                        }
+                        builder.append(true);
+                    }
+                    _ => {
+                        builder.append(true);
+                    }
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(JsonKeysUdf::new())
+}
+
+fn json_array_length_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, Int64Builder, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct JsonArrayLengthUdf {
+        signature: Signature,
+    }
+
+    impl JsonArrayLengthUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for JsonArrayLengthUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "json_array_length"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Int64)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let json_arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let path_arr = if args.len() > 1 {
+                match &args[1] {
+                    ColumnarValue::Array(arr) => arr.clone(),
+                    ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+                }
+            } else {
+                Arc::new(StringArray::from(vec!["$"; num_rows])) as ArrayRef
+            };
+
+            let json_strs = json_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for JSON".to_string(),
+                    )
+                })?;
+            let path_strs = path_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for path".to_string(),
+                    )
+                })?;
+
+            let mut builder = Int64Builder::new();
+            for i in 0..json_strs.len() {
+                if json_strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let json_str = json_strs.value(i);
+                let path = if path_strs.is_null(i) {
+                    "$"
+                } else {
+                    path_strs.value(i)
+                };
+                match serde_json::from_str::<serde_json::Value>(json_str) {
+                    Ok(json) => {
+                        let target = if path == "$" {
+                            Some(json)
+                        } else {
+                            extract_json_path(&json, path)
+                        };
+                        match target {
+                            Some(serde_json::Value::Array(arr)) => {
+                                builder.append_value(arr.len() as i64);
+                            }
+                            _ => builder.append_null(),
+                        }
+                    }
+                    Err(_) => builder.append_null(),
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(JsonArrayLengthUdf::new())
+}
+
+fn int64_from_json_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, Int64Builder, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct Int64FromJsonUdf {
+        signature: Signature,
+    }
+
+    impl Int64FromJsonUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for Int64FromJsonUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "int64"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Int64)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let strs = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected string array".to_string())
+            })?;
+
+            let mut builder = Int64Builder::new();
+            for i in 0..strs.len() {
+                if strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let s = strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(json) => match json {
+                        serde_json::Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                builder.append_value(i);
+                            } else if let Some(f) = n.as_f64() {
+                                builder.append_value(f as i64);
+                            } else {
+                                builder.append_null();
+                            }
+                        }
+                        serde_json::Value::String(s) => {
+                            if let Ok(i) = s.parse::<i64>() {
+                                builder.append_value(i);
+                            } else {
+                                builder.append_null();
+                            }
+                        }
+                        serde_json::Value::Bool(b) => {
+                            builder.append_value(if b { 1 } else { 0 });
+                        }
+                        _ => builder.append_null(),
+                    },
+                    Err(_) => {
+                        if let Ok(i) = s.parse::<i64>() {
+                            builder.append_value(i);
+                        } else {
+                            builder.append_null();
+                        }
+                    }
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(Int64FromJsonUdf::new())
+}
+
+fn float64_from_json_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, Float64Builder, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct Float64FromJsonUdf {
+        signature: Signature,
+    }
+
+    impl Float64FromJsonUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for Float64FromJsonUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "float64"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Float64)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let strs = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected string array".to_string())
+            })?;
+
+            let mut builder = Float64Builder::new();
+            for i in 0..strs.len() {
+                if strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let s = strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(json) => match json {
+                        serde_json::Value::Number(n) => {
+                            if let Some(f) = n.as_f64() {
+                                builder.append_value(f);
+                            } else {
+                                builder.append_null();
+                            }
+                        }
+                        serde_json::Value::String(s) => {
+                            if let Ok(f) = s.parse::<f64>() {
+                                builder.append_value(f);
+                            } else {
+                                builder.append_null();
+                            }
+                        }
+                        _ => builder.append_null(),
+                    },
+                    Err(_) => {
+                        if let Ok(f) = s.parse::<f64>() {
+                            builder.append_value(f);
+                        } else {
+                            builder.append_null();
+                        }
+                    }
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(Float64FromJsonUdf::new())
+}
+
+fn bool_from_json_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, BooleanBuilder, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct BoolFromJsonUdf {
+        signature: Signature,
+    }
+
+    impl BoolFromJsonUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for BoolFromJsonUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "bool"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Boolean)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let strs = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected string array".to_string())
+            })?;
+
+            let mut builder = BooleanBuilder::new();
+            for i in 0..strs.len() {
+                if strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let s = strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(json) => match json {
+                        serde_json::Value::Bool(b) => builder.append_value(b),
+                        serde_json::Value::String(s) => match s.to_lowercase().as_str() {
+                            "true" => builder.append_value(true),
+                            "false" => builder.append_value(false),
+                            _ => builder.append_null(),
+                        },
+                        _ => builder.append_null(),
+                    },
+                    Err(_) => match s.to_lowercase().as_str() {
+                        "true" => builder.append_value(true),
+                        "false" => builder.append_value(false),
+                        _ => builder.append_null(),
+                    },
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(BoolFromJsonUdf::new())
+}
+
+fn string_from_json_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct StringFromJsonUdf {
+        signature: Signature,
+    }
+
+    impl StringFromJsonUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for StringFromJsonUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "string"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Utf8)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let strs = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected string array".to_string())
+            })?;
+
+            let mut builder = datafusion::arrow::array::StringBuilder::new();
+            for i in 0..strs.len() {
+                if strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let s = strs.value(i);
+                match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(json) => match json {
+                        serde_json::Value::String(s) => builder.append_value(&s),
+                        serde_json::Value::Number(n) => builder.append_value(n.to_string()),
+                        serde_json::Value::Bool(b) => builder.append_value(b.to_string()),
+                        _ => builder.append_value(json.to_string()),
+                    },
+                    Err(_) => builder.append_value(s),
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(StringFromJsonUdf::new())
 }
