@@ -1103,9 +1103,19 @@ impl YachtSQLSession {
                 let subquery_tables = extract_tables_from_plan(subquery);
                 let df_plan = self.convert_subquery_plan(subquery, &subquery_tables)?;
                 let outer_refs = df_plan.all_out_ref_exprs();
+                let final_plan = if !outer_refs.is_empty() && !has_single_row_guarantee(subquery) {
+                    LogicalPlanBuilder::from(df_plan)
+                        .limit(0, Some(1))
+                        .map_err(|e| Error::internal(e.to_string()))?
+                        .build()
+                        .map_err(|e| Error::internal(e.to_string()))?
+                } else {
+                    df_plan
+                };
+                let final_outer_refs = final_plan.all_out_ref_exprs();
                 let subq = Subquery {
-                    subquery: Arc::new(df_plan),
-                    outer_ref_columns: outer_refs,
+                    subquery: Arc::new(final_plan),
+                    outer_ref_columns: final_outer_refs,
                 };
                 Ok(DFExpr::ScalarSubquery(subq))
             }
@@ -4546,6 +4556,73 @@ fn extract_tables_from_plan(plan: &LogicalPlan) -> HashSet<String> {
         | LogicalPlan::TryCatch { .. }
         | LogicalPlan::GapFill { .. }
         | LogicalPlan::Explain { .. } => HashSet::new(),
+    }
+}
+
+fn has_single_row_guarantee(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Aggregate { group_by, .. } => group_by.is_empty(),
+        LogicalPlan::Limit { limit, .. } => matches!(limit, Some(n) if *n <= 1),
+        LogicalPlan::Values { values, .. } => values.len() <= 1,
+        LogicalPlan::Empty { .. } => true,
+        LogicalPlan::Project { input, .. }
+        | LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Window { input, .. }
+        | LogicalPlan::Qualify { input, .. } => has_single_row_guarantee(input),
+        LogicalPlan::WithCte { body, .. } => has_single_row_guarantee(body),
+        LogicalPlan::Scan { .. }
+        | LogicalPlan::Sample { .. }
+        | LogicalPlan::Join { .. }
+        | LogicalPlan::Distinct { .. }
+        | LogicalPlan::SetOperation { .. }
+        | LogicalPlan::Unnest { .. }
+        | LogicalPlan::GapFill { .. }
+        | LogicalPlan::Insert { .. }
+        | LogicalPlan::Update { .. }
+        | LogicalPlan::Delete { .. }
+        | LogicalPlan::Merge { .. }
+        | LogicalPlan::CreateTable { .. }
+        | LogicalPlan::DropTable { .. }
+        | LogicalPlan::AlterTable { .. }
+        | LogicalPlan::Truncate { .. }
+        | LogicalPlan::CreateView { .. }
+        | LogicalPlan::DropView { .. }
+        | LogicalPlan::CreateSchema { .. }
+        | LogicalPlan::DropSchema { .. }
+        | LogicalPlan::UndropSchema { .. }
+        | LogicalPlan::AlterSchema { .. }
+        | LogicalPlan::CreateFunction { .. }
+        | LogicalPlan::DropFunction { .. }
+        | LogicalPlan::CreateProcedure { .. }
+        | LogicalPlan::DropProcedure { .. }
+        | LogicalPlan::Call { .. }
+        | LogicalPlan::ExportData { .. }
+        | LogicalPlan::LoadData { .. }
+        | LogicalPlan::Declare { .. }
+        | LogicalPlan::SetVariable { .. }
+        | LogicalPlan::SetMultipleVariables { .. }
+        | LogicalPlan::If { .. }
+        | LogicalPlan::While { .. }
+        | LogicalPlan::Loop { .. }
+        | LogicalPlan::Block { .. }
+        | LogicalPlan::Repeat { .. }
+        | LogicalPlan::For { .. }
+        | LogicalPlan::Return { .. }
+        | LogicalPlan::Raise { .. }
+        | LogicalPlan::ExecuteImmediate { .. }
+        | LogicalPlan::Break { .. }
+        | LogicalPlan::Continue { .. }
+        | LogicalPlan::CreateSnapshot { .. }
+        | LogicalPlan::DropSnapshot { .. }
+        | LogicalPlan::Assert { .. }
+        | LogicalPlan::Grant { .. }
+        | LogicalPlan::Revoke { .. }
+        | LogicalPlan::BeginTransaction
+        | LogicalPlan::Commit
+        | LogicalPlan::Rollback
+        | LogicalPlan::TryCatch { .. }
+        | LogicalPlan::Explain { .. } => false,
     }
 }
 
