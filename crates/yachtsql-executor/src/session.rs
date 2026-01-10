@@ -1150,13 +1150,38 @@ impl YachtSQLSession {
                 )))
             }
 
+            yachtsql_ir::Expr::Case {
+                operand,
+                when_clauses,
+                else_result,
+            } => {
+                let operand_expr = operand.as_ref().map(|o| self.convert_expr(o)).transpose()?;
+                let when_then: Vec<(Box<DFExpr>, Box<DFExpr>)> = when_clauses
+                    .iter()
+                    .map(|wc| {
+                        let when = self.convert_expr(&wc.condition)?;
+                        let then = self.convert_expr(&wc.result)?;
+                        Ok((Box::new(when), Box::new(then)))
+                    })
+                    .collect::<Result<_>>()?;
+                let else_expr = else_result
+                    .as_ref()
+                    .map(|e| self.convert_expr(e))
+                    .transpose()?
+                    .map(Box::new);
+                Ok(DFExpr::Case(datafusion::logical_expr::Case::new(
+                    operand_expr.map(Box::new),
+                    when_then,
+                    else_expr,
+                )))
+            }
+
             yachtsql_ir::Expr::Literal(_)
             | yachtsql_ir::Expr::Column { .. }
             | yachtsql_ir::Expr::ScalarFunction { .. }
             | yachtsql_ir::Expr::Aggregate { .. }
             | yachtsql_ir::Expr::Window { .. }
             | yachtsql_ir::Expr::AggregateWindow { .. }
-            | yachtsql_ir::Expr::Case { .. }
             | yachtsql_ir::Expr::Cast { .. }
             | yachtsql_ir::Expr::IsNull { .. }
             | yachtsql_ir::Expr::IsDistinctFrom { .. }
