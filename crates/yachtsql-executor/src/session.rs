@@ -23,11 +23,21 @@ use yachtsql_ir::plan::{AlterTableOp, FunctionBody};
 use yachtsql_ir::{JoinType, LogicalPlan, PlanSchema, SetOperationType, SortExpr};
 use yachtsql_parser::{CatalogProvider, FunctionDefinition, ViewDefinition};
 
+#[allow(dead_code)]
+pub struct ProcedureDefinition {
+    pub name: String,
+    pub args: Vec<yachtsql_ir::ProcedureArg>,
+    pub body: Vec<LogicalPlan>,
+}
+
 pub struct YachtSQLSession {
     ctx: SessionContext,
     views: RwLock<HashMap<String, ViewDefinition>>,
     functions: RwLock<HashMap<String, FunctionDefinition>>,
+    procedures: RwLock<HashMap<String, ProcedureDefinition>>,
     schemas: RwLock<HashSet<String>>,
+    search_path: RwLock<Vec<String>>,
+    column_defaults: RwLock<HashMap<String, HashMap<String, yachtsql_ir::Expr>>>,
 }
 
 struct SessionCatalog<'a> {
@@ -36,7 +46,7 @@ struct SessionCatalog<'a> {
 
 impl<'a> CatalogProvider for SessionCatalog<'a> {
     fn get_table_schema(&self, name: &str) -> Option<Schema> {
-        let (schema_name, table) = YachtSQLSession::parse_table_name(name);
+        let (schema_name, table) = self.session.resolve_table_name(name);
 
         if let Some(ref schema) = schema_name {
             let catalog = self.session.ctx.catalog("datafusion")?;
@@ -98,7 +108,10 @@ impl YachtSQLSession {
             ctx,
             views: RwLock::new(HashMap::new()),
             functions: RwLock::new(HashMap::new()),
+            procedures: RwLock::new(HashMap::new()),
             schemas: RwLock::new(HashSet::new()),
+            search_path: RwLock::new(Vec::new()),
+            column_defaults: RwLock::new(HashMap::new()),
         }
     }
 
@@ -109,7 +122,10 @@ impl YachtSQLSession {
             ctx,
             views: RwLock::new(HashMap::new()),
             functions: RwLock::new(HashMap::new()),
+            procedures: RwLock::new(HashMap::new()),
             schemas: RwLock::new(HashSet::new()),
+            search_path: RwLock::new(Vec::new()),
+            column_defaults: RwLock::new(HashMap::new()),
         }
     }
 
@@ -280,6 +296,30 @@ impl YachtSQLSession {
                 self.execute_drop_function(name, *if_exists).await
             }
 
+            LogicalPlan::CreateProcedure {
+                name,
+                args,
+                body,
+                or_replace,
+                if_not_exists,
+            } => {
+                self.execute_create_procedure(name, args, body, *or_replace, *if_not_exists)
+                    .await
+            }
+
+            LogicalPlan::DropProcedure { name, if_exists } => {
+                self.execute_drop_procedure(name, *if_exists).await
+            }
+
+            LogicalPlan::Call {
+                procedure_name,
+                args,
+            } => self.execute_call(procedure_name, args).await,
+
+            LogicalPlan::SetVariable { name, value } => {
+                self.execute_set_variable(name, value).await
+            }
+
             LogicalPlan::Explain { input, analyze } => self.execute_explain(input, *analyze).await,
 
             LogicalPlan::BeginTransaction | LogicalPlan::Commit | LogicalPlan::Rollback => {
@@ -324,7 +364,7 @@ impl YachtSQLSession {
                 schema,
                 projection,
             } => {
-                let (schema_name, table) = Self::parse_table_name(table_name);
+                let (schema_name, table) = self.resolve_table_name(table_name);
                 let table_ref = Self::table_reference(schema_name.as_deref(), &table);
                 let provider = self
                     .ctx
@@ -492,7 +532,7 @@ impl YachtSQLSession {
             LogicalPlan::Empty { schema } => {
                 let arrow_schema = convert_plan_schema(schema);
                 Ok(DFLogicalPlan::EmptyRelation(EmptyRelation {
-                    produce_one_row: false,
+                    produce_one_row: true,
                     schema: arrow_schema
                         .to_dfschema_ref()
                         .map_err(|e| Error::internal(e.to_string()))?,
@@ -679,6 +719,20 @@ impl YachtSQLSession {
                 .map_err(|e| Error::internal(e.to_string()))?;
         }
 
+        let mut defaults: HashMap<String, yachtsql_ir::Expr> = HashMap::new();
+        for col in columns {
+            if let Some(ref default_expr) = col.default_value {
+                defaults.insert(col.name.to_lowercase(), default_expr.clone());
+            }
+        }
+        if !defaults.is_empty() {
+            let full_name = match schema_name {
+                Some(s) => format!("{}.{}", s, table),
+                None => table.clone(),
+            };
+            self.column_defaults.write().insert(full_name, defaults);
+        }
+
         Ok(vec![])
     }
 
@@ -688,7 +742,7 @@ impl YachtSQLSession {
         if_exists: bool,
     ) -> Result<Vec<RecordBatch>> {
         for table_name in table_names {
-            let (schema_name, table) = Self::parse_table_name(table_name);
+            let (schema_name, table) = self.resolve_table_name(table_name);
 
             let dropped = if let Some(ref schema) = schema_name {
                 let catalog = self
@@ -722,7 +776,7 @@ impl YachtSQLSession {
     async fn execute_insert(
         &self,
         table_name: &str,
-        _columns: &[String],
+        columns: &[String],
         source: &LogicalPlan,
     ) -> Result<Vec<RecordBatch>> {
         let (schema_name, table) = Self::parse_table_name(table_name);
@@ -754,6 +808,24 @@ impl YachtSQLSession {
                 .map_err(|e| Error::internal(e.to_string()))?;
             let table_schema = provider.schema();
             (provider, table_schema)
+        };
+
+        let full_table_name = match schema_name {
+            Some(ref s) => format!("{}.{}", s, table),
+            None => table.clone(),
+        };
+
+        let defaults = self.column_defaults.read().get(&full_table_name).cloned();
+        let new_batches = if let Some(ref defaults) = defaults {
+            if !columns.is_empty() {
+                let columns_lower: Vec<String> = columns.iter().map(|c| c.to_lowercase()).collect();
+                self.apply_column_defaults(&new_batches, &table_schema, &columns_lower, defaults)
+                    .await?
+            } else {
+                new_batches
+            }
+        } else {
+            new_batches
         };
 
         let existing_batches = if let Some(ref schema) = schema_name {
@@ -987,6 +1059,18 @@ impl YachtSQLSession {
         Ok(vec![])
     }
 
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn scalar_function_to_sql(&self, func: &yachtsql_ir::ScalarFunction) -> String {
+        use yachtsql_ir::ScalarFunction as SF;
+        match func {
+            SF::CurrentTimestamp => "CURRENT_TIMESTAMP".to_string(),
+            SF::CurrentDate => "CURRENT_DATE".to_string(),
+            SF::CurrentTime => "CURRENT_TIME".to_string(),
+            SF::CurrentDatetime => "CURRENT_DATETIME".to_string(),
+            _ => format!("{:?}", func).to_uppercase(),
+        }
+    }
+
     #[allow(clippy::only_used_in_recursion, clippy::wildcard_enum_match_arm)]
     fn expr_to_sql(&self, expr: &yachtsql_ir::Expr) -> Result<String> {
         use yachtsql_ir::{BinaryOp, Expr, Literal};
@@ -1086,6 +1170,14 @@ impl YachtSQLSession {
                 let h = self.expr_to_sql(high)?;
                 let neg = if *negated { "NOT " } else { "" };
                 Ok(format!("({} {}BETWEEN {} AND {})", e, neg, l, h))
+            }
+            Expr::ScalarFunction { name, args } => {
+                let arg_strs: Vec<String> = args
+                    .iter()
+                    .map(|a| self.expr_to_sql(a))
+                    .collect::<Result<_>>()?;
+                let func_name = self.scalar_function_to_sql(name);
+                Ok(format!("{}({})", func_name, arg_strs.join(", ")))
             }
             _ => Err(Error::internal(format!(
                 "Expression not supported in UPDATE/DELETE: {:?}",
@@ -1464,6 +1556,291 @@ impl YachtSQLSession {
                 } else {
                     Err(Error::internal(format!("Function {} not found", name)))
                 }
+            }
+        }
+    }
+
+    async fn execute_create_procedure(
+        &self,
+        name: &str,
+        args: &[yachtsql_ir::ProcedureArg],
+        body: &[LogicalPlan],
+        or_replace: bool,
+        if_not_exists: bool,
+    ) -> Result<Vec<RecordBatch>> {
+        let lower = name.to_lowercase();
+
+        {
+            let procedures = self.procedures.read();
+            if procedures.contains_key(&lower) {
+                if if_not_exists {
+                    return Ok(vec![]);
+                }
+                if !or_replace {
+                    return Err(Error::internal(format!(
+                        "Procedure {} already exists",
+                        name
+                    )));
+                }
+            }
+        }
+
+        self.procedures.write().insert(
+            lower,
+            ProcedureDefinition {
+                name: name.to_string(),
+                args: args.to_vec(),
+                body: body.to_vec(),
+            },
+        );
+
+        Ok(vec![])
+    }
+
+    async fn execute_drop_procedure(
+        &self,
+        name: &str,
+        if_exists: bool,
+    ) -> Result<Vec<RecordBatch>> {
+        let lower = name.to_lowercase();
+
+        match self.procedures.write().remove(&lower) {
+            Some(_) => Ok(vec![]),
+            None => {
+                if if_exists {
+                    Ok(vec![])
+                } else {
+                    Err(Error::internal(format!("Procedure {} not found", name)))
+                }
+            }
+        }
+    }
+
+    async fn execute_call(
+        &self,
+        procedure_name: &str,
+        _args: &[yachtsql_ir::Expr],
+    ) -> Result<Vec<RecordBatch>> {
+        let lower = procedure_name.to_lowercase();
+
+        let body = {
+            let procedures = self.procedures.read();
+            let proc = procedures.get(&lower).ok_or_else(|| {
+                Error::internal(format!("Procedure {} not found", procedure_name))
+            })?;
+            proc.body.clone()
+        };
+
+        let mut last_result = Vec::new();
+        for stmt in &body {
+            last_result = Box::pin(self.execute_plan(stmt)).await?;
+        }
+
+        Ok(last_result)
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    async fn execute_set_variable(
+        &self,
+        name: &str,
+        value: &yachtsql_ir::Expr,
+    ) -> Result<Vec<RecordBatch>> {
+        let lower_name = name.to_lowercase();
+
+        if lower_name == "search_path" {
+            let schema_name = match value {
+                yachtsql_ir::Expr::Column { name, .. } => name.to_lowercase(),
+                yachtsql_ir::Expr::Literal(yachtsql_ir::Literal::String(s)) => s.to_lowercase(),
+                _ => {
+                    return Err(Error::internal(format!(
+                        "Invalid value for search_path: {:?}",
+                        value
+                    )));
+                }
+            };
+
+            *self.search_path.write() = vec![schema_name];
+            return Ok(vec![]);
+        }
+
+        Ok(vec![])
+    }
+
+    fn resolve_table_name(&self, name: &str) -> (Option<String>, String) {
+        let (schema, table) = Self::parse_table_name(name);
+        if schema.is_some() {
+            return (schema, table);
+        }
+
+        let search_path = self.search_path.read();
+        if !search_path.is_empty() {
+            return (Some(search_path[0].clone()), table);
+        }
+
+        (None, table)
+    }
+
+    async fn apply_column_defaults(
+        &self,
+        batches: &[RecordBatch],
+        table_schema: &Arc<ArrowSchema>,
+        insert_columns: &[String],
+        defaults: &HashMap<String, yachtsql_ir::Expr>,
+    ) -> Result<Vec<RecordBatch>> {
+        let mut result = Vec::new();
+        for batch in batches {
+            let num_rows = batch.num_rows();
+            let mut new_columns: Vec<ArrayRef> = Vec::new();
+
+            for field in table_schema.fields().iter() {
+                let col_name = field.name().to_lowercase();
+
+                let insert_col_idx = insert_columns.iter().position(|c| *c == col_name);
+
+                let column = match insert_col_idx {
+                    Some(idx) if idx < batch.num_columns() => batch.column(idx).clone(),
+                    _ => {
+                        if let Some(default_expr) = defaults.get(&col_name) {
+                            let default_sql = self.expr_to_sql(default_expr)?;
+                            self.evaluate_default_value(&default_sql, field.data_type(), num_rows)
+                                .await?
+                        } else {
+                            self.create_null_array(field.data_type(), num_rows)?
+                        }
+                    }
+                };
+
+                let casted = if column.data_type() != field.data_type() {
+                    cast(&column, field.data_type()).map_err(|e| Error::internal(e.to_string()))?
+                } else {
+                    column
+                };
+                new_columns.push(casted);
+            }
+
+            let new_batch = RecordBatch::try_new(table_schema.clone(), new_columns)
+                .map_err(|e| Error::internal(e.to_string()))?;
+            result.push(new_batch);
+        }
+
+        Ok(result)
+    }
+
+    async fn evaluate_default_value(
+        &self,
+        expr_sql: &str,
+        target_type: &ArrowDataType,
+        num_rows: usize,
+    ) -> Result<ArrayRef> {
+        let query = format!("SELECT {}", expr_sql);
+        let batches = self
+            .ctx
+            .sql(&query)
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?
+            .collect()
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        if batches.is_empty() || batches[0].num_columns() == 0 {
+            return self.create_null_array(target_type, num_rows);
+        }
+
+        let single_value = batches[0].column(0);
+        if single_value.len() != 1 {
+            return Err(Error::internal(
+                "Default expression must return single value",
+            ));
+        }
+
+        self.repeat_array_value(single_value, num_rows, target_type)
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn repeat_array_value(
+        &self,
+        arr: &ArrayRef,
+        num_rows: usize,
+        target_type: &ArrowDataType,
+    ) -> Result<ArrayRef> {
+        use datafusion::arrow::array::*;
+
+        if arr.is_null(0) {
+            return self.create_null_array(target_type, num_rows);
+        }
+
+        match arr.data_type() {
+            ArrowDataType::Int64 => {
+                let val = arr.as_any().downcast_ref::<Int64Array>().unwrap().value(0);
+                Ok(Arc::new(Int64Array::from(vec![val; num_rows])))
+            }
+            ArrowDataType::Float64 => {
+                let val = arr
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .value(0);
+                Ok(Arc::new(Float64Array::from(vec![val; num_rows])))
+            }
+            ArrowDataType::Utf8 => {
+                let val = arr.as_any().downcast_ref::<StringArray>().unwrap().value(0);
+                Ok(Arc::new(StringArray::from(vec![val; num_rows])))
+            }
+            ArrowDataType::Boolean => {
+                let val = arr
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .unwrap()
+                    .value(0);
+                Ok(Arc::new(BooleanArray::from(vec![val; num_rows])))
+            }
+            ArrowDataType::Timestamp(TimeUnit::Nanosecond, tz) => {
+                let val = arr
+                    .as_any()
+                    .downcast_ref::<TimestampNanosecondArray>()
+                    .unwrap()
+                    .value(0);
+                Ok(Arc::new(
+                    TimestampNanosecondArray::from(vec![val; num_rows])
+                        .with_timezone_opt(tz.clone()),
+                ))
+            }
+            _ => self.create_null_array(target_type, num_rows),
+        }
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn create_null_array(&self, data_type: &ArrowDataType, num_rows: usize) -> Result<ArrayRef> {
+        use datafusion::arrow::array::*;
+
+        match data_type {
+            ArrowDataType::Int64 => {
+                let arr: Int64Array = (0..num_rows).map(|_| None::<i64>).collect();
+                Ok(Arc::new(arr))
+            }
+            ArrowDataType::Float64 => {
+                let arr: Float64Array = (0..num_rows).map(|_| None::<f64>).collect();
+                Ok(Arc::new(arr))
+            }
+            ArrowDataType::Utf8 => {
+                let arr: StringArray = (0..num_rows).map(|_| None::<&str>).collect();
+                Ok(Arc::new(arr))
+            }
+            ArrowDataType::Boolean => {
+                let arr: BooleanArray = (0..num_rows).map(|_| None::<bool>).collect();
+                Ok(Arc::new(arr))
+            }
+            ArrowDataType::Date32 => {
+                let arr: Date32Array = (0..num_rows).map(|_| None::<i32>).collect();
+                Ok(Arc::new(arr))
+            }
+            ArrowDataType::Timestamp(TimeUnit::Nanosecond, tz) => {
+                let arr: TimestampNanosecondArray = (0..num_rows).map(|_| None::<i64>).collect();
+                Ok(Arc::new(arr.with_timezone_opt(tz.clone())))
+            }
+            _ => {
+                let arr: StringArray = (0..num_rows).map(|_| None::<&str>).collect();
+                Ok(Arc::new(arr))
             }
         }
     }
