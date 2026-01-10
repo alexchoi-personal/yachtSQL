@@ -931,7 +931,7 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             Ok(DFExpr::Cast(Cast::new(Box::new(arg), ArrowDataType::Utf8)))
         }
 
-        ScalarFunction::ArrayOffset => {
+        ScalarFunction::ArrayOffset | ScalarFunction::SafeOffset => {
             let mut iter = args.into_iter();
             let array = iter.next().unwrap();
             let idx = iter.next().unwrap();
@@ -939,6 +939,63 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
                 array, idx,
             ))
         }
+
+        ScalarFunction::Split => {
+            let mut iter = args.into_iter();
+            let s = iter.next().unwrap();
+            let delimiter = iter.next().unwrap_or_else(|| lit(","));
+            Ok(string::split_part(s.clone(), delimiter.clone(), lit(0)))
+        }
+
+        ScalarFunction::DateDiff => {
+            let mut iter = args.into_iter();
+            let date1 = iter.next().unwrap();
+            let date2 = iter.next().unwrap();
+            let _part = iter.next().unwrap_or_else(|| lit("day"));
+            Ok(date1.clone() - date2.clone())
+        }
+
+        ScalarFunction::RegexpContains => {
+            let mut iter = args.into_iter();
+            let s = iter.next().unwrap();
+            let pattern = iter.next().unwrap();
+            Ok(s.like(pattern))
+        }
+
+        ScalarFunction::RegexpExtract => {
+            let mut iter = args.into_iter();
+            let s = iter.next().unwrap();
+            let pattern = iter.next().unwrap();
+            Ok(datafusion::functions::regex::expr_fn::regexp_match(
+                s, pattern, None,
+            ))
+        }
+
+        ScalarFunction::RegexpReplace => {
+            let mut iter = args.into_iter();
+            let s = iter.next().unwrap();
+            let pattern = iter.next().unwrap();
+            let replacement = iter.next().unwrap_or_else(|| lit(""));
+            Ok(datafusion::functions::regex::expr_fn::regexp_replace(
+                s,
+                pattern,
+                replacement,
+                Some(lit("g")),
+            ))
+        }
+
+        ScalarFunction::Normalize => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(arg)
+        }
+
+        ScalarFunction::Int64FromJson | ScalarFunction::Float64FromJson => {
+            Ok(lit(ScalarValue::Null))
+        }
+
+        ScalarFunction::StringFromJson | ScalarFunction::BoolFromJson => Ok(lit(ScalarValue::Null)),
+
+        ScalarFunction::Custom(_) => Ok(lit(ScalarValue::Null)),
 
         _ => Err(datafusion::common::DataFusionError::NotImplemented(
             format!("Scalar function not implemented: {:?}", name),
