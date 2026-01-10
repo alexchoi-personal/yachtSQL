@@ -23,7 +23,7 @@ use parking_lot::RwLock;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::{DataType, Field, FieldMode, Schema};
 use yachtsql_datafusion_functions::BigQueryFunctionRegistry;
-use yachtsql_ir::plan::{AlterTableOp, FunctionBody};
+use yachtsql_ir::plan::{AlterColumnAction, AlterTableOp, FunctionBody};
 use yachtsql_ir::{JoinType, LogicalPlan, PlanSchema, SetOperationType, SortExpr};
 use yachtsql_parser::{CatalogProvider, FunctionDefinition, ViewDefinition};
 
@@ -1914,17 +1914,634 @@ impl YachtSQLSession {
 
                 Ok(vec![])
             }
-            AlterTableOp::AddColumn { .. }
-            | AlterTableOp::DropColumn { .. }
-            | AlterTableOp::RenameColumn { .. }
-            | AlterTableOp::SetOptions { .. }
-            | AlterTableOp::AlterColumn { .. }
+            AlterTableOp::AddColumn {
+                column,
+                if_not_exists,
+            } => {
+                let (schema_name, table) = self.resolve_table_name(table_name);
+                let table_ref = Self::table_reference(schema_name.as_deref(), &table);
+
+                let table_provider = match self.ctx.table_provider(table_ref.clone()).await {
+                    Ok(provider) => provider,
+                    Err(_) => {
+                        if if_exists {
+                            return Ok(vec![]);
+                        }
+                        return Err(Error::internal(format!("Table {} not found", table_name)));
+                    }
+                };
+
+                let existing_schema = table_provider.schema();
+                let col_name_lower = column.name.to_lowercase();
+
+                if existing_schema
+                    .fields()
+                    .iter()
+                    .any(|f| f.name().to_lowercase() == col_name_lower)
+                {
+                    if *if_not_exists {
+                        return Ok(vec![]);
+                    }
+                    return Err(Error::internal(format!(
+                        "Column {} already exists in table {}",
+                        column.name, table_name
+                    )));
+                }
+
+                let new_field = ArrowField::new(
+                    &col_name_lower,
+                    yachtsql_type_to_arrow(&column.data_type),
+                    column.nullable,
+                );
+                let mut new_fields: Vec<ArrowField> = existing_schema
+                    .fields()
+                    .iter()
+                    .map(|f| f.as_ref().clone())
+                    .collect();
+                new_fields.push(new_field);
+                let new_schema = Arc::new(ArrowSchema::new(new_fields));
+
+                let source = provider_as_source(table_provider);
+                let scan = LogicalPlanBuilder::scan(&table, source, None)
+                    .map_err(|e| Error::internal(e.to_string()))?
+                    .build()
+                    .map_err(|e| Error::internal(e.to_string()))?;
+                let df = DataFrame::new(self.ctx.state(), scan);
+                let existing_batches = df
+                    .collect()
+                    .await
+                    .map_err(|e| Error::internal(e.to_string()))?;
+
+                let new_batches: Vec<RecordBatch> = existing_batches
+                    .iter()
+                    .map(|batch| {
+                        let num_rows = batch.num_rows();
+                        let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
+                        let new_column = self
+                            .create_null_array(
+                                new_schema.field(new_schema.fields().len() - 1).data_type(),
+                                num_rows,
+                            )
+                            .unwrap();
+                        columns.push(new_column);
+                        RecordBatch::try_new(new_schema.clone(), columns)
+                            .map_err(|e| Error::internal(e.to_string()))
+                    })
+                    .collect::<Result<_>>()?;
+
+                if let Some(ref schema) = schema_name {
+                    let catalog = self.ctx.catalog("datafusion").unwrap();
+                    let schema_provider = catalog.schema(schema).unwrap();
+                    let _ = schema_provider.deregister_table(&table);
+                    let partitions = if new_batches.is_empty() {
+                        vec![vec![]]
+                    } else {
+                        vec![new_batches]
+                    };
+                    let mem_table = MemTable::try_new(new_schema, partitions)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                    schema_provider
+                        .register_table(table.clone(), Arc::new(mem_table))
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                } else {
+                    let _ = self.ctx.deregister_table(&table);
+                    let partitions = if new_batches.is_empty() {
+                        vec![vec![]]
+                    } else {
+                        vec![new_batches]
+                    };
+                    let mem_table = MemTable::try_new(new_schema, partitions)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                    self.ctx
+                        .register_table(&table, Arc::new(mem_table))
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                }
+
+                let full_name = match schema_name {
+                    Some(s) => format!("{}.{}", s, table),
+                    None => table.clone(),
+                };
+                if let Some(ref default_expr) = column.default_value {
+                    self.column_defaults
+                        .write()
+                        .entry(full_name)
+                        .or_default()
+                        .insert(col_name_lower, default_expr.clone());
+                }
+
+                Ok(vec![])
+            }
+
+            AlterTableOp::DropColumn {
+                name,
+                if_exists: col_if_exists,
+            } => {
+                let (schema_name, table) = self.resolve_table_name(table_name);
+                let table_ref = Self::table_reference(schema_name.as_deref(), &table);
+
+                let table_provider = match self.ctx.table_provider(table_ref.clone()).await {
+                    Ok(provider) => provider,
+                    Err(_) => {
+                        if if_exists {
+                            return Ok(vec![]);
+                        }
+                        return Err(Error::internal(format!("Table {} not found", table_name)));
+                    }
+                };
+
+                let existing_schema = table_provider.schema();
+                let col_name_lower = name.to_lowercase();
+
+                let col_idx = existing_schema
+                    .fields()
+                    .iter()
+                    .position(|f| f.name().to_lowercase() == col_name_lower);
+
+                let col_idx = match col_idx {
+                    Some(idx) => idx,
+                    None => {
+                        if *col_if_exists {
+                            return Ok(vec![]);
+                        }
+                        return Err(Error::internal(format!(
+                            "Column {} not found in table {}",
+                            name, table_name
+                        )));
+                    }
+                };
+
+                let new_fields: Vec<ArrowField> = existing_schema
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != col_idx)
+                    .map(|(_, f)| f.as_ref().clone())
+                    .collect();
+                let new_schema = Arc::new(ArrowSchema::new(new_fields));
+
+                let source = provider_as_source(table_provider);
+                let scan = LogicalPlanBuilder::scan(&table, source, None)
+                    .map_err(|e| Error::internal(e.to_string()))?
+                    .build()
+                    .map_err(|e| Error::internal(e.to_string()))?;
+                let df = DataFrame::new(self.ctx.state(), scan);
+                let existing_batches = df
+                    .collect()
+                    .await
+                    .map_err(|e| Error::internal(e.to_string()))?;
+
+                let new_batches: Vec<RecordBatch> = existing_batches
+                    .iter()
+                    .map(|batch| {
+                        let columns: Vec<ArrayRef> = batch
+                            .columns()
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| *i != col_idx)
+                            .map(|(_, c)| c.clone())
+                            .collect();
+                        RecordBatch::try_new(new_schema.clone(), columns)
+                            .map_err(|e| Error::internal(e.to_string()))
+                    })
+                    .collect::<Result<_>>()?;
+
+                if let Some(ref schema) = schema_name {
+                    let catalog = self.ctx.catalog("datafusion").unwrap();
+                    let schema_provider = catalog.schema(schema).unwrap();
+                    let _ = schema_provider.deregister_table(&table);
+                    let partitions = if new_batches.is_empty() {
+                        vec![vec![]]
+                    } else {
+                        vec![new_batches]
+                    };
+                    let mem_table = MemTable::try_new(new_schema, partitions)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                    schema_provider
+                        .register_table(table.clone(), Arc::new(mem_table))
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                } else {
+                    let _ = self.ctx.deregister_table(&table);
+                    let partitions = if new_batches.is_empty() {
+                        vec![vec![]]
+                    } else {
+                        vec![new_batches]
+                    };
+                    let mem_table = MemTable::try_new(new_schema, partitions)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                    self.ctx
+                        .register_table(&table, Arc::new(mem_table))
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                }
+
+                let full_name = match schema_name {
+                    Some(s) => format!("{}.{}", s, table),
+                    None => table.clone(),
+                };
+                if let Some(defaults) = self.column_defaults.write().get_mut(&full_name) {
+                    defaults.remove(&col_name_lower);
+                }
+
+                Ok(vec![])
+            }
+
+            AlterTableOp::RenameColumn { old_name, new_name } => {
+                let (schema_name, table) = self.resolve_table_name(table_name);
+                let table_ref = Self::table_reference(schema_name.as_deref(), &table);
+
+                let table_provider = match self.ctx.table_provider(table_ref.clone()).await {
+                    Ok(provider) => provider,
+                    Err(_) => {
+                        if if_exists {
+                            return Ok(vec![]);
+                        }
+                        return Err(Error::internal(format!("Table {} not found", table_name)));
+                    }
+                };
+
+                let existing_schema = table_provider.schema();
+                let old_name_lower = old_name.to_lowercase();
+                let new_name_lower = new_name.to_lowercase();
+
+                let col_idx = existing_schema
+                    .fields()
+                    .iter()
+                    .position(|f| f.name().to_lowercase() == old_name_lower);
+
+                let col_idx = match col_idx {
+                    Some(idx) => idx,
+                    None => {
+                        return Err(Error::internal(format!(
+                            "Column {} not found in table {}",
+                            old_name, table_name
+                        )));
+                    }
+                };
+
+                if existing_schema
+                    .fields()
+                    .iter()
+                    .any(|f| f.name().to_lowercase() == new_name_lower)
+                {
+                    return Err(Error::internal(format!(
+                        "Column {} already exists in table {}",
+                        new_name, table_name
+                    )));
+                }
+
+                let new_fields: Vec<ArrowField> = existing_schema
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| {
+                        if i == col_idx {
+                            ArrowField::new(&new_name_lower, f.data_type().clone(), f.is_nullable())
+                        } else {
+                            f.as_ref().clone()
+                        }
+                    })
+                    .collect();
+                let new_schema = Arc::new(ArrowSchema::new(new_fields));
+
+                let source = provider_as_source(table_provider);
+                let scan = LogicalPlanBuilder::scan(&table, source, None)
+                    .map_err(|e| Error::internal(e.to_string()))?
+                    .build()
+                    .map_err(|e| Error::internal(e.to_string()))?;
+                let df = DataFrame::new(self.ctx.state(), scan);
+                let existing_batches = df
+                    .collect()
+                    .await
+                    .map_err(|e| Error::internal(e.to_string()))?;
+
+                let new_batches: Vec<RecordBatch> = existing_batches
+                    .iter()
+                    .map(|batch| {
+                        RecordBatch::try_new(new_schema.clone(), batch.columns().to_vec())
+                            .map_err(|e| Error::internal(e.to_string()))
+                    })
+                    .collect::<Result<_>>()?;
+
+                if let Some(ref schema) = schema_name {
+                    let catalog = self.ctx.catalog("datafusion").unwrap();
+                    let schema_provider = catalog.schema(schema).unwrap();
+                    let _ = schema_provider.deregister_table(&table);
+                    let partitions = if new_batches.is_empty() {
+                        vec![vec![]]
+                    } else {
+                        vec![new_batches]
+                    };
+                    let mem_table = MemTable::try_new(new_schema, partitions)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                    schema_provider
+                        .register_table(table.clone(), Arc::new(mem_table))
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                } else {
+                    let _ = self.ctx.deregister_table(&table);
+                    let partitions = if new_batches.is_empty() {
+                        vec![vec![]]
+                    } else {
+                        vec![new_batches]
+                    };
+                    let mem_table = MemTable::try_new(new_schema, partitions)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                    self.ctx
+                        .register_table(&table, Arc::new(mem_table))
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                }
+
+                let full_name = match schema_name {
+                    Some(s) => format!("{}.{}", s, table),
+                    None => table.clone(),
+                };
+                if let Some(defaults) = self.column_defaults.write().get_mut(&full_name)
+                    && let Some(default_expr) = defaults.remove(&old_name_lower)
+                {
+                    defaults.insert(new_name_lower, default_expr);
+                }
+
+                Ok(vec![])
+            }
+
+            AlterTableOp::AlterColumn { name, action } => {
+                let (schema_name, table) = self.resolve_table_name(table_name);
+                let table_ref = Self::table_reference(schema_name.as_deref(), &table);
+
+                let table_provider = match self.ctx.table_provider(table_ref.clone()).await {
+                    Ok(provider) => provider,
+                    Err(_) => {
+                        if if_exists {
+                            return Ok(vec![]);
+                        }
+                        return Err(Error::internal(format!("Table {} not found", table_name)));
+                    }
+                };
+
+                let existing_schema = table_provider.schema();
+                let col_name_lower = name.to_lowercase();
+
+                let col_idx = existing_schema
+                    .fields()
+                    .iter()
+                    .position(|f| f.name().to_lowercase() == col_name_lower);
+
+                let col_idx = match col_idx {
+                    Some(idx) => idx,
+                    None => {
+                        return Err(Error::internal(format!(
+                            "Column {} not found in table {}",
+                            name, table_name
+                        )));
+                    }
+                };
+
+                let full_name = match &schema_name {
+                    Some(s) => format!("{}.{}", s, table),
+                    None => table.clone(),
+                };
+
+                match action {
+                    AlterColumnAction::SetNotNull => {
+                        let old_field = existing_schema.field(col_idx);
+                        let new_fields: Vec<ArrowField> = existing_schema
+                            .fields()
+                            .iter()
+                            .enumerate()
+                            .map(|(i, f)| {
+                                if i == col_idx {
+                                    ArrowField::new(f.name(), f.data_type().clone(), false)
+                                } else {
+                                    f.as_ref().clone()
+                                }
+                            })
+                            .collect();
+                        let new_schema = Arc::new(ArrowSchema::new(new_fields));
+
+                        let source = provider_as_source(table_provider);
+                        let scan = LogicalPlanBuilder::scan(&table, source, None)
+                            .map_err(|e| Error::internal(e.to_string()))?
+                            .build()
+                            .map_err(|e| Error::internal(e.to_string()))?;
+                        let df = DataFrame::new(self.ctx.state(), scan);
+                        let existing_batches = df
+                            .collect()
+                            .await
+                            .map_err(|e| Error::internal(e.to_string()))?;
+
+                        for batch in &existing_batches {
+                            let col = batch.column(col_idx);
+                            if col.null_count() > 0 {
+                                return Err(Error::internal(format!(
+                                    "Column {} contains NULL values, cannot set NOT NULL",
+                                    old_field.name()
+                                )));
+                            }
+                        }
+
+                        let new_batches: Vec<RecordBatch> = existing_batches
+                            .iter()
+                            .map(|batch| {
+                                RecordBatch::try_new(new_schema.clone(), batch.columns().to_vec())
+                                    .map_err(|e| Error::internal(e.to_string()))
+                            })
+                            .collect::<Result<_>>()?;
+
+                        if let Some(ref schema) = schema_name {
+                            let catalog = self.ctx.catalog("datafusion").unwrap();
+                            let schema_provider = catalog.schema(schema).unwrap();
+                            let _ = schema_provider.deregister_table(&table);
+                            let partitions = if new_batches.is_empty() {
+                                vec![vec![]]
+                            } else {
+                                vec![new_batches]
+                            };
+                            let mem_table = MemTable::try_new(new_schema, partitions)
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                            schema_provider
+                                .register_table(table, Arc::new(mem_table))
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                        } else {
+                            let _ = self.ctx.deregister_table(&table);
+                            let partitions = if new_batches.is_empty() {
+                                vec![vec![]]
+                            } else {
+                                vec![new_batches]
+                            };
+                            let mem_table = MemTable::try_new(new_schema, partitions)
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                            self.ctx
+                                .register_table(&table, Arc::new(mem_table))
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                        }
+                    }
+
+                    AlterColumnAction::DropNotNull => {
+                        let new_fields: Vec<ArrowField> = existing_schema
+                            .fields()
+                            .iter()
+                            .enumerate()
+                            .map(|(i, f)| {
+                                if i == col_idx {
+                                    ArrowField::new(f.name(), f.data_type().clone(), true)
+                                } else {
+                                    f.as_ref().clone()
+                                }
+                            })
+                            .collect();
+                        let new_schema = Arc::new(ArrowSchema::new(new_fields));
+
+                        let source = provider_as_source(table_provider);
+                        let scan = LogicalPlanBuilder::scan(&table, source, None)
+                            .map_err(|e| Error::internal(e.to_string()))?
+                            .build()
+                            .map_err(|e| Error::internal(e.to_string()))?;
+                        let df = DataFrame::new(self.ctx.state(), scan);
+                        let existing_batches = df
+                            .collect()
+                            .await
+                            .map_err(|e| Error::internal(e.to_string()))?;
+
+                        let new_batches: Vec<RecordBatch> = existing_batches
+                            .iter()
+                            .map(|batch| {
+                                RecordBatch::try_new(new_schema.clone(), batch.columns().to_vec())
+                                    .map_err(|e| Error::internal(e.to_string()))
+                            })
+                            .collect::<Result<_>>()?;
+
+                        if let Some(ref schema) = schema_name {
+                            let catalog = self.ctx.catalog("datafusion").unwrap();
+                            let schema_provider = catalog.schema(schema).unwrap();
+                            let _ = schema_provider.deregister_table(&table);
+                            let partitions = if new_batches.is_empty() {
+                                vec![vec![]]
+                            } else {
+                                vec![new_batches]
+                            };
+                            let mem_table = MemTable::try_new(new_schema, partitions)
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                            schema_provider
+                                .register_table(table, Arc::new(mem_table))
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                        } else {
+                            let _ = self.ctx.deregister_table(&table);
+                            let partitions = if new_batches.is_empty() {
+                                vec![vec![]]
+                            } else {
+                                vec![new_batches]
+                            };
+                            let mem_table = MemTable::try_new(new_schema, partitions)
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                            self.ctx
+                                .register_table(&table, Arc::new(mem_table))
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                        }
+                    }
+
+                    AlterColumnAction::SetDefault { default } => {
+                        self.column_defaults
+                            .write()
+                            .entry(full_name)
+                            .or_default()
+                            .insert(col_name_lower, default.clone());
+                    }
+
+                    AlterColumnAction::DropDefault => {
+                        if let Some(defaults) = self.column_defaults.write().get_mut(&full_name) {
+                            defaults.remove(&col_name_lower);
+                        }
+                    }
+
+                    AlterColumnAction::SetDataType { data_type } => {
+                        let new_arrow_type = yachtsql_type_to_arrow(data_type);
+                        let new_fields: Vec<ArrowField> = existing_schema
+                            .fields()
+                            .iter()
+                            .enumerate()
+                            .map(|(i, f)| {
+                                if i == col_idx {
+                                    ArrowField::new(
+                                        f.name(),
+                                        new_arrow_type.clone(),
+                                        f.is_nullable(),
+                                    )
+                                } else {
+                                    f.as_ref().clone()
+                                }
+                            })
+                            .collect();
+                        let new_schema = Arc::new(ArrowSchema::new(new_fields));
+
+                        let source = provider_as_source(table_provider);
+                        let scan = LogicalPlanBuilder::scan(&table, source, None)
+                            .map_err(|e| Error::internal(e.to_string()))?
+                            .build()
+                            .map_err(|e| Error::internal(e.to_string()))?;
+                        let df = DataFrame::new(self.ctx.state(), scan);
+                        let existing_batches = df
+                            .collect()
+                            .await
+                            .map_err(|e| Error::internal(e.to_string()))?;
+
+                        let new_batches: Vec<RecordBatch> = existing_batches
+                            .iter()
+                            .map(|batch| {
+                                let columns: Vec<ArrayRef> = batch
+                                    .columns()
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, col)| {
+                                        if i == col_idx {
+                                            cast(col, &new_arrow_type)
+                                                .map_err(|e| Error::internal(e.to_string()))
+                                        } else {
+                                            Ok(col.clone())
+                                        }
+                                    })
+                                    .collect::<Result<_>>()?;
+                                RecordBatch::try_new(new_schema.clone(), columns)
+                                    .map_err(|e| Error::internal(e.to_string()))
+                            })
+                            .collect::<Result<_>>()?;
+
+                        if let Some(ref schema) = schema_name {
+                            let catalog = self.ctx.catalog("datafusion").unwrap();
+                            let schema_provider = catalog.schema(schema).unwrap();
+                            let _ = schema_provider.deregister_table(&table);
+                            let partitions = if new_batches.is_empty() {
+                                vec![vec![]]
+                            } else {
+                                vec![new_batches]
+                            };
+                            let mem_table = MemTable::try_new(new_schema, partitions)
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                            schema_provider
+                                .register_table(table, Arc::new(mem_table))
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                        } else {
+                            let _ = self.ctx.deregister_table(&table);
+                            let partitions = if new_batches.is_empty() {
+                                vec![vec![]]
+                            } else {
+                                vec![new_batches]
+                            };
+                            let mem_table = MemTable::try_new(new_schema, partitions)
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                            self.ctx
+                                .register_table(&table, Arc::new(mem_table))
+                                .map_err(|e| Error::internal(e.to_string()))?;
+                        }
+                    }
+
+                    AlterColumnAction::SetOptions { .. } => {}
+                }
+
+                Ok(vec![])
+            }
+
+            AlterTableOp::SetOptions { .. }
             | AlterTableOp::AddConstraint { .. }
             | AlterTableOp::DropConstraint { .. }
-            | AlterTableOp::DropPrimaryKey => Err(Error::internal(format!(
-                "ALTER TABLE operation not yet implemented: {:?}",
-                operation
-            ))),
+            | AlterTableOp::DropPrimaryKey => Ok(vec![]),
         }
     }
 
