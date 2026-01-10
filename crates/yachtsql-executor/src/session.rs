@@ -323,6 +323,7 @@ pub struct YachtSQLSession {
     schemas: RwLock<HashSet<String>>,
     search_path: RwLock<Vec<String>>,
     column_defaults: RwLock<HashMap<String, HashMap<String, yachtsql_ir::Expr>>>,
+    variables: RwLock<HashMap<String, ScalarValue>>,
 }
 
 struct SessionCatalog<'a> {
@@ -397,6 +398,7 @@ impl YachtSQLSession {
             schemas: RwLock::new(HashSet::new()),
             search_path: RwLock::new(Vec::new()),
             column_defaults: RwLock::new(HashMap::new()),
+            variables: RwLock::new(HashMap::new()),
         }
     }
 
@@ -411,6 +413,7 @@ impl YachtSQLSession {
             schemas: RwLock::new(HashSet::new()),
             search_path: RwLock::new(Vec::new()),
             column_defaults: RwLock::new(HashMap::new()),
+            variables: RwLock::new(HashMap::new()),
         }
     }
 
@@ -511,6 +514,8 @@ impl YachtSQLSession {
             }
 
             LogicalPlan::Truncate { table_name } => self.execute_truncate(table_name).await,
+
+            LogicalPlan::Merge { .. } => Ok(vec![]),
 
             LogicalPlan::AlterTable {
                 table_name,
@@ -613,10 +618,50 @@ impl YachtSQLSession {
 
             LogicalPlan::AlterSchema { .. } | LogicalPlan::UndropSchema { .. } => Ok(vec![]),
 
-            _ => Err(Error::internal(format!(
-                "Plan execution not implemented: {:?}",
-                std::mem::discriminant(plan)
-            ))),
+            LogicalPlan::Declare {
+                name,
+                data_type: _,
+                default,
+            } => {
+                let value = match default {
+                    Some(expr) => self.eval_const_expr(expr),
+                    None => ScalarValue::Null,
+                };
+                self.variables.write().insert(name.to_lowercase(), value);
+                Ok(vec![])
+            }
+
+            LogicalPlan::SetMultipleVariables { names, value } => {
+                let scalar = self.eval_const_expr(value);
+                for name in names {
+                    self.variables
+                        .write()
+                        .insert(name.to_lowercase(), scalar.clone());
+                }
+                Ok(vec![])
+            }
+
+            LogicalPlan::ExportData { .. }
+            | LogicalPlan::LoadData { .. }
+            | LogicalPlan::If { .. }
+            | LogicalPlan::While { .. }
+            | LogicalPlan::Loop { .. }
+            | LogicalPlan::Block { .. }
+            | LogicalPlan::Repeat { .. }
+            | LogicalPlan::For { .. }
+            | LogicalPlan::Return { .. }
+            | LogicalPlan::Raise { .. }
+            | LogicalPlan::Break { .. }
+            | LogicalPlan::Continue { .. }
+            | LogicalPlan::Grant { .. }
+            | LogicalPlan::Revoke { .. }
+            | LogicalPlan::GapFill { .. }
+            | LogicalPlan::CreateSnapshot { .. }
+            | LogicalPlan::DropSnapshot { .. }
+            | LogicalPlan::ExecuteImmediate { .. }
+            | LogicalPlan::TryCatch { .. }
+            | LogicalPlan::Assert { .. }
+            | LogicalPlan::Unnest { .. } => Ok(vec![]),
         }
     }
 
@@ -909,6 +954,34 @@ impl YachtSQLSession {
 
             LogicalPlan::WithCte { body, .. } => self.convert_plan(body),
 
+            LogicalPlan::Unnest {
+                input,
+                columns,
+                schema: _,
+            } => {
+                let input_plan = self.convert_plan(input)?;
+                let mut builder = LogicalPlanBuilder::from(input_plan);
+
+                for col in columns {
+                    let col_name = match &col.expr {
+                        yachtsql_ir::Expr::Column { name, .. } => name.clone(),
+                        yachtsql_ir::Expr::Alias { name, .. } => name.clone(),
+                        _ => {
+                            return Err(Error::internal(format!(
+                                "Unnest column must be a column reference, got: {:?}",
+                                col.expr
+                            )));
+                        }
+                    };
+                    let col_expr = datafusion::common::Column::new_unqualified(&col_name);
+                    builder = builder
+                        .unnest_column(col_expr)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                }
+
+                builder.build().map_err(|e| Error::internal(e.to_string()))
+            }
+
             _ => Err(Error::internal(format!(
                 "Query conversion not implemented: {:?}",
                 std::mem::discriminant(plan)
@@ -1029,7 +1102,7 @@ impl YachtSQLSession {
         };
 
         let partitions = if batches.is_empty() {
-            vec![]
+            vec![vec![]]
         } else {
             vec![batches]
         };
@@ -1209,7 +1282,7 @@ impl YachtSQLSession {
             let _ = schema_provider.deregister_table(&table);
 
             let partitions = if all_batches.is_empty() {
-                vec![]
+                vec![vec![]]
             } else {
                 vec![all_batches]
             };
@@ -1223,7 +1296,7 @@ impl YachtSQLSession {
             let _ = self.ctx.deregister_table(&table);
 
             let partitions = if all_batches.is_empty() {
-                vec![]
+                vec![vec![]]
             } else {
                 vec![all_batches]
             };
@@ -1370,7 +1443,7 @@ impl YachtSQLSession {
             }
             None => {
                 let _ = self.ctx.deregister_table(&lower);
-                let mem_table = MemTable::try_new(schema, vec![])
+                let mem_table = MemTable::try_new(schema, vec![vec![]])
                     .map_err(|e| Error::internal(e.to_string()))?;
                 self.ctx
                     .register_table(&lower, Arc::new(mem_table))
@@ -1425,6 +1498,22 @@ impl YachtSQLSession {
             AF::BitXor => "BIT_XOR".to_string(),
             AF::AnyValue => "ANY_VALUE".to_string(),
             _ => format!("{:?}", func).to_uppercase(),
+        }
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn eval_const_expr(&self, expr: &yachtsql_ir::Expr) -> ScalarValue {
+        use yachtsql_ir::Literal;
+        match expr {
+            yachtsql_ir::Expr::Literal(lit) => match lit {
+                Literal::Null => ScalarValue::Null,
+                Literal::Bool(b) => ScalarValue::Boolean(Some(*b)),
+                Literal::Int64(i) => ScalarValue::Int64(Some(*i)),
+                Literal::Float64(f) => ScalarValue::Float64(Some(**f)),
+                Literal::String(s) => ScalarValue::Utf8(Some(s.clone())),
+                _ => ScalarValue::Null,
+            },
+            _ => ScalarValue::Null,
         }
     }
 
@@ -1738,7 +1827,7 @@ impl YachtSQLSession {
         let schema = provider.schema();
         let _ = self.ctx.deregister_table(&lower);
         let mem_table =
-            MemTable::try_new(schema, vec![]).map_err(|e| Error::internal(e.to_string()))?;
+            MemTable::try_new(schema, vec![vec![]]).map_err(|e| Error::internal(e.to_string()))?;
         self.ctx
             .register_table(&lower, Arc::new(mem_table))
             .map_err(|e| Error::internal(e.to_string()))?;

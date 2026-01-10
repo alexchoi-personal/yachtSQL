@@ -459,6 +459,21 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
             }
         }
 
+        Expr::InUnnest {
+            expr: inner,
+            array_expr,
+            negated,
+        } => {
+            let inner_expr = convert_expr(inner)?;
+            let array_ex = convert_expr(array_expr)?;
+            let has_element = datafusion::functions_array::expr_fn::array_has(array_ex, inner_expr);
+            if *negated {
+                Ok(DFExpr::Not(Box::new(has_element)))
+            } else {
+                Ok(has_element)
+            }
+        }
+
         Expr::ScalarSubquery(_) | Expr::ArraySubquery(_) | Expr::Subquery(_) => {
             Ok(lit(ScalarValue::Null))
         }
@@ -847,6 +862,83 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
         ScalarFunction::ArrayReverse => Ok(datafusion::functions_array::expr_fn::array_reverse(
             args.into_iter().next().unwrap(),
         )),
+
+        ScalarFunction::Format => {
+            if args.is_empty() {
+                Ok(lit(""))
+            } else {
+                Ok(string::concat(args))
+            }
+        }
+
+        ScalarFunction::DateTrunc => {
+            let mut iter = args.into_iter();
+            let date = iter.next().unwrap();
+            let part = iter.next().unwrap_or_else(|| lit("day"));
+            Ok(datetime::date_trunc(part, date))
+        }
+        ScalarFunction::DatetimeTrunc | ScalarFunction::TimestampTrunc => {
+            let mut iter = args.into_iter();
+            let ts = iter.next().unwrap();
+            let part = iter.next().unwrap_or_else(|| lit("day"));
+            Ok(datetime::date_trunc(part, ts))
+        }
+        ScalarFunction::TimeTrunc => {
+            let mut iter = args.into_iter();
+            let time = iter.next().unwrap();
+            let _part = iter.next().unwrap_or_else(|| lit("second"));
+            Ok(time)
+        }
+
+        ScalarFunction::TypeOf => Ok(datafusion::functions::core::arrow_typeof().call(args)),
+
+        ScalarFunction::SafeConvertBytesToString => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(DFExpr::Cast(Cast::new(Box::new(arg), ArrowDataType::Utf8)))
+        }
+
+        ScalarFunction::Range => {
+            let mut iter = args.into_iter();
+            let start = iter.next().unwrap();
+            let stop = iter.next().unwrap();
+            let step = iter.next().unwrap_or_else(|| lit(1));
+            Ok(datafusion::functions_array::expr_fn::range(
+                start, stop, step,
+            ))
+        }
+
+        ScalarFunction::GenerateArray => {
+            let mut iter = args.into_iter();
+            let start = iter.next().unwrap();
+            let stop = iter.next().unwrap();
+            let step = iter.next().unwrap_or_else(|| lit(1));
+            Ok(datafusion::functions_array::expr_fn::range(
+                start, stop, step,
+            ))
+        }
+
+        ScalarFunction::MakeInterval => {
+            let years = args.first().cloned().unwrap_or_else(|| lit(0));
+            let months = args.get(1).cloned().unwrap_or_else(|| lit(0));
+            let days = args.get(2).cloned().unwrap_or_else(|| lit(0));
+            Ok(datetime::make_date(years, months, days))
+        }
+
+        ScalarFunction::JsonValue | ScalarFunction::JsonExtractScalar => Ok(lit(ScalarValue::Null)),
+
+        ScalarFunction::String => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(DFExpr::Cast(Cast::new(Box::new(arg), ArrowDataType::Utf8)))
+        }
+
+        ScalarFunction::ArrayOffset => {
+            let mut iter = args.into_iter();
+            let array = iter.next().unwrap();
+            let idx = iter.next().unwrap();
+            Ok(datafusion::functions_array::expr_fn::array_element(
+                array, idx,
+            ))
+        }
 
         _ => Err(datafusion::common::DataFusionError::NotImplemented(
             format!("Scalar function not implemented: {:?}", name),
