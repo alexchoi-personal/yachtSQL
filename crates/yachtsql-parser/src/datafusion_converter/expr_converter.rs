@@ -862,6 +862,116 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
         ScalarFunction::ArrayReverse => Ok(datafusion::functions_array::expr_fn::array_reverse(
             args.into_iter().next().unwrap(),
         )),
+        ScalarFunction::ArrayToString => {
+            let mut iter = args.into_iter();
+            let array = iter.next().unwrap();
+            let delimiter = iter.next().unwrap_or_else(|| lit(","));
+            Ok(datafusion::functions_array::expr_fn::array_to_string(
+                array, delimiter,
+            ))
+        }
+        ScalarFunction::ArrayContains => {
+            let mut iter = args.into_iter();
+            let array = iter.next().unwrap();
+            let element = iter.next().unwrap();
+            Ok(datafusion::functions_array::expr_fn::array_has(
+                array, element,
+            ))
+        }
+        ScalarFunction::ArrayFirst => {
+            let array = args.into_iter().next().unwrap();
+            Ok(datafusion::functions_array::extract::array_element(
+                array,
+                lit(1),
+            ))
+        }
+        ScalarFunction::ArrayLast => {
+            let array = args.into_iter().next().unwrap();
+            let len = datafusion::functions_array::expr_fn::array_length(array.clone());
+            Ok(datafusion::functions_array::extract::array_element(
+                array, len,
+            ))
+        }
+        ScalarFunction::ArrayMin => {
+            let array = args.into_iter().next().unwrap();
+            Ok(
+                datafusion::functions_aggregate::min_max::min_udaf().call(vec![
+                    datafusion::functions_array::expr_fn::array_to_string(array, lit(",")),
+                ]),
+            )
+        }
+        ScalarFunction::ArrayMax => {
+            let array = args.into_iter().next().unwrap();
+            Ok(
+                datafusion::functions_aggregate::min_max::max_udaf().call(vec![
+                    datafusion::functions_array::expr_fn::array_to_string(array, lit(",")),
+                ]),
+            )
+        }
+        ScalarFunction::ArraySum => {
+            let array = args.into_iter().next().unwrap();
+            Ok(datafusion::functions_aggregate::sum::sum_udaf().call(vec![
+                datafusion::functions_array::expr_fn::array_to_string(array, lit(",")),
+            ]))
+        }
+        ScalarFunction::ArrayAvg => {
+            let array = args.into_iter().next().unwrap();
+            Ok(
+                datafusion::functions_aggregate::average::avg_udaf().call(vec![
+                    datafusion::functions_array::expr_fn::array_to_string(array, lit(",")),
+                ]),
+            )
+        }
+        ScalarFunction::ArraySlice => {
+            let mut iter = args.into_iter();
+            let array = iter.next().unwrap();
+            let start = iter.next().unwrap();
+            let end = iter.next().unwrap();
+            Ok(datafusion::functions_array::extract::array_slice(
+                array, start, end, None,
+            ))
+        }
+        ScalarFunction::ArrayFlatten => Ok(datafusion::functions_array::expr_fn::flatten(
+            args.into_iter().next().unwrap(),
+        )),
+        ScalarFunction::ArrayDistinct => Ok(datafusion::functions_array::expr_fn::array_distinct(
+            args.into_iter().next().unwrap(),
+        )),
+        ScalarFunction::ArrayPosition => {
+            let mut iter = args.into_iter();
+            let array = iter.next().unwrap();
+            let element = iter.next().unwrap();
+            let start = iter.next();
+            match start {
+                Some(s) => Ok(datafusion::functions_array::expr_fn::array_position(
+                    array, element, s,
+                )),
+                None => Ok(datafusion::functions_array::expr_fn::array_position(
+                    array,
+                    element,
+                    lit(1),
+                )),
+            }
+        }
+        ScalarFunction::ArrayCompact => {
+            let array = args.into_iter().next().unwrap();
+            Ok(datafusion::functions_array::expr_fn::array_remove_all(
+                array,
+                lit(ScalarValue::Null),
+            ))
+        }
+        ScalarFunction::ArraySort => {
+            let mut iter = args.into_iter();
+            let array = iter.next().unwrap();
+            let desc = iter.next().unwrap_or_else(|| lit(false));
+            let nulls_first = iter.next().unwrap_or_else(|| lit(false));
+            Ok(datafusion::functions_array::expr_fn::array_sort(
+                array,
+                desc,
+                nulls_first,
+            ))
+        }
+        ScalarFunction::ArrayZip => Ok(datafusion::functions_array::expr_fn::array_concat(args)),
 
         ScalarFunction::Format => {
             if args.is_empty() {
