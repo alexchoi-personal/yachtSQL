@@ -5,7 +5,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::{
     DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema, TimeUnit,
 };
-use datafusion::common::{Result as DFResult, ToDFSchema};
+use datafusion::common::{Result as DFResult, TableReference, ToDFSchema};
 use datafusion::logical_expr::{
     EmptyRelation, Expr as DFExpr, JoinType as DFJoinType, LogicalPlan as DFLogicalPlan,
     LogicalPlanBuilder, SortExpr as DFSortExpr,
@@ -19,9 +19,22 @@ pub fn convert_plan(plan: &LogicalPlan) -> DFResult<DFLogicalPlan> {
     match plan {
         LogicalPlan::Scan { schema, .. } => {
             let arrow_schema = convert_plan_schema(schema);
+            let table_qualifier = schema
+                .fields
+                .first()
+                .and_then(|f| f.table.as_ref())
+                .map(|t| TableReference::bare(t.clone()));
+            let df_schema = match table_qualifier {
+                Some(tref) => arrow_schema
+                    .to_dfschema_ref()?
+                    .as_ref()
+                    .clone()
+                    .replace_qualifier(tref),
+                None => arrow_schema.to_dfschema()?,
+            };
             Ok(DFLogicalPlan::EmptyRelation(EmptyRelation {
                 produce_one_row: false,
-                schema: arrow_schema.to_dfschema_ref()?,
+                schema: Arc::new(df_schema),
             }))
         }
 
@@ -186,6 +199,8 @@ pub fn convert_plan(plan: &LogicalPlan) -> DFResult<DFLogicalPlan> {
                 .filter(predicate_expr)?
                 .build()
         }
+
+        LogicalPlan::WithCte { body, .. } => convert_plan(body),
 
         _ => Err(datafusion::common::DataFusionError::NotImplemented(
             format!(
