@@ -1,3 +1,5 @@
+use yachtsql::RecordBatchVecExt;
+
 use crate::assert_table_eq;
 use crate::common::{create_session, d, dt, null, tm, ts, ts_ms};
 

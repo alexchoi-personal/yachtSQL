@@ -13,12 +13,16 @@ categories = ["database"]
 [dependencies]
 # Internal crates
 yachtsql-common = { version = "0.1.4", path = "crates/yachtsql-common" }
-yachtsql-storage = { version = "0.1.4", path = "crates/yachtsql-storage" }
+yachtsql-arrow = { version = "0.1.4", path = "crates/yachtsql-arrow" }
 yachtsql-ir = { version = "0.1.4", path = "crates/yachtsql-ir" }
-yachtsql-optimizer = { version = "0.1.4", path = "crates/yachtsql-optimizer" }
 yachtsql-parser = { version = "0.1.4", path = "crates/yachtsql-parser" }
 yachtsql-functions = { version = "0.1.4", path = "crates/yachtsql-functions" }
+yachtsql-datafusion-functions = { version = "0.1.4", path = "crates/yachtsql-datafusion-functions" }
 yachtsql-executor = { version = "0.1.4", path = "crates/yachtsql-executor" }
+
+# Arrow/DataFusion (arrow 53 to match datafusion 44)
+arrow = { version = "53", default-features = false, features = ["prettyprint"] }
+datafusion = "44"
 
 sentry = "0.45.0"
 
@@ -99,8 +103,8 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "time", "sync"] }
 pprof = { version = "0.14", features = ["flamegraph", "criterion"] }
 yachtsql-sqlparser = { path = "crates/yachtsql-sqlparser", features = ["visitor"] }
-arrow = { version = "54", default-features = false }
-parquet = { version = "54", default-features = false, features = ["arrow"] }
+arrow = { version = "53", default-features = false }
+parquet = { version = "53", default-features = false, features = ["arrow"] }
 tempfile = "3.14"
 yachtsql-test-utils = { version = "0.1.4", path = "crates/yachtsql-test-utils" }
 
@@ -129,16 +133,16 @@ wildcard-enum-match-arm = "warn"     # Discourage wildcards in match (prefer exh
 [workspace]
 members = [
     ".",
+    "crates/yachtsql-arrow",
     "crates/yachtsql-cli",
     "crates/yachtsql-common",
+    "crates/yachtsql-datafusion-functions",
     "crates/yachtsql-executor",
     "crates/yachtsql-functions",
     "crates/yachtsql-ir",
-    "crates/yachtsql-optimizer",
     "crates/yachtsql-parser",
     "crates/yachtsql-sqlparser",
     "crates/yachtsql-sqlparser-derive",
-    "crates/yachtsql-storage",
     "crates/yachtsql-test-utils",
 ]
 resolver = "2"

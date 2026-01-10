@@ -10,6 +10,7 @@ use arrow::datatypes::{DataType as ArrowDataType, Field as ArrowField, Schema as
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::arrow_writer::ArrowWriter;
 use tempfile::{NamedTempFile, TempDir};
+use yachtsql::RecordBatchVecExt;
 use yachtsql_test_utils::{get_f64, get_i64, get_string, is_null};
 
 use crate::assert_table_eq;

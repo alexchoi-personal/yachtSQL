@@ -6,6 +6,72 @@ use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum FieldMode {
+    Required,
+    #[default]
+    Nullable,
+    Repeated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Field {
+    pub name: String,
+    pub data_type: DataType,
+    pub mode: FieldMode,
+}
+
+impl Field {
+    pub fn new(name: impl Into<String>, data_type: DataType, mode: FieldMode) -> Self {
+        Self {
+            name: name.into(),
+            data_type,
+            mode,
+        }
+    }
+
+    pub fn nullable(name: impl Into<String>, data_type: DataType) -> Self {
+        Self::new(name, data_type, FieldMode::Nullable)
+    }
+
+    pub fn required(name: impl Into<String>, data_type: DataType) -> Self {
+        Self::new(name, data_type, FieldMode::Required)
+    }
+
+    pub fn is_nullable(&self) -> bool {
+        matches!(self.mode, FieldMode::Nullable)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Schema {
+    fields: Vec<Field>,
+}
+
+impl Schema {
+    pub fn new() -> Self {
+        Self { fields: Vec::new() }
+    }
+
+    pub fn from_fields(fields: Vec<Field>) -> Self {
+        Self { fields }
+    }
+
+    pub fn fields(&self) -> &[Field] {
+        &self.fields
+    }
+
+    pub fn field_by_name(&self, name: &str) -> Option<&Field> {
+        self.fields
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn num_fields(&self) -> usize {
+        self.fields.len()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DataType {
     Unknown,

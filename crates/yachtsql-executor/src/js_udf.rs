@@ -1,4 +1,5 @@
 #![coverage(off)]
+#![allow(dead_code)]
 
 use std::cell::RefCell;
 use std::sync::Once;

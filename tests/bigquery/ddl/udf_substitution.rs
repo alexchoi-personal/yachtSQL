@@ -1,3 +1,5 @@
+use yachtsql::RecordBatchVecExt;
+
 use crate::assert_table_eq;
 use crate::common::create_session;
 
@@ -419,7 +421,7 @@ async fn test_udf_with_aggregate_order_by_param() {
     let records = result.to_records().unwrap();
     let val = records[0].values()[0].clone();
     match val {
-        yachtsql_common::types::Value::String(s) => {
+        yachtsql::ResultValue::String(s) => {
             assert!(s.contains('-'));
             assert!(s.contains('a'));
             assert!(s.contains('b'));

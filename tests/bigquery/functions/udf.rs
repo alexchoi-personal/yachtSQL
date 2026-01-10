@@ -1,3 +1,5 @@
+use yachtsql::RecordBatchVecExt;
+
 use crate::assert_table_eq;
 use crate::common::create_session;
 
@@ -95,10 +97,10 @@ async fn test_javascript_udf_float_math() {
     let value = &records[0].values()[0];
     let expected = std::f64::consts::PI * 4.0;
     match value {
-        yachtsql_common::types::Value::Float64(f) => {
-            assert!((f.into_inner() - expected).abs() < 0.0001);
+        yachtsql::ResultValue::Float64(f) => {
+            assert!((*f - expected).abs() < 0.0001);
         }
-        yachtsql_common::types::Value::String(s) => {
+        yachtsql::ResultValue::String(s) => {
             let f: f64 = s.parse().expect("Expected parseable float");
             assert!((f - expected).abs() < 0.0001);
         }
@@ -483,10 +485,10 @@ async fn test_javascript_udf_math_functions() {
     let records = result.to_records().unwrap();
     let value = &records[0].values()[0];
     match value {
-        yachtsql_common::types::Value::Float64(f) => {
-            assert!((f.into_inner() - 5.0).abs() < 0.0001);
+        yachtsql::ResultValue::Float64(f) => {
+            assert!((*f - 5.0).abs() < 0.0001);
         }
-        yachtsql_common::types::Value::String(s) => {
+        yachtsql::ResultValue::String(s) => {
             let f: f64 = s.parse().expect("Expected parseable float");
             assert!((f - 5.0).abs() < 0.0001);
         }

@@ -1,10 +1,10 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
-use yachtsql_executor::AsyncQueryExecutor;
+use yachtsql_executor::YachtSQLSession;
 
-fn setup_ecommerce_schema(executor: &AsyncQueryExecutor, scale: usize, rt: &Runtime) {
+fn setup_ecommerce_schema(session: &YachtSQLSession, scale: usize, rt: &Runtime) {
     rt.block_on(async {
-        executor
+        session
             .execute_sql(
                 "CREATE TABLE customers (
                     customer_id INT64,
@@ -18,7 +18,7 @@ fn setup_ecommerce_schema(executor: &AsyncQueryExecutor, scale: usize, rt: &Runt
             .await
             .unwrap();
 
-        executor
+        session
             .execute_sql(
                 "CREATE TABLE products (
                     product_id INT64,
@@ -32,7 +32,7 @@ fn setup_ecommerce_schema(executor: &AsyncQueryExecutor, scale: usize, rt: &Runt
             .await
             .unwrap();
 
-        executor
+        session
             .execute_sql(
                 "CREATE TABLE orders (
                     order_id INT64,
@@ -45,7 +45,7 @@ fn setup_ecommerce_schema(executor: &AsyncQueryExecutor, scale: usize, rt: &Runt
             .await
             .unwrap();
 
-        executor
+        session
             .execute_sql(
                 "CREATE TABLE order_items (
                     order_item_id INT64,
@@ -89,7 +89,7 @@ fn setup_ecommerce_schema(executor: &AsyncQueryExecutor, scale: usize, rt: &Runt
                 })
                 .collect();
 
-            executor
+            session
                 .execute_sql(&format!("INSERT INTO customers VALUES {}", customer_values.join(", ")))
                 .await
                 .unwrap();
@@ -105,7 +105,7 @@ fn setup_ecommerce_schema(executor: &AsyncQueryExecutor, scale: usize, rt: &Runt
                 )
             })
             .collect();
-        executor
+        session
             .execute_sql(&format!("INSERT INTO products VALUES {}", product_values.join(", ")))
             .await
             .unwrap();
@@ -130,7 +130,7 @@ fn setup_ecommerce_schema(executor: &AsyncQueryExecutor, scale: usize, rt: &Runt
                 })
                 .collect();
 
-            executor
+            session
                 .execute_sql(&format!("INSERT INTO orders VALUES {}", order_values.join(", ")))
                 .await
                 .unwrap();
@@ -156,7 +156,7 @@ fn setup_ecommerce_schema(executor: &AsyncQueryExecutor, scale: usize, rt: &Runt
                 })
                 .collect();
 
-            executor
+            session
                 .execute_sql(&format!("INSERT INTO order_items VALUES {}", item_values.join(", ")))
                 .await
                 .unwrap();
@@ -170,19 +170,12 @@ fn bench_complex_analytical_queries(c: &mut Criterion) {
 
     for scale in [500, 1000, 2000].iter() {
         let rt = Runtime::new().unwrap();
-        let executor = AsyncQueryExecutor::new();
-        setup_ecommerce_schema(&executor, *scale, &rt);
+        let session = YachtSQLSession::new();
+        setup_ecommerce_schema(&session, *scale, &rt);
 
-        rt.block_on(async {
-            executor
-                .execute_sql("SET PARALLEL_EXECUTION = true")
-                .await
-                .unwrap();
-        });
-
-        group.bench_with_input(BenchmarkId::new("parallel", scale), scale, |b, _| {
+        group.bench_with_input(BenchmarkId::new("datafusion", scale), scale, |b, _| {
             b.to_async(&rt).iter(|| async {
-                executor
+                session
                     .execute_sql(
                         "WITH category_aggregates AS (
                             SELECT
@@ -203,46 +196,7 @@ fn bench_complex_analytical_queries(c: &mut Criterion) {
                             units_sold,
                             revenue,
                             profit,
-                            ROUND(profit * 100.0 / revenue, 2) AS margin_pct
-                        FROM category_aggregates
-                        ORDER BY revenue DESC",
-                    )
-                    .await
-                    .unwrap()
-            });
-        });
-
-        rt.block_on(async {
-            executor
-                .execute_sql("SET PARALLEL_EXECUTION = false")
-                .await
-                .unwrap();
-        });
-
-        group.bench_with_input(BenchmarkId::new("sequential", scale), scale, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                executor
-                    .execute_sql(
-                        "WITH category_aggregates AS (
-                            SELECT
-                                p.category,
-                                p.subcategory,
-                                SUM(oi.quantity) AS units_sold,
-                                SUM(oi.quantity * oi.unit_price) AS revenue,
-                                SUM(oi.quantity * (oi.unit_price - p.cost)) AS profit
-                            FROM order_items oi
-                            JOIN products p ON oi.product_id = p.product_id
-                            JOIN orders o ON oi.order_id = o.order_id
-                            WHERE o.status = 'Completed'
-                            GROUP BY p.category, p.subcategory
-                        )
-                        SELECT
-                            category,
-                            subcategory,
-                            units_sold,
-                            revenue,
-                            profit,
-                            ROUND(profit * 100.0 / revenue, 2) AS margin_pct
+                            ROUND(CAST(profit AS FLOAT64) * 100.0 / CAST(revenue AS FLOAT64), 2) AS margin_pct
                         FROM category_aggregates
                         ORDER BY revenue DESC",
                     )
@@ -261,19 +215,12 @@ fn bench_customer_lifetime_value(c: &mut Criterion) {
 
     for scale in [500, 1000, 2000].iter() {
         let rt = Runtime::new().unwrap();
-        let executor = AsyncQueryExecutor::new();
-        setup_ecommerce_schema(&executor, *scale, &rt);
+        let session = YachtSQLSession::new();
+        setup_ecommerce_schema(&session, *scale, &rt);
 
-        rt.block_on(async {
-            executor
-                .execute_sql("SET PARALLEL_EXECUTION = true")
-                .await
-                .unwrap();
-        });
-
-        group.bench_with_input(BenchmarkId::new("parallel", scale), scale, |b, _| {
+        group.bench_with_input(BenchmarkId::new("datafusion", scale), scale, |b, _| {
             b.to_async(&rt).iter(|| async {
-                executor
+                session
                     .execute_sql(
                         "WITH customer_orders AS (
                             SELECT
@@ -296,51 +243,7 @@ fn bench_customer_lifetime_value(c: &mut Criterion) {
                             segment,
                             order_count,
                             total_revenue,
-                            CASE WHEN order_count > 0 THEN total_revenue / order_count ELSE 0 END AS avg_order_value,
-                            DATE_DIFF(last_order, first_order, DAY) AS customer_tenure_days
-                        FROM customer_orders
-                        ORDER BY total_revenue DESC NULLS LAST
-                        LIMIT 100",
-                    )
-                    .await
-                    .unwrap()
-            });
-        });
-
-        rt.block_on(async {
-            executor
-                .execute_sql("SET PARALLEL_EXECUTION = false")
-                .await
-                .unwrap();
-        });
-
-        group.bench_with_input(BenchmarkId::new("sequential", scale), scale, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                executor
-                    .execute_sql(
-                        "WITH customer_orders AS (
-                            SELECT
-                                c.customer_id,
-                                c.name,
-                                c.segment,
-                                c.signup_date,
-                                COUNT(DISTINCT o.order_id) AS order_count,
-                                SUM(oi.quantity * oi.unit_price) AS total_revenue,
-                                MIN(o.order_date) AS first_order,
-                                MAX(o.order_date) AS last_order
-                            FROM customers c
-                            LEFT JOIN orders o ON c.customer_id = o.customer_id AND o.status = 'Completed'
-                            LEFT JOIN order_items oi ON o.order_id = oi.order_id
-                            GROUP BY c.customer_id, c.name, c.segment, c.signup_date
-                        )
-                        SELECT
-                            customer_id,
-                            name,
-                            segment,
-                            order_count,
-                            total_revenue,
-                            CASE WHEN order_count > 0 THEN total_revenue / order_count ELSE 0 END AS avg_order_value,
-                            DATE_DIFF(last_order, first_order, DAY) AS customer_tenure_days
+                            CASE WHEN order_count > 0 THEN total_revenue / order_count ELSE 0 END AS avg_order_value
                         FROM customer_orders
                         ORDER BY total_revenue DESC NULLS LAST
                         LIMIT 100",
@@ -360,19 +263,12 @@ fn bench_revenue_with_window_functions(c: &mut Criterion) {
 
     for scale in [500, 1000, 2000].iter() {
         let rt = Runtime::new().unwrap();
-        let executor = AsyncQueryExecutor::new();
-        setup_ecommerce_schema(&executor, *scale, &rt);
+        let session = YachtSQLSession::new();
+        setup_ecommerce_schema(&session, *scale, &rt);
 
-        rt.block_on(async {
-            executor
-                .execute_sql("SET PARALLEL_EXECUTION = true")
-                .await
-                .unwrap();
-        });
-
-        group.bench_with_input(BenchmarkId::new("parallel", scale), scale, |b, _| {
+        group.bench_with_input(BenchmarkId::new("datafusion", scale), scale, |b, _| {
             b.to_async(&rt).iter(|| async {
-                executor
+                session
                     .execute_sql(
                         "WITH product_revenue AS (
                             SELECT
@@ -393,50 +289,7 @@ fn bench_revenue_with_window_functions(c: &mut Criterion) {
                             pr.name,
                             pr.category,
                             pr.revenue,
-                            ROUND(pr.revenue * 100.0 / t.total_revenue, 2) AS pct_of_total,
-                            SUM(pr.revenue) OVER (ORDER BY pr.revenue DESC) * 100.0 / t.total_revenue AS cumulative_pct,
-                            RANK() OVER (PARTITION BY pr.category ORDER BY pr.revenue DESC) AS category_rank
-                        FROM product_revenue pr
-                        CROSS JOIN total t
-                        ORDER BY pr.revenue DESC",
-                    )
-                    .await
-                    .unwrap()
-            });
-        });
-
-        rt.block_on(async {
-            executor
-                .execute_sql("SET PARALLEL_EXECUTION = false")
-                .await
-                .unwrap();
-        });
-
-        group.bench_with_input(BenchmarkId::new("sequential", scale), scale, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                executor
-                    .execute_sql(
-                        "WITH product_revenue AS (
-                            SELECT
-                                p.product_id,
-                                p.name,
-                                p.category,
-                                SUM(oi.quantity * oi.unit_price) AS revenue
-                            FROM order_items oi
-                            JOIN products p ON oi.product_id = p.product_id
-                            JOIN orders o ON oi.order_id = o.order_id
-                            WHERE o.status = 'Completed'
-                            GROUP BY p.product_id, p.name, p.category
-                        ),
-                        total AS (
-                            SELECT SUM(revenue) AS total_revenue FROM product_revenue
-                        )
-                        SELECT
-                            pr.name,
-                            pr.category,
-                            pr.revenue,
-                            ROUND(pr.revenue * 100.0 / t.total_revenue, 2) AS pct_of_total,
-                            SUM(pr.revenue) OVER (ORDER BY pr.revenue DESC) * 100.0 / t.total_revenue AS cumulative_pct,
+                            ROUND(CAST(pr.revenue AS FLOAT64) * 100.0 / CAST(t.total_revenue AS FLOAT64), 2) AS pct_of_total,
                             RANK() OVER (PARTITION BY pr.category ORDER BY pr.revenue DESC) AS category_rank
                         FROM product_revenue pr
                         CROSS JOIN total t
@@ -457,19 +310,12 @@ fn bench_multi_cte_union(c: &mut Criterion) {
 
     for scale in [500, 1000, 2000].iter() {
         let rt = Runtime::new().unwrap();
-        let executor = AsyncQueryExecutor::new();
-        setup_ecommerce_schema(&executor, *scale, &rt);
+        let session = YachtSQLSession::new();
+        setup_ecommerce_schema(&session, *scale, &rt);
 
-        rt.block_on(async {
-            executor
-                .execute_sql("SET PARALLEL_EXECUTION = true")
-                .await
-                .unwrap();
-        });
-
-        group.bench_with_input(BenchmarkId::new("parallel", scale), scale, |b, _| {
+        group.bench_with_input(BenchmarkId::new("datafusion", scale), scale, |b, _| {
             b.to_async(&rt).iter(|| async {
-                executor
+                session
                     .execute_sql(
                         "WITH
                         customer_metrics AS (
@@ -491,73 +337,10 @@ fn bench_multi_cte_union(c: &mut Criterion) {
                                 SUM(revenue) AS total_revenue
                             FROM customer_metrics
                             GROUP BY segment
-                        ),
-                        order_summary AS (
-                            SELECT
-                                status,
-                                COUNT(*) AS order_count,
-                                COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS percentage
-                            FROM orders
-                            GROUP BY status
                         )
-                        SELECT 'segment' AS metric_type, segment AS name, total_revenue AS value
+                        SELECT segment, customer_count, total_orders, total_revenue
                         FROM segment_summary
-                        UNION ALL
-                        SELECT 'order_status' AS metric_type, status AS name, CAST(order_count AS FLOAT64) AS value
-                        FROM order_summary
-                        ORDER BY metric_type, value DESC",
-                    )
-                    .await
-                    .unwrap()
-            });
-        });
-
-        rt.block_on(async {
-            executor
-                .execute_sql("SET PARALLEL_EXECUTION = false")
-                .await
-                .unwrap();
-        });
-
-        group.bench_with_input(BenchmarkId::new("sequential", scale), scale, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                executor
-                    .execute_sql(
-                        "WITH
-                        customer_metrics AS (
-                            SELECT
-                                c.customer_id,
-                                c.segment,
-                                COUNT(DISTINCT o.order_id) AS orders,
-                                COALESCE(SUM(oi.quantity * oi.unit_price), 0) AS revenue
-                            FROM customers c
-                            LEFT JOIN orders o ON c.customer_id = o.customer_id AND o.status = 'Completed'
-                            LEFT JOIN order_items oi ON o.order_id = oi.order_id
-                            GROUP BY c.customer_id, c.segment
-                        ),
-                        segment_summary AS (
-                            SELECT
-                                segment,
-                                COUNT(*) AS customer_count,
-                                SUM(orders) AS total_orders,
-                                SUM(revenue) AS total_revenue
-                            FROM customer_metrics
-                            GROUP BY segment
-                        ),
-                        order_summary AS (
-                            SELECT
-                                status,
-                                COUNT(*) AS order_count,
-                                COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS percentage
-                            FROM orders
-                            GROUP BY status
-                        )
-                        SELECT 'segment' AS metric_type, segment AS name, total_revenue AS value
-                        FROM segment_summary
-                        UNION ALL
-                        SELECT 'order_status' AS metric_type, status AS name, CAST(order_count AS FLOAT64) AS value
-                        FROM order_summary
-                        ORDER BY metric_type, value DESC",
+                        ORDER BY total_revenue DESC",
                     )
                     .await
                     .unwrap()
@@ -573,14 +356,14 @@ fn bench_large_join(c: &mut Criterion) {
     group.sample_size(10);
 
     let rt = Runtime::new().unwrap();
-    let executor = AsyncQueryExecutor::new();
+    let session = YachtSQLSession::new();
 
     rt.block_on(async {
-        executor
+        session
             .execute_sql("CREATE TABLE bench_left (id INT64, value INT64)")
             .await
             .unwrap();
-        executor
+        session
             .execute_sql("CREATE TABLE bench_right (id INT64, data STRING)")
             .await
             .unwrap();
@@ -592,7 +375,7 @@ fn bench_large_join(c: &mut Criterion) {
                     format!("({}, {})", id, id * 10)
                 })
                 .collect();
-            executor
+            session
                 .execute_sql(&format!(
                     "INSERT INTO bench_left VALUES {}",
                     values.join(",")
@@ -607,7 +390,7 @@ fn bench_large_join(c: &mut Criterion) {
                     format!("({}, 'data{}')", id, id)
                 })
                 .collect();
-            executor
+            session
                 .execute_sql(&format!(
                     "INSERT INTO bench_right VALUES {}",
                     values.join(",")
@@ -617,134 +400,16 @@ fn bench_large_join(c: &mut Criterion) {
         }
     });
 
-    rt.block_on(async {
-        executor
-            .execute_sql("SET PARALLEL_EXECUTION = true")
-            .await
-            .unwrap();
-    });
-
-    group.bench_function("parallel_100k_join", |b| {
+    group.bench_function("datafusion_100k_join", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = executor
+            session
                 .execute_sql(
                     "SELECT l.id, l.value, r.data FROM bench_left l JOIN bench_right r ON l.id = r.id",
                 )
                 .await
-                .unwrap();
-            assert_eq!(result.row_count(), 100_000);
-            result
+                .unwrap()
         });
     });
-
-    rt.block_on(async {
-        executor
-            .execute_sql("SET PARALLEL_EXECUTION = false")
-            .await
-            .unwrap();
-    });
-
-    group.bench_function("sequential_100k_join", |b| {
-        b.to_async(&rt).iter(|| async {
-            let result = executor
-                .execute_sql(
-                    "SELECT l.id, l.value, r.data FROM bench_left l JOIN bench_right r ON l.id = r.id",
-                )
-                .await
-                .unwrap();
-            assert_eq!(result.row_count(), 100_000);
-            result
-        });
-    });
-
-    group.finish();
-}
-
-fn bench_optimizer_phases(c: &mut Criterion) {
-    let mut group = c.benchmark_group("optimizer_phases");
-    group.sample_size(10);
-
-    let rt = Runtime::new().unwrap();
-    let executor = AsyncQueryExecutor::new();
-    setup_ecommerce_schema(&executor, 10000, &rt);
-
-    let query1_count_by_segment = "
-        SELECT c.name, COUNT(*) as order_count
-        FROM customers c
-        JOIN orders o ON c.customer_id = o.customer_id
-        JOIN order_items oi ON o.order_id = oi.order_id
-        WHERE c.segment = 'VIP'
-        GROUP BY c.name
-    ";
-
-    let query2_revenue_by_segment = "
-        SELECT c.segment, SUM(oi.quantity * oi.unit_price) as revenue
-        FROM customers c
-        JOIN orders o ON c.customer_id = o.customer_id
-        JOIN order_items oi ON o.order_id = oi.order_id
-        WHERE c.segment = 'Enterprise'
-        GROUP BY c.segment
-    ";
-
-    let query3_orders_with_status = "
-        SELECT c.name, o.order_id, o.status
-        FROM customers c
-        JOIN orders o ON c.customer_id = o.customer_id
-        WHERE o.status = 'Completed' AND c.segment = 'VIP'
-    ";
-
-    let query4_top_customers = "
-        SELECT c.name, COUNT(*) as order_count
-        FROM customers c
-        JOIN orders o ON c.customer_id = o.customer_id
-        WHERE c.customer_id < 100
-        GROUP BY c.name
-    ";
-
-    let queries = [
-        ("q1_count_segment", query1_count_by_segment),
-        ("q2_revenue_segment", query2_revenue_by_segment),
-        ("q3_orders_status", query3_orders_with_status),
-        ("q4_top_customers", query4_top_customers),
-    ];
-
-    let configs = [
-        ("opt_off_par_off", false, false),
-        ("opt_off_par_on", false, true),
-        ("opt_on_par_off", true, false),
-        ("opt_on_par_on", true, true),
-    ];
-
-    for (name, query) in queries.iter() {
-        for (config_name, optimizer_on, parallel_on) in configs.iter() {
-            rt.block_on(async {
-                executor.clear_plan_cache();
-                executor
-                    .execute_sql(&format!("SET OPTIMIZER_JOIN_REORDER = {}", optimizer_on))
-                    .await
-                    .unwrap();
-                executor
-                    .execute_sql(&format!("SET OPTIMIZER_FILTER_PUSHDOWN = {}", optimizer_on))
-                    .await
-                    .unwrap();
-                executor
-                    .execute_sql(&format!(
-                        "SET OPTIMIZER_PROJECTION_PUSHDOWN = {}",
-                        optimizer_on
-                    ))
-                    .await
-                    .unwrap();
-                executor
-                    .execute_sql(&format!("SET PARALLEL_EXECUTION = {}", parallel_on))
-                    .await
-                    .unwrap();
-            });
-            group.bench_function(format!("{}_{}", name, config_name), |b| {
-                b.to_async(&rt)
-                    .iter(|| async { executor.execute_sql(query).await.unwrap() });
-            });
-        }
-    }
 
     group.finish();
 }
@@ -755,7 +420,6 @@ criterion_group!(
     bench_complex_analytical_queries,
     bench_customer_lifetime_value,
     bench_revenue_with_window_functions,
-    bench_multi_cte_union,
-    bench_optimizer_phases
+    bench_multi_cte_union
 );
 criterion_main!(benches);

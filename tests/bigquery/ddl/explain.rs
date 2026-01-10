@@ -1,3 +1,5 @@
+use yachtsql::RecordBatchVecExt;
+
 use crate::common::create_session;
 
 async fn setup_test_table(session: &yachtsql::YachtSQLSession) {
@@ -22,10 +24,10 @@ async fn test_explain_simple_select() {
         .unwrap();
 
     assert_eq!(result.row_count(), 2);
-    let schema = result.schema();
-    assert_eq!(schema.field_count(), 2);
-    assert_eq!(schema.fields()[0].name, "plan_type");
-    assert_eq!(schema.fields()[1].name, "plan");
+    let schema = result.schema().expect("Expected schema");
+    assert_eq!(schema.fields().len(), 2);
+    assert_eq!(schema.fields()[0].name(), "plan_type");
+    assert_eq!(schema.fields()[1].name(), "plan");
 }
 
 #[tokio::test(flavor = "current_thread")]

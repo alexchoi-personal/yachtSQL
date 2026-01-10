@@ -1,5 +1,7 @@
+use yachtsql_arrow::{TestValue, array, assert_batch_records_eq, bytes, date, interval, timestamp};
+
 use crate::assert_table_eq;
-use crate::common::{array, bignumeric, bytes, create_session, date, numeric, str, timestamp};
+use crate::common::{bignumeric, create_session, numeric};
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_in_unnest_found() {
@@ -457,8 +459,7 @@ async fn test_cast_string_to_bytes() {
         .execute_sql("SELECT CAST('hello' AS BYTES)")
         .await
         .unwrap();
-    let expected = bytes(b"hello");
-    assert_eq!(result.column(0).unwrap().get_value(0), expected);
+    assert_batch_records_eq!(result, [[bytes(b"hello")]]);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -468,8 +469,7 @@ async fn test_cast_timestamp_to_date() {
         .execute_sql("SELECT CAST(TIMESTAMP '2025-01-15 10:30:00 UTC' AS DATE)")
         .await
         .unwrap();
-    let expected = date(2025, 1, 15);
-    assert_eq!(result.column(0).unwrap().get_value(0), expected);
+    assert_batch_records_eq!(result, [[date(2025, 1, 15)]]);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -479,8 +479,7 @@ async fn test_cast_date_to_timestamp() {
         .execute_sql("SELECT CAST(DATE '2025-01-15' AS TIMESTAMP)")
         .await
         .unwrap();
-    let expected = timestamp(2025, 1, 15, 0, 0, 0);
-    assert_eq!(result.column(0).unwrap().get_value(0), expected);
+    assert_batch_records_eq!(result, [[timestamp(2025, 1, 15, 0, 0, 0)]]);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -490,8 +489,7 @@ async fn test_cast_datetime_to_date() {
         .execute_sql("SELECT CAST(DATETIME '2025-01-15 10:30:00' AS DATE)")
         .await
         .unwrap();
-    let expected = date(2025, 1, 15);
-    assert_eq!(result.column(0).unwrap().get_value(0), expected);
+    assert_batch_records_eq!(result, [[date(2025, 1, 15)]]);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -501,8 +499,7 @@ async fn test_cast_datetime_to_timestamp() {
         .execute_sql("SELECT CAST(DATETIME '2025-01-15 10:30:00' AS TIMESTAMP)")
         .await
         .unwrap();
-    let expected = timestamp(2025, 1, 15, 10, 30, 0);
-    assert_eq!(result.column(0).unwrap().get_value(0), expected);
+    assert_batch_records_eq!(result, [[timestamp(2025, 1, 15, 10, 30, 0)]]);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -582,8 +579,12 @@ async fn test_cast_array_elements() {
         .execute_sql("SELECT CAST([1, 2, 3] AS ARRAY<STRING>)")
         .await
         .unwrap();
-    let expected = array(vec![str("1"), str("2"), str("3")]);
-    assert_eq!(result.column(0).unwrap().get_value(0), expected);
+    let expected = array(vec![
+        TestValue::String("1".to_string()),
+        TestValue::String("2".to_string()),
+        TestValue::String("3".to_string()),
+    ]);
+    assert_batch_records_eq!(result, [[expected]]);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -717,13 +718,7 @@ async fn test_trim_both() {
 async fn test_interval_with_day() {
     let session = create_session();
     let result = session.execute_sql("SELECT INTERVAL 5 DAY").await.unwrap();
-    let val = &result.column(0).unwrap().get_value(0);
-    match val {
-        yachtsql::Value::Interval(iv) => {
-            assert_eq!(iv.days, 5);
-        }
-        _ => panic!("Expected Interval, got {:?}", val),
-    }
+    assert_batch_records_eq!(result, [[interval()]]);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -733,13 +728,7 @@ async fn test_interval_with_hour() {
         .execute_sql("SELECT INTERVAL 12 HOUR")
         .await
         .unwrap();
-    let val = &result.column(0).unwrap().get_value(0);
-    match val {
-        yachtsql::Value::Interval(iv) => {
-            assert_eq!(iv.nanos, 12 * 3600 * 1_000_000_000i64);
-        }
-        _ => panic!("Expected Interval, got {:?}", val),
-    }
+    assert_batch_records_eq!(result, [[interval()]]);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -821,8 +810,7 @@ async fn test_timestamp_parsing_formats() {
         .execute_sql("SELECT CAST('2025-01-15 10:30:00' AS TIMESTAMP)")
         .await
         .unwrap();
-    let expected = timestamp(2025, 1, 15, 10, 30, 0);
-    assert_eq!(result.column(0).unwrap().get_value(0), expected);
+    assert_batch_records_eq!(result, [[timestamp(2025, 1, 15, 10, 30, 0)]]);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -832,8 +820,7 @@ async fn test_timestamp_parsing_iso_format() {
         .execute_sql("SELECT CAST('2025-01-15T10:30:00' AS TIMESTAMP)")
         .await
         .unwrap();
-    let expected = timestamp(2025, 1, 15, 10, 30, 0);
-    assert_eq!(result.column(0).unwrap().get_value(0), expected);
+    assert_batch_records_eq!(result, [[timestamp(2025, 1, 15, 10, 30, 0)]]);
 }
 
 #[tokio::test(flavor = "current_thread")]

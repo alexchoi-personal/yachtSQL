@@ -4,10 +4,10 @@ use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
-use yachtsql::{YachtSQLEngine, YachtSQLSession};
+use yachtsql::{RecordBatchVecExt, YachtSQLSession};
 
 fn create_session() -> YachtSQLSession {
-    YachtSQLEngine::new().create_session()
+    YachtSQLSession::new()
 }
 
 fn setup_table(session: &YachtSQLSession, rt: &Runtime, row_count: usize) {

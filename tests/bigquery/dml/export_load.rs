@@ -1,3 +1,5 @@
+use yachtsql::RecordBatchVecExt;
+
 use crate::common::create_session;
 
 #[tokio::test(flavor = "current_thread")]

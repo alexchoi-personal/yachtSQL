@@ -1,19 +1,21 @@
 #![feature(coverage_attribute)]
 #![coverage(off)]
 
+pub mod datafusion_converter;
 mod expr_planner;
 mod planner;
 
+pub use datafusion_converter::DataFusionConverter;
 pub use expr_planner::ExprPlanningContext;
 pub use planner::Planner;
 use sqlparser::dialect::BigQueryDialect;
 use sqlparser::parser::Parser;
 use yachtsql_common::error::{Error, Result};
-use yachtsql_common::types::DataType;
+use yachtsql_common::types::{DataType, Schema};
 use yachtsql_ir::plan::{FunctionArg, FunctionBody};
 use yachtsql_ir::{ColumnDef, LoadFormat, LoadOptions, LogicalPlan};
-use yachtsql_storage::Schema;
 
+#[derive(Clone)]
 pub struct ViewDefinition {
     pub query: String,
     pub column_aliases: Vec<String>,

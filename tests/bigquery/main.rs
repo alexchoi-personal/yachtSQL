@@ -1,6 +1,9 @@
 #![allow(clippy::approx_constant)]
 #![allow(clippy::wildcard_enum_match_arm)]
 
+#[allow(unused_imports)]
+use yachtsql::RecordBatchVecExt;
+
 #[allow(dead_code)]
 #[macro_use]
 mod common;

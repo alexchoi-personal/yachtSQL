@@ -1,4 +1,7 @@
 #![coverage(off)]
+#![allow(dead_code)]
+#![allow(clippy::wildcard_enum_match_arm)]
+#![allow(clippy::only_used_in_recursion)]
 
 use std::ffi::CString;
 use std::sync::mpsc;

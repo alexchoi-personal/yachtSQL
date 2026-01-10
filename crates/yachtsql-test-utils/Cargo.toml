@@ -14,5 +14,5 @@ categories = ["database", "development-tools::testing"]
 yachtsql = { version = "0.1.4", path = "../.." }
 yachtsql-common = { version = "0.1.4", path = "../yachtsql-common" }
 yachtsql-parser = { version = "0.1.4", path = "../yachtsql-parser" }
-yachtsql-storage = { version = "0.1.4", path = "../yachtsql-storage" }
+yachtsql-arrow = { version = "0.1.4", path = "../yachtsql-arrow" }
 rust_decimal = "1.37"

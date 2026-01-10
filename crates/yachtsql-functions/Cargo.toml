@@ -93,4 +93,3 @@ hostname = "0.4"
 
 [dev-dependencies]
 yachtsql-common = { version = "0.1.4", path = "../yachtsql-common" }
-yachtsql-storage = { version = "0.1.4", path = "../yachtsql-storage" }

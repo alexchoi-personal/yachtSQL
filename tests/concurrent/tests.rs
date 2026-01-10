@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::harness::{
-    ConcurrentTestHarness, TaskResult, create_test_executor, setup_test_table,
+    ConcurrentTestHarness, Session, TaskResult, create_test_executor, setup_test_table,
     setup_test_table_with_data,
 };
 
@@ -387,25 +387,22 @@ async fn test_concurrent_union() {
 
 #[tokio::test]
 async fn test_concurrent_with_closures() {
-    let executor = create_test_executor();
-    setup_test_table_with_data(&executor, "closure_table", 10).await;
-
-    let harness = ConcurrentTestHarness::from_executor(executor, 4);
+    let harness = ConcurrentTestHarness::new(4);
+    setup_test_table_with_data(&harness.session(), "closure_table", 10).await;
 
     let tasks: Vec<_> = (0..4)
         .map(|i| {
-            move |exec: Arc<yachtsql_executor::AsyncQueryExecutor>| async move {
+            move |session: Arc<Session>| async move {
                 let query = format!("SELECT * FROM closure_table WHERE id = {}", i);
-                exec.execute_sql(&query).await
+                session.execute_sql(&query).await.map(|_| ())
             }
         })
         .collect();
 
-    let results = harness.run_concurrent_with_executor(tasks).await;
-    let metrics = harness.assert_no_data_races_task_result(&results);
+    let results = harness.run_concurrent(tasks).await;
+    harness.assert_no_data_races(&results);
 
-    assert_eq!(metrics.total_tasks, 4);
-    assert!(!metrics.data_race_detected);
+    assert!(results.iter().all(|r| r.is_ok()));
 }
 
 #[tokio::test]

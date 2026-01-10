@@ -13,7 +13,6 @@ categories = ["database"]
 [dependencies]
 # Core types and errors
 yachtsql-common = { version = "0.1.4", path = "../yachtsql-common" }
-yachtsql-storage = { version = "0.1.4", path = "../yachtsql-storage" }
 
 # SQL parsing
 yachtsql-sqlparser = { path = "../yachtsql-sqlparser", features = ["visitor"] }

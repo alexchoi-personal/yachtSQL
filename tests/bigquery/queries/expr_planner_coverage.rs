@@ -1,4 +1,5 @@
 use chrono::Timelike;
+use yachtsql::RecordBatchVecExt;
 
 use crate::assert_table_eq;
 use crate::common::create_session;
@@ -667,8 +668,9 @@ async fn test_interval_hour() {
         .unwrap();
     let records = result.to_records().unwrap();
     let ts_val = &records[0].values()[0];
-    let ts = ts_val.as_timestamp().unwrap();
-    assert_eq!(ts.hour(), 13);
+    let ts_nanos = ts_val.as_timestamp().unwrap();
+    let dt = chrono::DateTime::from_timestamp_nanos(ts_nanos).naive_utc();
+    assert_eq!(dt.hour(), 13);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -680,8 +682,9 @@ async fn test_interval_minute() {
         .unwrap();
     let records = result.to_records().unwrap();
     let ts_val = &records[0].values()[0];
-    let ts = ts_val.as_timestamp().unwrap();
-    assert_eq!(ts.minute(), 30);
+    let ts_nanos = ts_val.as_timestamp().unwrap();
+    let dt = chrono::DateTime::from_timestamp_nanos(ts_nanos).naive_utc();
+    assert_eq!(dt.minute(), 30);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -693,8 +696,9 @@ async fn test_interval_second() {
         .unwrap();
     let records = result.to_records().unwrap();
     let ts_val = &records[0].values()[0];
-    let ts = ts_val.as_timestamp().unwrap();
-    assert_eq!(ts.second(), 45);
+    let ts_nanos = ts_val.as_timestamp().unwrap();
+    let dt = chrono::DateTime::from_timestamp_nanos(ts_nanos).naive_utc();
+    assert_eq!(dt.second(), 45);
 }
 
 #[tokio::test(flavor = "current_thread")]

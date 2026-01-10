@@ -13,11 +13,14 @@ categories = ["database"]
 [dependencies]
 # YachtSQL crates
 yachtsql-common = { version = "0.1.4", path = "../yachtsql-common" }
-yachtsql-storage = { version = "0.1.4", path = "../yachtsql-storage" }
+yachtsql-arrow = { version = "0.1.4", path = "../yachtsql-arrow" }
 yachtsql-parser = { version = "0.1.4", path = "../yachtsql-parser" }
 yachtsql-ir = { version = "0.1.4", path = "../yachtsql-ir" }
-yachtsql-optimizer = { version = "0.1.4", path = "../yachtsql-optimizer" }
 yachtsql-functions = { version = "0.1.4", path = "../yachtsql-functions" }
+yachtsql-datafusion-functions = { version = "0.1.4", path = "../yachtsql-datafusion-functions" }
+
+# DataFusion
+datafusion = "44"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -110,6 +113,7 @@ lru = "0.12"
 
 # Async runtime and concurrent data structures
 tokio = { version = "1.42", features = ["rt-multi-thread", "sync", "macros"] }
+futures = "0.3"
 dashmap = "6.1"
 parking_lot = "0.12"
 rayon = "1.10"

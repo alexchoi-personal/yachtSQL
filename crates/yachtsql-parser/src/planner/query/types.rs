@@ -2,9 +2,8 @@
 
 use sqlparser::ast;
 use yachtsql_common::error::{Error, Result};
-use yachtsql_common::types::{DataType, StructField};
+use yachtsql_common::types::{DataType, Schema, StructField};
 use yachtsql_ir::{ConstraintType, DateTimeField, Expr, PlanField, PlanSchema, TableConstraint};
-use yachtsql_storage::Schema;
 
 use super::super::object_name_to_raw_string;
 use super::Planner;

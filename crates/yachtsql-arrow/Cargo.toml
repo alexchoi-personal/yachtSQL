@@ -1,0 +1,17 @@
+[package]
+name = "yachtsql-arrow"
+version = "0.1.4"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Arrow/DataFusion utilities for YachtSQL"
+repository = "https://github.com/alexchoi0/yachtsql"
+homepage = "https://github.com/alexchoi0/yachtsql"
+documentation = "https://docs.rs/yachtsql-arrow"
+keywords = ["sql", "database", "arrow", "datafusion"]
+categories = ["database"]
+
+[dependencies]
+datafusion = "44"
+thiserror = "2.0"
+chrono = "0.4"
+rust_decimal = "1.36"

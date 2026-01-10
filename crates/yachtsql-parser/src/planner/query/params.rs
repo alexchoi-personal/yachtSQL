@@ -154,12 +154,11 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
 #[cfg(test)]
 mod tests {
     use rustc_hash::FxHashMap;
-    use yachtsql_common::types::DataType;
+    use yachtsql_common::types::{DataType, Schema};
     use yachtsql_ir::{
         BinaryOp, Expr, Literal, LogicalPlan, PlanField, PlanSchema, ScalarFunction, UnaryOp,
         WhenClause,
     };
-    use yachtsql_storage::Schema;
 
     use super::super::Planner;
     use crate::{CatalogProvider, FunctionDefinition, ViewDefinition};

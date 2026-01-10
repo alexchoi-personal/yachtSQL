@@ -3,9 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use tokio::sync::Semaphore;
-use yachtsql::{Error, YachtSQLSession};
-use yachtsql_executor::AsyncQueryExecutor;
-use yachtsql_storage::Table;
+use yachtsql::{Error, RecordBatchVecExt, YachtSQLSession};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskResult {
@@ -27,7 +25,6 @@ pub type Session = YachtSQLSession;
 pub struct ConcurrentTestHarness {
     session: Arc<Session>,
     barrier: Arc<std::sync::Barrier>,
-    executor: Arc<AsyncQueryExecutor>,
     semaphore: Arc<Semaphore>,
     concurrency: usize,
     current_concurrent: Arc<AtomicU64>,
@@ -35,14 +32,14 @@ pub struct ConcurrentTestHarness {
     data_race_detected: Arc<AtomicBool>,
 }
 
+pub type Executor = YachtSQLSession;
+
 impl ConcurrentTestHarness {
     pub fn new(concurrency: usize) -> Self {
         let session = Session::new();
-        let executor = AsyncQueryExecutor::new();
         Self {
             session: Arc::new(session),
             barrier: Arc::new(std::sync::Barrier::new(concurrency)),
-            executor: Arc::new(executor),
             semaphore: Arc::new(Semaphore::new(concurrency)),
             concurrency,
             current_concurrent: Arc::new(AtomicU64::new(0)),
@@ -51,18 +48,8 @@ impl ConcurrentTestHarness {
         }
     }
 
-    pub fn from_executor(executor: AsyncQueryExecutor, concurrency: usize) -> Self {
-        let session = Session::new();
-        Self {
-            session: Arc::new(session),
-            barrier: Arc::new(std::sync::Barrier::new(concurrency)),
-            executor: Arc::new(executor),
-            semaphore: Arc::new(Semaphore::new(concurrency)),
-            concurrency,
-            current_concurrent: Arc::new(AtomicU64::new(0)),
-            max_concurrent_observed: Arc::new(AtomicU64::new(0)),
-            data_race_detected: Arc::new(AtomicBool::new(false)),
-        }
+    pub fn from_executor(_executor: Executor, concurrency: usize) -> Self {
+        Self::new(concurrency)
     }
 
     pub fn session(&self) -> Arc<Session> {
@@ -71,10 +58,6 @@ impl ConcurrentTestHarness {
 
     pub fn barrier(&self) -> Arc<std::sync::Barrier> {
         Arc::clone(&self.barrier)
-    }
-
-    pub fn executor(&self) -> &AsyncQueryExecutor {
-        &self.executor
     }
 
     pub fn concurrency(&self) -> usize {
@@ -137,69 +120,12 @@ impl ConcurrentTestHarness {
         results
     }
 
-    pub async fn run_concurrent_with_executor<F, Fut>(&self, tasks: Vec<F>) -> Vec<TaskResult>
-    where
-        F: FnOnce(Arc<AsyncQueryExecutor>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<Table, yachtsql_common::error::Error>> + Send + 'static,
-    {
-        let task_count = tasks.len();
-
-        let mut handles = Vec::with_capacity(task_count);
-
-        for task in tasks {
-            let executor = Arc::clone(&self.executor);
-            let semaphore = Arc::clone(&self.semaphore);
-            let current_concurrent = Arc::clone(&self.current_concurrent);
-            let max_concurrent_observed = Arc::clone(&self.max_concurrent_observed);
-
-            let handle = tokio::spawn(async move {
-                let _permit = semaphore.acquire().await.unwrap();
-
-                let concurrent = current_concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-                loop {
-                    let max = max_concurrent_observed.load(Ordering::SeqCst);
-                    if concurrent <= max {
-                        break;
-                    }
-                    if max_concurrent_observed
-                        .compare_exchange(max, concurrent, Ordering::SeqCst, Ordering::SeqCst)
-                        .is_ok()
-                    {
-                        break;
-                    }
-                }
-
-                let result = task(executor).await;
-
-                current_concurrent.fetch_sub(1, Ordering::SeqCst);
-
-                match result {
-                    Ok(table) => TaskResult::Success(table.row_count()),
-                    Err(e) => TaskResult::Error(e.to_string()),
-                }
-            });
-
-            handles.push(handle);
-        }
-
-        let mut results = Vec::with_capacity(task_count);
-        for handle in handles {
-            match handle.await {
-                Ok(result) => results.push(result),
-                Err(e) => results.push(TaskResult::Error(format!("Join error: {}", e))),
-            }
-        }
-
-        results
-    }
-
     pub async fn run_concurrent_queries(&self, queries: Vec<String>) -> Vec<TaskResult> {
         let task_count = queries.len();
-
         let mut handles = Vec::with_capacity(task_count);
 
         for query in queries {
-            let executor = Arc::clone(&self.executor);
+            let session = Arc::clone(&self.session);
             let semaphore = Arc::clone(&self.semaphore);
             let current_concurrent = Arc::clone(&self.current_concurrent);
             let max_concurrent_observed = Arc::clone(&self.max_concurrent_observed);
@@ -221,12 +147,12 @@ impl ConcurrentTestHarness {
                     }
                 }
 
-                let result = executor.execute_sql(&query).await;
+                let result = session.execute_sql(&query).await;
 
                 current_concurrent.fetch_sub(1, Ordering::SeqCst);
 
                 match result {
-                    Ok(table) => TaskResult::Success(table.row_count()),
+                    Ok(batches) => TaskResult::Success(batches.num_rows()),
                     Err(e) => TaskResult::Error(e.to_string()),
                 }
             });
@@ -294,19 +220,18 @@ impl ConcurrentTestHarness {
         num_writers: usize,
     ) -> Vec<TaskResult> {
         let total = num_readers + num_writers;
-
         let mut handles = Vec::with_capacity(total);
 
         for _ in 0..num_readers {
-            let executor = Arc::clone(&self.executor);
+            let session = Arc::clone(&self.session);
             let semaphore = Arc::clone(&self.semaphore);
             let query = format!("SELECT * FROM {}", table_name);
 
             let handle = tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
 
-                match executor.execute_sql(&query).await {
-                    Ok(table) => TaskResult::Success(table.row_count()),
+                match session.execute_sql(&query).await {
+                    Ok(batches) => TaskResult::Success(batches.num_rows()),
                     Err(e) => TaskResult::Error(e.to_string()),
                 }
             });
@@ -315,7 +240,7 @@ impl ConcurrentTestHarness {
         }
 
         for i in 0..num_writers {
-            let executor = Arc::clone(&self.executor);
+            let session = Arc::clone(&self.session);
             let semaphore = Arc::clone(&self.semaphore);
             let query = format!(
                 "INSERT INTO {} VALUES ({}, 'writer_{}', {})",
@@ -328,8 +253,8 @@ impl ConcurrentTestHarness {
             let handle = tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
 
-                match executor.execute_sql(&query).await {
-                    Ok(table) => TaskResult::Success(table.row_count()),
+                match session.execute_sql(&query).await {
+                    Ok(batches) => TaskResult::Success(batches.num_rows()),
                     Err(e) => TaskResult::Error(e.to_string()),
                 }
             });
@@ -356,7 +281,7 @@ impl ConcurrentTestHarness {
         let mut handles = Vec::with_capacity(num_writers);
 
         for i in 0..num_writers {
-            let executor = Arc::clone(&self.executor);
+            let session = Arc::clone(&self.session);
             let semaphore = Arc::clone(&self.semaphore);
             let query = format!(
                 "INSERT INTO {} VALUES ({}, 'concurrent_writer_{}', {})",
@@ -369,8 +294,8 @@ impl ConcurrentTestHarness {
             let handle = tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
 
-                match executor.execute_sql(&query).await {
-                    Ok(table) => TaskResult::Success(table.row_count()),
+                match session.execute_sql(&query).await {
+                    Ok(batches) => TaskResult::Success(batches.num_rows()),
                     Err(e) => TaskResult::Error(e.to_string()),
                 }
             });
@@ -391,32 +316,15 @@ impl ConcurrentTestHarness {
 
     pub async fn verify_table_consistency(&self, table_name: &str) -> Result<bool, String> {
         let query = format!("SELECT COUNT(*) as cnt FROM {}", table_name);
-        let result = self.executor.execute_sql(&query).await;
+        let result = self.session.execute_sql(&query).await;
 
         match result {
-            Ok(table) => {
-                let row = table.get_row(0).map_err(|e| e.to_string())?;
-                let count = row.values()[0].clone();
-                match count {
-                    yachtsql_common::types::Value::Int64(n) => Ok(n >= 0),
-                    yachtsql_common::types::Value::Null
-                    | yachtsql_common::types::Value::Bool(_)
-                    | yachtsql_common::types::Value::Float64(_)
-                    | yachtsql_common::types::Value::Numeric(_)
-                    | yachtsql_common::types::Value::BigNumeric(_)
-                    | yachtsql_common::types::Value::String(_)
-                    | yachtsql_common::types::Value::Bytes(_)
-                    | yachtsql_common::types::Value::Date(_)
-                    | yachtsql_common::types::Value::Time(_)
-                    | yachtsql_common::types::Value::DateTime(_)
-                    | yachtsql_common::types::Value::Timestamp(_)
-                    | yachtsql_common::types::Value::Json(_)
-                    | yachtsql_common::types::Value::Array(_)
-                    | yachtsql_common::types::Value::Struct(_)
-                    | yachtsql_common::types::Value::Geography(_)
-                    | yachtsql_common::types::Value::Interval(_)
-                    | yachtsql_common::types::Value::Range(_)
-                    | yachtsql_common::types::Value::Default => Ok(true),
+            Ok(batches) => {
+                let row = batches.get_row(0).ok_or("No rows returned")?;
+                let count = &row.values()[0];
+                match count.as_i64() {
+                    Some(n) => Ok(n >= 0),
+                    None => Ok(true),
                 }
             }
             Err(e) => Err(e.to_string()),
@@ -424,24 +332,24 @@ impl ConcurrentTestHarness {
     }
 }
 
-pub fn create_test_executor() -> AsyncQueryExecutor {
-    AsyncQueryExecutor::new()
+pub fn create_test_executor() -> Executor {
+    YachtSQLSession::new()
 }
 
-pub async fn setup_test_table(executor: &AsyncQueryExecutor, table_name: &str) {
+pub async fn setup_test_table(session: &YachtSQLSession, table_name: &str) {
     let create_sql = format!(
         "CREATE TABLE {} (id INT64, name STRING, value FLOAT64)",
         table_name
     );
-    executor.execute_sql(&create_sql).await.ok();
+    session.execute_sql(&create_sql).await.ok();
 }
 
 pub async fn setup_test_table_with_data(
-    executor: &AsyncQueryExecutor,
+    session: &YachtSQLSession,
     table_name: &str,
     num_rows: usize,
 ) {
-    setup_test_table(executor, table_name).await;
+    setup_test_table(session, table_name).await;
 
     for i in 0..num_rows {
         let insert_sql = format!(
@@ -451,6 +359,6 @@ pub async fn setup_test_table_with_data(
             i,
             i as f64 * 0.5
         );
-        executor.execute_sql(&insert_sql).await.ok();
+        session.execute_sql(&insert_sql).await.ok();
     }
 }

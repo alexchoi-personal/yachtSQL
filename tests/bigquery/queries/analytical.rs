@@ -1,3 +1,5 @@
+use yachtsql::RecordBatchVecExt;
+
 use crate::assert_table_eq;
 use crate::common::{create_session, d, n, ts};
 
@@ -2699,7 +2701,7 @@ async fn test_cte_qualified_wildcard() {
         )
         .await
         .unwrap();
-    assert_eq!(result.schema().field_count(), 2);
+    assert_eq!(result.schema().expect("Expected schema").fields().len(), 2);
     let records = result.to_records().unwrap();
     assert_eq!(records.len(), 2);
 }
