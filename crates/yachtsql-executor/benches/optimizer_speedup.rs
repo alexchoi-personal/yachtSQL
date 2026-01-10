@@ -273,7 +273,7 @@ const RULES: &[RuleBench] = &[
     },
     RuleBench {
         name: "distinct_elimination",
-        query: "SELECT DISTINCT * FROM (SELECT * FROM users LIMIT 1) sub",
+        query: "SELECT DISTINCT * FROM (SELECT DISTINCT * FROM (SELECT DISTINCT id, name FROM users))",
         variants: &[("off", &[]), ("on", &["OPTIMIZER_DISTINCT_ELIMINATION"])],
     },
     RuleBench {

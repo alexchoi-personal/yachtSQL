@@ -8,7 +8,7 @@ fn input_is_unique(plan: &PhysicalPlan) -> bool {
         PhysicalPlan::Empty { .. } => true,
         PhysicalPlan::Values { values, .. } => values.len() <= 1,
         PhysicalPlan::TopN { limit: 1, .. } => true,
-        PhysicalPlan::Distinct { input } => input_is_unique(input),
+        PhysicalPlan::Distinct { .. } => true,
         PhysicalPlan::Project { input, .. } => input_is_unique(input),
         PhysicalPlan::Filter { input, .. } => input_is_unique(input),
         PhysicalPlan::TableScan { .. }
@@ -735,6 +735,49 @@ mod tests {
         let result = apply_distinct_elimination(distinct);
 
         assert!(matches!(result, PhysicalPlan::Distinct { .. }));
+    }
+
+    #[test]
+    fn eliminates_outer_distinct_over_inner_distinct() {
+        let scan = make_scan("t", 3);
+        let inner_distinct = PhysicalPlan::Distinct {
+            input: Box::new(scan),
+        };
+        let outer_distinct = PhysicalPlan::Distinct {
+            input: Box::new(inner_distinct),
+        };
+
+        let result = apply_distinct_elimination(outer_distinct);
+
+        match result {
+            PhysicalPlan::Distinct { input } => {
+                assert!(matches!(*input, PhysicalPlan::TableScan { .. }));
+            }
+            _ => panic!("Expected single Distinct over TableScan"),
+        }
+    }
+
+    #[test]
+    fn eliminates_multiple_nested_distincts() {
+        let scan = make_scan("t", 3);
+        let d1 = PhysicalPlan::Distinct {
+            input: Box::new(scan),
+        };
+        let d2 = PhysicalPlan::Distinct {
+            input: Box::new(d1),
+        };
+        let d3 = PhysicalPlan::Distinct {
+            input: Box::new(d2),
+        };
+
+        let result = apply_distinct_elimination(d3);
+
+        match result {
+            PhysicalPlan::Distinct { input } => {
+                assert!(matches!(*input, PhysicalPlan::TableScan { .. }));
+            }
+            _ => panic!("Expected single Distinct over TableScan"),
+        }
     }
 
     #[test]

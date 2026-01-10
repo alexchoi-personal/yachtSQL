@@ -5131,11 +5131,9 @@ mod sql_optimizer_tests {
             assert_plan!(
                 plan,
                 Project {
-                    input: (Limit {
-                        input: (Sort {
-                            input: (TableScan {
-                                table_name: "orders"
-                            })
+                    input: (TopN {
+                        input: (TableScan {
+                            table_name: "orders"
                         })
                     })
                 }
