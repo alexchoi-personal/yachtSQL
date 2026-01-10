@@ -177,6 +177,10 @@ fn disable_all_rules(executor: &AsyncQueryExecutor, rt: &Runtime) {
             .await
             .unwrap();
         executor
+            .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN_JOIN = false")
+            .await
+            .unwrap();
+        executor
             .execute_sql("SET OPTIMIZER_SORT_ELIMINATION = false")
             .await
             .unwrap();
@@ -316,6 +320,11 @@ const RULES: &[RuleBench] = &[
             ),
         ],
     },
+    RuleBench {
+        name: "filter_pushdown_join",
+        query: "SELECT u.name, o.amount FROM users u JOIN orders o ON u.id = o.user_id WHERE u.country = 'US' AND o.status = 'active'",
+        variants: &[("off", &[]), ("on", &["OPTIMIZER_FILTER_PUSHDOWN_JOIN"])],
+    },
 ];
 
 fn bench_rule_speedup(c: &mut Criterion) {
@@ -417,6 +426,10 @@ fn bench_all_rules_combined(c: &mut Criterion) {
                 .unwrap();
             executor
                 .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN_AGGREGATE = true")
+                .await
+                .unwrap();
+            executor
+                .execute_sql("SET OPTIMIZER_FILTER_PUSHDOWN_JOIN = true")
                 .await
                 .unwrap();
             executor

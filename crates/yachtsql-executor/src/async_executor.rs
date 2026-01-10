@@ -128,6 +128,7 @@ impl AsyncQueryExecutor {
             cross_to_hash_join: get_rule("OPTIMIZER_CROSS_TO_HASH_JOIN"),
             outer_to_inner_join: get_rule("OPTIMIZER_OUTER_TO_INNER_JOIN"),
             filter_pushdown_aggregate: get_rule("OPTIMIZER_FILTER_PUSHDOWN_AGGREGATE"),
+            filter_pushdown_join: get_rule("OPTIMIZER_FILTER_PUSHDOWN_JOIN"),
             sort_elimination: get_rule("OPTIMIZER_SORT_ELIMINATION"),
             limit_pushdown: get_rule("OPTIMIZER_LIMIT_PUSHDOWN"),
             topn_pushdown: get_rule("OPTIMIZER_TOPN_PUSHDOWN"),

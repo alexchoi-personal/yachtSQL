@@ -5201,7 +5201,7 @@ mod sql_optimizer_tests {
         }
 
         #[test]
-        fn cross_join_with_non_equality_stays_nested_loop() {
+        fn cross_join_with_non_equality_stays_cross_join() {
             let plan = optimize_sql_default(
                 "SELECT o.id, c.name
                  FROM orders o, customers c
@@ -5210,10 +5210,13 @@ mod sql_optimizer_tests {
 
             match &plan {
                 PhysicalPlan::Project { input, .. } => match input.as_ref() {
-                    PhysicalPlan::Filter { input, .. } => {
-                        assert!(matches!(input.as_ref(), PhysicalPlan::CrossJoin { .. }));
+                    PhysicalPlan::CrossJoin { left, .. } => {
+                        assert!(matches!(left.as_ref(), PhysicalPlan::Filter { .. }));
                     }
-                    other => panic!("Expected Filter, got {:?}", other),
+                    other => panic!(
+                        "Expected CrossJoin with filter pushed to left, got {:?}",
+                        other
+                    ),
                 },
                 other => panic!("Expected Project, got {:?}", other),
             }
@@ -5909,21 +5912,19 @@ mod sql_optimizer_tests {
                  WHERE c.id IS NOT NULL",
             );
 
-            assert_plan!(
-                plan,
-                Project {
-                    input: (Filter {
-                        input: (HashJoin {
-                            left: (TableScan {
-                                table_name: "orders"
-                            }),
-                            right: (TableScan {
-                                table_name: "customers"
-                            }),
-                            join_type: JoinType::Inner
-                        })
-                    })
+            fn find_inner_join(plan: &PhysicalPlan) -> bool {
+                match plan {
+                    PhysicalPlan::HashJoin { join_type, .. } => *join_type == JoinType::Inner,
+                    PhysicalPlan::Project { input, .. } => find_inner_join(input),
+                    PhysicalPlan::Filter { input, .. } => find_inner_join(input),
+                    _ => false,
                 }
+            }
+
+            assert!(
+                find_inner_join(&plan),
+                "LEFT JOIN should become INNER when filtering on right side IS NOT NULL, got {:?}",
+                plan
             );
         }
 
@@ -5936,21 +5937,19 @@ mod sql_optimizer_tests {
                  WHERE c.country = 'USA'",
             );
 
-            assert_plan!(
-                plan,
-                Project {
-                    input: (Filter {
-                        input: (HashJoin {
-                            left: (TableScan {
-                                table_name: "orders"
-                            }),
-                            right: (TableScan {
-                                table_name: "customers"
-                            }),
-                            join_type: JoinType::Inner
-                        })
-                    })
+            fn find_inner_join(plan: &PhysicalPlan) -> bool {
+                match plan {
+                    PhysicalPlan::HashJoin { join_type, .. } => *join_type == JoinType::Inner,
+                    PhysicalPlan::Project { input, .. } => find_inner_join(input),
+                    PhysicalPlan::Filter { input, .. } => find_inner_join(input),
+                    _ => false,
                 }
+            }
+
+            assert!(
+                find_inner_join(&plan),
+                "LEFT JOIN should become INNER when filtering on right side, got {:?}",
+                plan
             );
         }
 
@@ -6017,21 +6016,19 @@ mod sql_optimizer_tests {
                  WHERE c.id > 5",
             );
 
-            assert_plan!(
-                plan,
-                Project {
-                    input: (Filter {
-                        input: (HashJoin {
-                            left: (TableScan {
-                                table_name: "orders"
-                            }),
-                            right: (TableScan {
-                                table_name: "customers"
-                            }),
-                            join_type: JoinType::Inner
-                        })
-                    })
+            fn find_inner_join(plan: &PhysicalPlan) -> bool {
+                match plan {
+                    PhysicalPlan::HashJoin { join_type, .. } => *join_type == JoinType::Inner,
+                    PhysicalPlan::Project { input, .. } => find_inner_join(input),
+                    PhysicalPlan::Filter { input, .. } => find_inner_join(input),
+                    _ => false,
                 }
+            }
+
+            assert!(
+                find_inner_join(&plan),
+                "LEFT JOIN should become INNER when filtering on right side, got {:?}",
+                plan
             );
         }
     }

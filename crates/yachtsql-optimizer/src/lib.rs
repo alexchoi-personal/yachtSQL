@@ -21,10 +21,11 @@ pub use pass::{OptimizationPass, PassOverhead, PassTarget};
 pub use planner::{
     PhysicalPlanner, ProjectionPushdown, apply_cross_to_hash_join, apply_distinct_elimination,
     apply_empty_propagation, apply_filter_merging, apply_filter_pushdown_aggregate,
-    apply_filter_pushdown_project, apply_limit_pushdown, apply_outer_to_inner_join,
-    apply_predicate_inference, apply_predicate_simplification, apply_project_merging,
-    apply_short_circuit_ordering, apply_sort_elimination, apply_sort_pushdown_project,
-    apply_topn_pushdown, apply_trivial_predicate_removal, fold_constants,
+    apply_filter_pushdown_join, apply_filter_pushdown_project, apply_limit_pushdown,
+    apply_outer_to_inner_join, apply_predicate_inference, apply_predicate_simplification,
+    apply_project_merging, apply_short_circuit_ordering, apply_sort_elimination,
+    apply_sort_pushdown_project, apply_topn_pushdown, apply_trivial_predicate_removal,
+    fold_constants,
 };
 use rustc_hash::FxHashMap;
 pub use stats::{ColumnStats, TableStats};
@@ -54,6 +55,7 @@ pub struct RuleFlags {
     pub cross_to_hash_join: Option<bool>,
     pub outer_to_inner_join: Option<bool>,
     pub filter_pushdown_aggregate: Option<bool>,
+    pub filter_pushdown_join: Option<bool>,
     pub sort_elimination: Option<bool>,
     pub limit_pushdown: Option<bool>,
     pub topn_pushdown: Option<bool>,
@@ -75,6 +77,7 @@ impl RuleFlags {
             cross_to_hash_join: Some(true),
             outer_to_inner_join: Some(true),
             filter_pushdown_aggregate: Some(true),
+            filter_pushdown_join: Some(true),
             sort_elimination: Some(true),
             limit_pushdown: Some(true),
             topn_pushdown: Some(true),
@@ -96,6 +99,7 @@ impl RuleFlags {
             cross_to_hash_join: Some(false),
             outer_to_inner_join: Some(false),
             filter_pushdown_aggregate: Some(false),
+            filter_pushdown_join: Some(false),
             sort_elimination: Some(false),
             limit_pushdown: Some(false),
             topn_pushdown: Some(false),
@@ -118,6 +122,7 @@ impl RuleFlags {
             "cross_to_hash_join" => flags.cross_to_hash_join = Some(true),
             "outer_to_inner_join" => flags.outer_to_inner_join = Some(true),
             "filter_pushdown_aggregate" => flags.filter_pushdown_aggregate = Some(true),
+            "filter_pushdown_join" => flags.filter_pushdown_join = Some(true),
             "sort_elimination" => flags.sort_elimination = Some(true),
             "limit_pushdown" => flags.limit_pushdown = Some(true),
             "topn_pushdown" => flags.topn_pushdown = Some(true),
@@ -285,6 +290,12 @@ pub fn optimize_with_settings(
         OptimizationLevel::Standard,
     ) {
         physical_plan = apply_outer_to_inner_join(physical_plan);
+    }
+    if settings.rule_enabled(
+        settings.rules.filter_pushdown_join,
+        OptimizationLevel::Standard,
+    ) {
+        physical_plan = apply_filter_pushdown_join(physical_plan);
     }
     if settings.rule_enabled(
         settings.rules.filter_pushdown_aggregate,
