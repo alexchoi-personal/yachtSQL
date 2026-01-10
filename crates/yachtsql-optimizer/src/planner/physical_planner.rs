@@ -1,7 +1,7 @@
 #![coverage(off)]
 
 use yachtsql_common::error::Result;
-use yachtsql_ir::{Expr, JoinType, LogicalPlan, SetOperationType, SortExpr};
+use yachtsql_ir::{Expr, JoinType, LogicalPlan, SetOperationType};
 
 use super::equi_join::{extract_equi_join_keys, extract_equi_join_keys_partial};
 use super::predicate::{
@@ -9,7 +9,6 @@ use super::predicate::{
     classify_join_condition_predicates, classify_predicates_for_join, combine_predicates,
     remap_predicate_indices, split_and_predicates,
 };
-use super::rule_based::project_merging::substitute_column_refs;
 use crate::{ExecutionHints, PhysicalPlan};
 
 fn is_simple_column_ref(expr: &Expr) -> bool {
@@ -22,17 +21,6 @@ fn is_simple_column_ref(expr: &Expr) -> bool {
 
 fn all_simple_refs(expressions: &[Expr]) -> bool {
     expressions.iter().all(is_simple_column_ref)
-}
-
-fn remap_sort_exprs(sort_exprs: &[SortExpr], proj_exprs: &[Expr]) -> Vec<SortExpr> {
-    sort_exprs
-        .iter()
-        .map(|se| SortExpr {
-            expr: substitute_column_refs(&se.expr, proj_exprs),
-            asc: se.asc,
-            nulls_first: se.nulls_first,
-        })
-        .collect()
 }
 
 pub struct PhysicalPlanner {
@@ -994,12 +982,11 @@ impl PhysicalPlanner {
                 } = proj_input.as_ref()
                     && all_simple_refs(expressions)
                 {
-                    let remapped = remap_sort_exprs(sort_exprs, expressions);
                     let optimized_input = self.plan(sort_input)?;
                     return Ok(PhysicalPlan::Project {
                         input: Box::new(PhysicalPlan::TopN {
                             input: Box::new(optimized_input),
-                            sort_exprs: remapped,
+                            sort_exprs: sort_exprs.clone(),
                             limit: limit_val,
                         }),
                         expressions: expressions.clone(),
