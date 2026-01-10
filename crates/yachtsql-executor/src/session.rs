@@ -9,11 +9,15 @@ use datafusion::arrow::datatypes::{
 use datafusion::catalog_common::MemorySchemaProvider;
 use datafusion::common::{TableReference, ToDFSchema};
 use datafusion::datasource::{MemTable, provider_as_source};
+use datafusion::error::Result as DFResult;
+use datafusion::execution::FunctionRegistry;
 use datafusion::logical_expr::{
-    EmptyRelation, Expr as DFExpr, JoinType as DFJoinType, LogicalPlan as DFLogicalPlan,
-    LogicalPlanBuilder, SortExpr as DFSortExpr,
+    ColumnarValue, EmptyRelation, Expr as DFExpr, JoinType as DFJoinType,
+    LogicalPlan as DFLogicalPlan, LogicalPlanBuilder, ScalarUDF, ScalarUDFImpl, Signature,
+    SortExpr as DFSortExpr, Volatility,
 };
 use datafusion::prelude::*;
+use datafusion::scalar::ScalarValue;
 use futures::FutureExt;
 use parking_lot::RwLock;
 use yachtsql_common::error::{Error, Result};
@@ -28,6 +32,287 @@ pub struct ProcedureDefinition {
     pub name: String,
     pub args: Vec<yachtsql_ir::ProcedureArg>,
     pub body: Vec<LogicalPlan>,
+}
+
+#[derive(Debug)]
+struct UserDefinedScalarFunction {
+    name: String,
+    signature: Signature,
+    return_type: ArrowDataType,
+    body_sql: String,
+    param_names: Vec<String>,
+}
+
+impl UserDefinedScalarFunction {
+    fn new(
+        name: String,
+        params: &[yachtsql_ir::FunctionArg],
+        return_type: ArrowDataType,
+        body_sql: String,
+    ) -> Self {
+        let param_types: Vec<ArrowDataType> = params
+            .iter()
+            .map(|p| yachtsql_type_to_arrow(&p.data_type))
+            .collect();
+        let param_names: Vec<String> = params.iter().map(|p| p.name.to_lowercase()).collect();
+
+        Self {
+            name,
+            signature: Signature::exact(param_types, Volatility::Immutable),
+            return_type,
+            body_sql,
+            param_names,
+        }
+    }
+}
+
+impl ScalarUDFImpl for UserDefinedScalarFunction {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+        Ok(self.return_type.clone())
+    }
+
+    fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+        use datafusion::arrow::array::*;
+
+        if args.is_empty() {
+            let ctx = SessionContext::new();
+            let query = format!("SELECT {}", self.body_sql);
+            let batches =
+                futures::executor::block_on(async { ctx.sql(&query).await?.collect().await })?;
+
+            if batches.is_empty() || batches[0].num_rows() == 0 {
+                return Ok(ColumnarValue::Scalar(ScalarValue::Null));
+            }
+
+            let result = batches[0].column(0).clone();
+            if result.len() == 1 && num_rows > 1 {
+                let scalar = ScalarValue::try_from_array(&result, 0)?;
+                return Ok(ColumnarValue::Scalar(scalar));
+            }
+            return Ok(ColumnarValue::Array(result));
+        }
+
+        let actual_num_rows = args
+            .iter()
+            .find_map(|a| match a {
+                ColumnarValue::Array(arr) => Some(arr.len()),
+                ColumnarValue::Scalar(_) => None,
+            })
+            .unwrap_or(num_rows);
+
+        let arrays: Vec<ArrayRef> = args
+            .iter()
+            .map(|a| match a {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(actual_num_rows).unwrap(),
+            })
+            .collect();
+
+        let ctx = SessionContext::new();
+        let schema = ArrowSchema::new(
+            self.param_names
+                .iter()
+                .zip(arrays.iter())
+                .map(|(name, arr)| ArrowField::new(name, arr.data_type().clone(), true))
+                .collect::<Vec<_>>(),
+        );
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), arrays)
+            .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+
+        let mem_table = MemTable::try_new(Arc::new(schema), vec![vec![batch]])?;
+
+        futures::executor::block_on(async {
+            ctx.register_table("__udf_args", Arc::new(mem_table))?;
+            let query = format!("SELECT {} FROM __udf_args", self.body_sql);
+            let batches = ctx.sql(&query).await?.collect().await?;
+
+            if batches.is_empty() || batches[0].num_rows() == 0 {
+                let null_arr: StringArray = (0..actual_num_rows).map(|_| None::<&str>).collect();
+                return Ok(ColumnarValue::Array(Arc::new(null_arr)));
+            }
+
+            let result = batches[0].column(0).clone();
+            Ok(ColumnarValue::Array(result))
+        })
+    }
+}
+
+#[derive(Debug)]
+struct UserDefinedAggregateFunction {
+    name: String,
+    signature: Signature,
+    return_type: ArrowDataType,
+    body_sql: String,
+    param_names: Vec<String>,
+}
+
+impl UserDefinedAggregateFunction {
+    fn new(
+        name: String,
+        params: &[yachtsql_ir::FunctionArg],
+        return_type: ArrowDataType,
+        body_sql: String,
+    ) -> Self {
+        let param_types: Vec<ArrowDataType> = params
+            .iter()
+            .map(|p| yachtsql_type_to_arrow(&p.data_type))
+            .collect();
+        let param_names: Vec<String> = params.iter().map(|p| p.name.to_lowercase()).collect();
+
+        Self {
+            name,
+            signature: Signature::exact(param_types, Volatility::Immutable),
+            return_type,
+            body_sql,
+            param_names,
+        }
+    }
+
+    fn into_udaf(self) -> datafusion::logical_expr::AggregateUDF {
+        use datafusion::logical_expr::function::StateFieldsArgs;
+        use datafusion::logical_expr::{Accumulator, AggregateUDF, AggregateUDFImpl};
+
+        #[derive(Debug)]
+        struct UdafImpl {
+            name: String,
+            signature: Signature,
+            return_type: ArrowDataType,
+            body_sql: String,
+            param_names: Vec<String>,
+        }
+
+        impl AggregateUDFImpl for UdafImpl {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+
+            fn name(&self) -> &str {
+                &self.name
+            }
+
+            fn signature(&self) -> &Signature {
+                &self.signature
+            }
+
+            fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+                Ok(self.return_type.clone())
+            }
+
+            fn accumulator(
+                &self,
+                _acc_args: datafusion::logical_expr::function::AccumulatorArgs,
+            ) -> DFResult<Box<dyn Accumulator>> {
+                Ok(Box::new(SqlAggAccumulator {
+                    body_sql: self.body_sql.clone(),
+                    param_names: self.param_names.clone(),
+                    values: Vec::new(),
+                }))
+            }
+
+            fn state_fields(&self, _args: StateFieldsArgs) -> DFResult<Vec<ArrowField>> {
+                Ok(vec![ArrowField::new("state", ArrowDataType::Utf8, true)])
+            }
+        }
+
+        #[derive(Debug)]
+        struct SqlAggAccumulator {
+            body_sql: String,
+            param_names: Vec<String>,
+            values: Vec<Vec<ScalarValue>>,
+        }
+
+        impl Accumulator for SqlAggAccumulator {
+            fn update_batch(&mut self, values: &[ArrayRef]) -> DFResult<()> {
+                if values.is_empty() {
+                    return Ok(());
+                }
+                let num_rows = values[0].len();
+                for row in 0..num_rows {
+                    let row_values: Vec<ScalarValue> = values
+                        .iter()
+                        .map(|arr| ScalarValue::try_from_array(arr, row))
+                        .collect::<DFResult<_>>()?;
+                    self.values.push(row_values);
+                }
+                Ok(())
+            }
+
+            fn evaluate(&mut self) -> DFResult<ScalarValue> {
+                if self.values.is_empty() {
+                    return Ok(ScalarValue::Null);
+                }
+
+                let ctx = SessionContext::new();
+
+                let arrays: Vec<ArrayRef> = (0..self.param_names.len())
+                    .map(|col_idx| {
+                        let col_values: Vec<ScalarValue> = self
+                            .values
+                            .iter()
+                            .map(|row| row.get(col_idx).cloned().unwrap_or(ScalarValue::Null))
+                            .collect();
+                        ScalarValue::iter_to_array(col_values)
+                    })
+                    .collect::<DFResult<_>>()?;
+
+                let schema = ArrowSchema::new(
+                    self.param_names
+                        .iter()
+                        .zip(arrays.iter())
+                        .map(|(name, arr)| ArrowField::new(name, arr.data_type().clone(), true))
+                        .collect::<Vec<_>>(),
+                );
+                let batch = RecordBatch::try_new(Arc::new(schema.clone()), arrays)
+                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+
+                let mem_table = MemTable::try_new(Arc::new(schema), vec![vec![batch]])?;
+
+                futures::executor::block_on(async {
+                    ctx.register_table("__udaf_args", Arc::new(mem_table))?;
+                    let query = format!("SELECT {} FROM __udaf_args", self.body_sql);
+                    let batches = ctx.sql(&query).await?.collect().await?;
+
+                    if batches.is_empty() || batches[0].num_rows() == 0 {
+                        return Ok(ScalarValue::Null);
+                    }
+
+                    ScalarValue::try_from_array(batches[0].column(0), 0)
+                })
+            }
+
+            fn size(&self) -> usize {
+                std::mem::size_of_val(self)
+            }
+
+            fn state(&mut self) -> DFResult<Vec<ScalarValue>> {
+                Ok(vec![ScalarValue::Utf8(Some(String::new()))])
+            }
+
+            fn merge_batch(&mut self, _states: &[ArrayRef]) -> DFResult<()> {
+                Ok(())
+            }
+        }
+
+        AggregateUDF::new_from_impl(UdafImpl {
+            name: self.name,
+            signature: self.signature,
+            return_type: self.return_type,
+            body_sql: self.body_sql,
+            param_names: self.param_names,
+        })
+    }
 }
 
 pub struct YachtSQLSession {
@@ -326,6 +611,8 @@ impl YachtSQLSession {
                 Ok(vec![])
             }
 
+            LogicalPlan::AlterSchema { .. } | LogicalPlan::UndropSchema { .. } => Ok(vec![]),
+
             _ => Err(Error::internal(format!(
                 "Plan execution not implemented: {:?}",
                 std::mem::discriminant(plan)
@@ -431,6 +718,7 @@ impl YachtSQLSession {
                 input,
                 group_by,
                 aggregates,
+                schema,
                 ..
             } => {
                 let input_plan = self.convert_plan(input)?;
@@ -440,7 +728,11 @@ impl YachtSQLSession {
                     .collect::<Result<_>>()?;
                 let agg_exprs: Vec<DFExpr> = aggregates
                     .iter()
-                    .map(|e| self.convert_expr(e))
+                    .zip(schema.fields.iter().skip(group_by.len()))
+                    .map(|(e, field)| {
+                        let df_expr = self.convert_expr(e)?;
+                        Ok(df_expr.alias(field.name.clone()))
+                    })
                     .collect::<Result<_>>()?;
                 LogicalPlanBuilder::from(input_plan)
                     .aggregate(group_exprs, agg_exprs)
@@ -579,12 +871,24 @@ impl YachtSQLSession {
             LogicalPlan::Window {
                 input,
                 window_exprs,
+                schema,
                 ..
             } => {
                 let input_plan = self.convert_plan(input)?;
+                let input_schema = input.schema();
                 let df_window_exprs: Vec<DFExpr> = window_exprs
                     .iter()
-                    .map(|e| self.convert_expr(e))
+                    .enumerate()
+                    .map(|(i, e)| {
+                        let expr = self.convert_expr(e)?;
+                        let field_idx = input_schema.fields.len() + i;
+                        let alias_name = schema
+                            .fields
+                            .get(field_idx)
+                            .map(|f| f.name.clone())
+                            .unwrap_or_else(|| format!("__window_{}", i));
+                        Ok(expr.alias(alias_name))
+                    })
                     .collect::<Result<_>>()?;
                 LogicalPlanBuilder::from(input_plan)
                     .window(df_window_exprs)
@@ -613,6 +917,37 @@ impl YachtSQLSession {
     }
 
     fn convert_expr(&self, expr: &yachtsql_ir::Expr) -> Result<DFExpr> {
+        if let yachtsql_ir::Expr::UserDefinedAggregate {
+            name,
+            args,
+            distinct,
+            filter,
+        } = expr
+        {
+            let df_args: Vec<DFExpr> = args
+                .iter()
+                .map(|a| self.convert_expr(a))
+                .collect::<Result<_>>()?;
+            let df_filter = filter
+                .as_ref()
+                .map(|f| self.convert_expr(f))
+                .transpose()?
+                .map(Box::new);
+
+            let lower_name = name.to_lowercase();
+            let udaf = self
+                .ctx
+                .udaf(&lower_name)
+                .map_err(|e| Error::internal(e.to_string()))?;
+
+            let agg = DFExpr::AggregateFunction(
+                datafusion::logical_expr::expr::AggregateFunction::new_udf(
+                    udaf, df_args, *distinct, df_filter, None, None,
+                ),
+            );
+            return Ok(agg);
+        }
+
         yachtsql_parser::DataFusionConverter::convert_expr(expr)
             .map_err(|e| Error::internal(e.to_string()))
     }
@@ -1071,6 +1406,28 @@ impl YachtSQLSession {
         }
     }
 
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn aggregate_function_to_sql(&self, func: &yachtsql_ir::AggregateFunction) -> String {
+        use yachtsql_ir::AggregateFunction as AF;
+        match func {
+            AF::Count => "COUNT".to_string(),
+            AF::Sum => "SUM".to_string(),
+            AF::Avg => "AVG".to_string(),
+            AF::Min => "MIN".to_string(),
+            AF::Max => "MAX".to_string(),
+            AF::ArrayAgg => "ARRAY_AGG".to_string(),
+            AF::StringAgg => "STRING_AGG".to_string(),
+            AF::CountIf => "COUNT_IF".to_string(),
+            AF::LogicalAnd => "BOOL_AND".to_string(),
+            AF::LogicalOr => "BOOL_OR".to_string(),
+            AF::BitAnd => "BIT_AND".to_string(),
+            AF::BitOr => "BIT_OR".to_string(),
+            AF::BitXor => "BIT_XOR".to_string(),
+            AF::AnyValue => "ANY_VALUE".to_string(),
+            _ => format!("{:?}", func).to_uppercase(),
+        }
+    }
+
     #[allow(clippy::only_used_in_recursion, clippy::wildcard_enum_match_arm)]
     fn expr_to_sql(&self, expr: &yachtsql_ir::Expr) -> Result<String> {
         use yachtsql_ir::{BinaryOp, Expr, Literal};
@@ -1178,6 +1535,25 @@ impl YachtSQLSession {
                     .collect::<Result<_>>()?;
                 let func_name = self.scalar_function_to_sql(name);
                 Ok(format!("{}({})", func_name, arg_strs.join(", ")))
+            }
+            Expr::Aggregate {
+                func,
+                args,
+                distinct,
+                ..
+            } => {
+                let arg_strs: Vec<String> = args
+                    .iter()
+                    .map(|a| self.expr_to_sql(a))
+                    .collect::<Result<_>>()?;
+                let func_name = self.aggregate_function_to_sql(func);
+                let distinct_str = if *distinct { "DISTINCT " } else { "" };
+                Ok(format!(
+                    "{}({}{})",
+                    func_name,
+                    distinct_str,
+                    arg_strs.join(", ")
+                ))
             }
             _ => Err(Error::internal(format!(
                 "Expression not supported in UPDATE/DELETE: {:?}",
@@ -1372,11 +1748,95 @@ impl YachtSQLSession {
 
     async fn execute_alter_table(
         &self,
-        _table_name: &str,
-        _operation: &AlterTableOp,
-        _if_exists: bool,
+        table_name: &str,
+        operation: &AlterTableOp,
+        if_exists: bool,
     ) -> Result<Vec<RecordBatch>> {
-        Err(Error::internal("ALTER TABLE not yet implemented"))
+        match operation {
+            AlterTableOp::RenameTable { new_name } => {
+                let (schema_name, old_table) = self.resolve_table_name(table_name);
+                let old_table_ref = Self::table_reference(schema_name.as_deref(), &old_table);
+
+                let table_provider = match self.ctx.table_provider(old_table_ref.clone()).await {
+                    Ok(provider) => provider,
+                    Err(_) => {
+                        if if_exists {
+                            return Ok(vec![]);
+                        }
+                        return Err(Error::internal(format!("Table {} not found", table_name)));
+                    }
+                };
+
+                let (new_schema_name, new_table) = Self::parse_table_name(new_name);
+                let new_table_ref = Self::table_reference(new_schema_name.as_deref(), &new_table);
+
+                let existing = self.ctx.table_provider(new_table_ref.clone()).await;
+                if existing.is_ok() {
+                    return Err(Error::internal(format!(
+                        "Table {} already exists",
+                        new_name
+                    )));
+                }
+
+                if let Some(ref schema) = schema_name {
+                    let catalog = self
+                        .ctx
+                        .catalog("datafusion")
+                        .ok_or_else(|| Error::internal("Default catalog 'datafusion' not found"))?;
+                    if let Some(schema_provider) = catalog.schema(schema) {
+                        schema_provider
+                            .deregister_table(&old_table)
+                            .map_err(|e| Error::internal(e.to_string()))?;
+                    }
+                } else {
+                    self.ctx
+                        .deregister_table(&old_table)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                }
+
+                if let Some(ref schema) = new_schema_name {
+                    let catalog = self
+                        .ctx
+                        .catalog("datafusion")
+                        .ok_or_else(|| Error::internal("Default catalog 'datafusion' not found"))?;
+                    let schema_provider = catalog
+                        .schema(schema)
+                        .ok_or_else(|| Error::internal(format!("Schema not found: {}", schema)))?;
+                    schema_provider
+                        .register_table(new_table.clone(), table_provider)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                } else {
+                    self.ctx
+                        .register_table(&new_table, table_provider)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                }
+
+                let old_full_name = match schema_name {
+                    Some(s) => format!("{}.{}", s, old_table),
+                    None => old_table.clone(),
+                };
+                let new_full_name = match new_schema_name {
+                    Some(s) => format!("{}.{}", s, new_table),
+                    None => new_table.clone(),
+                };
+                if let Some(defaults) = self.column_defaults.write().remove(&old_full_name) {
+                    self.column_defaults.write().insert(new_full_name, defaults);
+                }
+
+                Ok(vec![])
+            }
+            AlterTableOp::AddColumn { .. }
+            | AlterTableOp::DropColumn { .. }
+            | AlterTableOp::RenameColumn { .. }
+            | AlterTableOp::SetOptions { .. }
+            | AlterTableOp::AlterColumn { .. }
+            | AlterTableOp::AddConstraint { .. }
+            | AlterTableOp::DropConstraint { .. }
+            | AlterTableOp::DropPrimaryKey => Err(Error::internal(format!(
+                "ALTER TABLE operation not yet implemented: {:?}",
+                operation
+            ))),
+        }
     }
 
     async fn execute_create_view(
@@ -1531,6 +1991,24 @@ impl YachtSQLSession {
             }
         }
 
+        if !is_aggregate {
+            if let Some(body_sql) = self.function_body_to_sql(body, args)? {
+                let arrow_return_type = yachtsql_type_to_arrow(return_type);
+                let udf = UserDefinedScalarFunction::new(
+                    lower.clone(),
+                    args,
+                    arrow_return_type,
+                    body_sql,
+                );
+                self.ctx.register_udf(ScalarUDF::new_from_impl(udf));
+            }
+        } else if let Some(body_sql) = self.function_body_to_sql(body, args)? {
+            let arrow_return_type = yachtsql_type_to_arrow(return_type);
+            let udaf =
+                UserDefinedAggregateFunction::new(lower.clone(), args, arrow_return_type, body_sql);
+            self.ctx.register_udaf(udaf.into_udaf());
+        }
+
         self.functions.write().insert(
             lower,
             FunctionDefinition {
@@ -1543,6 +2021,21 @@ impl YachtSQLSession {
         );
 
         Ok(vec![])
+    }
+
+    fn function_body_to_sql(
+        &self,
+        body: &FunctionBody,
+        _args: &[yachtsql_ir::FunctionArg],
+    ) -> Result<Option<String>> {
+        match body {
+            FunctionBody::Sql(expr) => {
+                let sql = self.expr_to_sql(expr)?;
+                Ok(Some(sql))
+            }
+            FunctionBody::SqlQuery(query) => Ok(Some(query.clone())),
+            FunctionBody::JavaScript(_) | FunctionBody::Language { .. } => Ok(None),
+        }
     }
 
     async fn execute_drop_function(&self, name: &str, if_exists: bool) -> Result<Vec<RecordBatch>> {

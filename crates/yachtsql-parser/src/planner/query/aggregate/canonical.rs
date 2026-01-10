@@ -8,7 +8,7 @@ use crate::CatalogProvider;
 
 impl<'a, C: CatalogProvider> Planner<'a, C> {
     pub(in crate::planner::query::aggregate) fn canonical_agg_name(expr: &ast::Expr) -> String {
-        format!("{}", expr).to_uppercase().replace(' ', "")
+        format!("{}", expr).to_lowercase().replace(' ', "")
     }
 
     pub(in crate::planner::query::aggregate) fn agg_func_to_sql_name(
@@ -61,16 +61,33 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                 distinct,
                 ..
             } => {
-                let func_name = Self::agg_func_to_sql_name(func);
+                let func_name = Self::agg_func_to_sql_name(func).to_lowercase();
                 let args_str = args
                     .iter()
-                    .map(|a| Self::canonical_planned_expr_name(a))
+                    .map(|a| Self::canonical_planned_expr_name_lowercase(a))
                     .collect::<Vec<_>>()
                     .join(",");
                 if *distinct {
-                    format!("{}(DISTINCT{})", func_name, args_str)
+                    format!("{}(DISTINCT {})", func_name, args_str)
                 } else {
                     format!("{}({})", func_name, args_str)
+                }
+            }
+            Expr::UserDefinedAggregate {
+                name,
+                args,
+                distinct,
+                ..
+            } => {
+                let args_str = args
+                    .iter()
+                    .map(|a| Self::canonical_planned_expr_name_lowercase(a))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                if *distinct {
+                    format!("{}(DISTINCT {})", name.to_lowercase(), args_str)
+                } else {
+                    format!("{}({})", name.to_lowercase(), args_str)
                 }
             }
             _ => format!("{:?}", expr),
@@ -86,7 +103,9 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                     name.to_uppercase()
                 }
             }
-            Expr::Aggregate { .. } => Self::canonical_planned_agg_name(expr),
+            Expr::Aggregate { .. } | Expr::UserDefinedAggregate { .. } => {
+                Self::canonical_planned_agg_name(expr)
+            }
             Expr::BinaryOp { left, op, right } => {
                 let op_str = match op {
                     BinaryOp::Add => "+",
@@ -176,11 +195,61 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
         }
     }
 
-    pub(in crate::planner::query::aggregate) fn canonical_agg_name_matches(
+    pub(in crate::planner::query::aggregate) fn canonical_planned_expr_name_lowercase(
+        expr: &Expr,
+    ) -> String {
+        match expr {
+            Expr::Column { table, name, .. } => {
+                if let Some(t) = table {
+                    format!("{}.{}", t.to_lowercase(), name.to_lowercase())
+                } else {
+                    name.to_lowercase()
+                }
+            }
+            _ => Self::canonical_planned_expr_name(expr).to_lowercase(),
+        }
+    }
+
+    pub(in crate::planner::query) fn canonical_agg_name_matches(
         name: &str,
         canonical: &str,
     ) -> bool {
-        let name_normalized = name.to_uppercase().replace(' ', "");
-        name_normalized == canonical
+        let name_normalized = name.to_lowercase().replace(' ', "");
+        let canonical_normalized = canonical.to_lowercase().replace(' ', "");
+
+        if name_normalized == canonical_normalized {
+            return true;
+        }
+
+        let strip_table_prefixes = |s: &str| -> String {
+            let mut result = String::new();
+            let mut in_parens = 0;
+            for c in s.chars() {
+                if c == '(' {
+                    in_parens += 1;
+                    result.push(c);
+                } else if c == ')' {
+                    in_parens -= 1;
+                    result.push(c);
+                } else if in_parens > 0 && c == '.' {
+                    let before: String = result
+                        .chars()
+                        .rev()
+                        .take_while(|&ch| ch != '(' && ch != ',')
+                        .collect();
+                    let before: String = before.chars().rev().collect();
+                    for _ in 0..before.len() {
+                        result.pop();
+                    }
+                } else {
+                    result.push(c);
+                }
+            }
+            result
+        };
+
+        let name_stripped = strip_table_prefixes(&name_normalized);
+        let canonical_stripped = strip_table_prefixes(&canonical_normalized);
+        name_stripped == canonical_stripped
     }
 }

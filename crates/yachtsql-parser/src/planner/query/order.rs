@@ -134,7 +134,7 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
             Expr::Aggregate { .. } => {
                 let canonical = Self::canonical_planned_agg_name(&expr);
                 for (idx, field) in input_schema.fields.iter().enumerate() {
-                    if field.name.to_uppercase() == canonical {
+                    if Self::canonical_agg_name_matches(&field.name, &canonical) {
                         return Expr::Column {
                             table: None,
                             name: field.name.clone(),

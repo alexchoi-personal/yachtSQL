@@ -138,19 +138,39 @@ pub fn plan_function(
 
     if let Some(resolver) = udf_resolver
         && let Some(udf) = resolver(&name)
-        && matches!(&udf.body, FunctionBody::Sql(_))
     {
-        let call_args = extract_function_args_full(
-            func,
-            schema,
-            subquery_planner,
-            named_windows,
-            udf_resolver,
-        )?;
-        if let FunctionBody::Sql(body_expr) = &udf.body {
-            let substituted = substitute_parameters(body_expr, &udf.parameters, &call_args);
-            let result = apply_struct_field_names(substituted, &udf.return_type);
-            return Ok(result);
+        if udf.is_aggregate {
+            let distinct = matches!(
+                &func.args,
+                ast::FunctionArguments::List(list) if list.duplicate_treatment == Some(ast::DuplicateTreatment::Distinct)
+            );
+            let args = extract_function_args_full(
+                func,
+                schema,
+                subquery_planner,
+                named_windows,
+                udf_resolver,
+            )?;
+            return Ok(Expr::UserDefinedAggregate {
+                name: name.to_lowercase(),
+                args,
+                distinct,
+                filter: None,
+            });
+        }
+        if matches!(&udf.body, FunctionBody::Sql(_)) {
+            let call_args = extract_function_args_full(
+                func,
+                schema,
+                subquery_planner,
+                named_windows,
+                udf_resolver,
+            )?;
+            if let FunctionBody::Sql(body_expr) = &udf.body {
+                let substituted = substitute_parameters(body_expr, &udf.parameters, &call_args);
+                let result = apply_struct_field_names(substituted, &udf.return_type);
+                return Ok(result);
+            }
         }
     }
 

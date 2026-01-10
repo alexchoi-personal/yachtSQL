@@ -55,7 +55,7 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
         }
 
         match expr {
-            Expr::Aggregate { .. } => {
+            Expr::Aggregate { .. } | Expr::UserDefinedAggregate { .. } => {
                 let canonical = Self::canonical_planned_agg_name(expr);
                 if let Some(idx) = agg_names.iter().position(|n| n == &canonical) {
                     return Expr::Column {
