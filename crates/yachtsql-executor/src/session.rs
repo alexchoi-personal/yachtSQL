@@ -18,6 +18,7 @@ use futures::FutureExt;
 use parking_lot::RwLock;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::{DataType, Field, FieldMode, Schema};
+use yachtsql_datafusion_functions::BigQueryFunctionRegistry;
 use yachtsql_ir::plan::{AlterTableOp, FunctionBody};
 use yachtsql_ir::{JoinType, LogicalPlan, PlanSchema, SetOperationType, SortExpr};
 use yachtsql_parser::{CatalogProvider, FunctionDefinition, ViewDefinition};
@@ -91,8 +92,10 @@ fn arrow_schema_to_yachtsql(schema: &ArrowSchema) -> Schema {
 
 impl YachtSQLSession {
     pub fn new() -> Self {
+        let ctx = SessionContext::new();
+        BigQueryFunctionRegistry::register_all(&ctx);
         Self {
-            ctx: SessionContext::new(),
+            ctx,
             views: RwLock::new(HashMap::new()),
             functions: RwLock::new(HashMap::new()),
             schemas: RwLock::new(HashSet::new()),
@@ -100,8 +103,10 @@ impl YachtSQLSession {
     }
 
     pub fn with_config(config: SessionConfig) -> Self {
+        let ctx = SessionContext::new_with_config(config);
+        BigQueryFunctionRegistry::register_all(&ctx);
         Self {
-            ctx: SessionContext::new_with_config(config),
+            ctx,
             views: RwLock::new(HashMap::new()),
             functions: RwLock::new(HashMap::new()),
             schemas: RwLock::new(HashSet::new()),
