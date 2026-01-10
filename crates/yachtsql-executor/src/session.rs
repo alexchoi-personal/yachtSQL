@@ -23,7 +23,7 @@ use parking_lot::RwLock;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::{DataType, Field, FieldMode, Schema};
 use yachtsql_datafusion_functions::BigQueryFunctionRegistry;
-use yachtsql_ir::plan::{AlterTableOp, FunctionBody};
+use yachtsql_ir::plan::{AlterTableOp, FunctionBody, MergeClause};
 use yachtsql_ir::{JoinType, LogicalPlan, PlanSchema, SetOperationType, SortExpr};
 use yachtsql_parser::{CatalogProvider, FunctionDefinition, ViewDefinition};
 
@@ -515,7 +515,12 @@ impl YachtSQLSession {
 
             LogicalPlan::Truncate { table_name } => self.execute_truncate(table_name).await,
 
-            LogicalPlan::Merge { .. } => Ok(vec![]),
+            LogicalPlan::Merge {
+                target_table,
+                source,
+                on,
+                clauses,
+            } => self.execute_merge(target_table, source, on, clauses).await,
 
             LogicalPlan::AlterTable {
                 table_name,
@@ -1465,6 +1470,845 @@ impl YachtSQLSession {
             .map_err(|e| Error::internal(e.to_string()))?;
 
         Ok(vec![])
+    }
+
+    async fn execute_merge(
+        &self,
+        target_table: &str,
+        source: &LogicalPlan,
+        on: &yachtsql_ir::Expr,
+        clauses: &[MergeClause],
+    ) -> Result<Vec<RecordBatch>> {
+        let lower = target_table.to_lowercase();
+        let provider = self
+            .ctx
+            .table_provider(TableReference::bare(lower.clone()))
+            .now_or_never()
+            .ok_or_else(|| Error::internal(format!("Table not found: {}", target_table)))?
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let target_schema = provider.schema();
+        let target_source = provider_as_source(provider);
+
+        let target_scan = LogicalPlanBuilder::scan(&lower, target_source, None)
+            .map_err(|e| Error::internal(e.to_string()))?
+            .build()
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let target_df = DataFrame::new(self.ctx.state(), target_scan);
+        let target_batches = target_df
+            .collect()
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let source_batches = self.execute_query(source).await?;
+
+        if target_batches.is_empty() && source_batches.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let source_schema = if source_batches.is_empty() {
+            target_schema.clone()
+        } else {
+            source_batches[0].schema()
+        };
+
+        let on_sql = self.expr_to_sql(on)?;
+
+        let mut target_matched: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut source_matched: HashSet<usize> = HashSet::new();
+
+        let mut global_target_idx = 0usize;
+        for target_batch in &target_batches {
+            for target_row in 0..target_batch.num_rows() {
+                let mut global_source_idx = 0usize;
+                for source_batch in &source_batches {
+                    for source_row in 0..source_batch.num_rows() {
+                        let matches = self
+                            .evaluate_merge_condition(
+                                target_batch,
+                                target_row,
+                                source_batch,
+                                source_row,
+                                &on_sql,
+                            )
+                            .await?;
+
+                        if matches {
+                            target_matched
+                                .entry(global_target_idx)
+                                .or_default()
+                                .push(global_source_idx);
+                            source_matched.insert(global_source_idx);
+                        }
+                        global_source_idx += 1;
+                    }
+                }
+                global_target_idx += 1;
+            }
+        }
+
+        for (target_idx, source_indices) in &target_matched {
+            if source_indices.len() > 1 {
+                return Err(Error::internal(format!(
+                    "MERGE statement matched multiple source rows for target row {}",
+                    target_idx
+                )));
+            }
+        }
+
+        let mut result_rows: Vec<Vec<ScalarValue>> = Vec::new();
+        let mut deleted_targets: HashSet<usize> = HashSet::new();
+
+        let mut global_target_idx = 0usize;
+        for target_batch in &target_batches {
+            for target_row in 0..target_batch.num_rows() {
+                let matched_source = target_matched.get(&global_target_idx);
+
+                match matched_source {
+                    Some(source_indices) => {
+                        let source_idx = source_indices[0];
+                        let (source_batch, source_row) =
+                            self.get_source_row(&source_batches, source_idx);
+
+                        let mut handled = false;
+                        for clause in clauses {
+                            match clause {
+                                MergeClause::MatchedUpdate {
+                                    condition,
+                                    assignments,
+                                } => {
+                                    if handled {
+                                        continue;
+                                    }
+                                    let cond_met = self
+                                        .evaluate_merge_clause_condition(
+                                            condition.as_ref(),
+                                            target_batch,
+                                            target_row,
+                                            Some((source_batch, source_row)),
+                                        )
+                                        .await?;
+                                    if cond_met {
+                                        let row = self
+                                            .apply_merge_update(
+                                                target_batch,
+                                                target_row,
+                                                source_batch,
+                                                source_row,
+                                                assignments,
+                                                &target_schema,
+                                            )
+                                            .await?;
+                                        result_rows.push(row);
+                                        handled = true;
+                                    }
+                                }
+                                MergeClause::MatchedDelete { condition } => {
+                                    if handled {
+                                        continue;
+                                    }
+                                    let cond_met = self
+                                        .evaluate_merge_clause_condition(
+                                            condition.as_ref(),
+                                            target_batch,
+                                            target_row,
+                                            Some((source_batch, source_row)),
+                                        )
+                                        .await?;
+                                    if cond_met {
+                                        deleted_targets.insert(global_target_idx);
+                                        handled = true;
+                                    }
+                                }
+                                MergeClause::NotMatched { .. }
+                                | MergeClause::NotMatchedBySource { .. }
+                                | MergeClause::NotMatchedBySourceDelete { .. } => {}
+                            }
+                        }
+                        if !handled && !deleted_targets.contains(&global_target_idx) {
+                            let row = self.extract_target_row(target_batch, target_row)?;
+                            result_rows.push(row);
+                        }
+                    }
+                    None => {
+                        let mut handled = false;
+                        for clause in clauses {
+                            match clause {
+                                MergeClause::NotMatchedBySource {
+                                    condition,
+                                    assignments,
+                                } => {
+                                    if handled {
+                                        continue;
+                                    }
+                                    let cond_met = self
+                                        .evaluate_merge_clause_condition(
+                                            condition.as_ref(),
+                                            target_batch,
+                                            target_row,
+                                            None,
+                                        )
+                                        .await?;
+                                    if cond_met {
+                                        let row = self
+                                            .apply_merge_update_target_only(
+                                                target_batch,
+                                                target_row,
+                                                assignments,
+                                                &target_schema,
+                                            )
+                                            .await?;
+                                        result_rows.push(row);
+                                        handled = true;
+                                    }
+                                }
+                                MergeClause::NotMatchedBySourceDelete { condition } => {
+                                    if handled {
+                                        continue;
+                                    }
+                                    let cond_met = self
+                                        .evaluate_merge_clause_condition(
+                                            condition.as_ref(),
+                                            target_batch,
+                                            target_row,
+                                            None,
+                                        )
+                                        .await?;
+                                    if cond_met {
+                                        deleted_targets.insert(global_target_idx);
+                                        handled = true;
+                                    }
+                                }
+                                MergeClause::MatchedUpdate { .. }
+                                | MergeClause::MatchedDelete { .. }
+                                | MergeClause::NotMatched { .. } => {}
+                            }
+                        }
+                        if !handled && !deleted_targets.contains(&global_target_idx) {
+                            let row = self.extract_target_row(target_batch, target_row)?;
+                            result_rows.push(row);
+                        }
+                    }
+                }
+                global_target_idx += 1;
+            }
+        }
+
+        let total_source_rows: usize = source_batches.iter().map(|b| b.num_rows()).sum();
+        for source_idx in 0..total_source_rows {
+            if source_matched.contains(&source_idx) {
+                continue;
+            }
+
+            let (source_batch, source_row) = self.get_source_row(&source_batches, source_idx);
+
+            for clause in clauses {
+                if let MergeClause::NotMatched {
+                    condition,
+                    columns,
+                    values,
+                } = clause
+                {
+                    let cond_met = self
+                        .evaluate_not_matched_condition(
+                            condition.as_ref(),
+                            source_batch,
+                            source_row,
+                        )
+                        .await?;
+                    if cond_met {
+                        let row = self
+                            .build_insert_row(
+                                source_batch,
+                                source_row,
+                                columns,
+                                values,
+                                &target_schema,
+                                &source_schema,
+                            )
+                            .await?;
+                        result_rows.push(row);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let result_batches = self.build_result_batches(&result_rows, &target_schema)?;
+
+        let _ = self.ctx.deregister_table(&lower);
+        let partitions = if result_batches.is_empty() {
+            vec![vec![]]
+        } else {
+            vec![result_batches]
+        };
+        let mem_table = MemTable::try_new(target_schema, partitions)
+            .map_err(|e| Error::internal(e.to_string()))?;
+        self.ctx
+            .register_table(&lower, Arc::new(mem_table))
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        Ok(vec![])
+    }
+
+    async fn evaluate_merge_condition(
+        &self,
+        target_batch: &RecordBatch,
+        target_row: usize,
+        source_batch: &RecordBatch,
+        source_row: usize,
+        on_sql: &str,
+    ) -> Result<bool> {
+        let combined_schema = self.create_combined_schema(target_batch, source_batch)?;
+        let combined_batch =
+            self.create_combined_row(target_batch, target_row, source_batch, source_row)?;
+
+        let mem_table = MemTable::try_new(combined_schema.clone(), vec![vec![combined_batch]])
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let tmp_name = format!(
+            "__tmp_merge_cond_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        self.ctx
+            .register_table(&tmp_name, Arc::new(mem_table))
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let query = format!("SELECT {} FROM {}", on_sql, tmp_name);
+        let result = self
+            .ctx
+            .sql(&query)
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let batches = result
+            .collect()
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let _ = self.ctx.deregister_table(&tmp_name);
+
+        if batches.is_empty() || batches[0].num_rows() == 0 {
+            return Ok(false);
+        }
+
+        let col = batches[0].column(0);
+        if let Some(bool_arr) = col
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+        {
+            return Ok(bool_arr.value(0));
+        }
+
+        Ok(false)
+    }
+
+    fn create_combined_schema(
+        &self,
+        target_batch: &RecordBatch,
+        source_batch: &RecordBatch,
+    ) -> Result<Arc<ArrowSchema>> {
+        let mut fields: Vec<ArrowField> = Vec::new();
+
+        for field in target_batch.schema().fields() {
+            fields.push(ArrowField::new(
+                field.name(),
+                field.data_type().clone(),
+                true,
+            ));
+        }
+
+        for field in source_batch.schema().fields() {
+            let name = if fields.iter().any(|f| f.name() == field.name()) {
+                format!("__source_{}", field.name())
+            } else {
+                field.name().clone()
+            };
+            fields.push(ArrowField::new(name, field.data_type().clone(), true));
+        }
+
+        Ok(Arc::new(ArrowSchema::new(fields)))
+    }
+
+    fn create_combined_row(
+        &self,
+        target_batch: &RecordBatch,
+        target_row: usize,
+        source_batch: &RecordBatch,
+        source_row: usize,
+    ) -> Result<RecordBatch> {
+        let mut columns: Vec<ArrayRef> = Vec::new();
+
+        for col_idx in 0..target_batch.num_columns() {
+            let col = target_batch.column(col_idx);
+            let single = self.extract_single_value(col, target_row)?;
+            columns.push(single);
+        }
+
+        for col_idx in 0..source_batch.num_columns() {
+            let col = source_batch.column(col_idx);
+            let single = self.extract_single_value(col, source_row)?;
+            columns.push(single);
+        }
+
+        let schema = self.create_combined_schema(target_batch, source_batch)?;
+        RecordBatch::try_new(schema, columns).map_err(|e| Error::internal(e.to_string()))
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn extract_single_value(&self, arr: &ArrayRef, idx: usize) -> Result<ArrayRef> {
+        use datafusion::arrow::array::*;
+
+        if arr.is_null(idx) {
+            return Ok(new_null_array(arr.data_type(), 1));
+        }
+
+        match arr.data_type() {
+            ArrowDataType::Int64 => {
+                let val = arr
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .value(idx);
+                Ok(Arc::new(Int64Array::from(vec![val])))
+            }
+            ArrowDataType::Float64 => {
+                let val = arr
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .value(idx);
+                Ok(Arc::new(Float64Array::from(vec![val])))
+            }
+            ArrowDataType::Utf8 => {
+                let val = arr
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .value(idx);
+                Ok(Arc::new(StringArray::from(vec![val])))
+            }
+            ArrowDataType::Boolean => {
+                let val = arr
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .unwrap()
+                    .value(idx);
+                Ok(Arc::new(BooleanArray::from(vec![val])))
+            }
+            ArrowDataType::Date32 => {
+                let val = arr
+                    .as_any()
+                    .downcast_ref::<Date32Array>()
+                    .unwrap()
+                    .value(idx);
+                Ok(Arc::new(Date32Array::from(vec![val])))
+            }
+            ArrowDataType::Timestamp(TimeUnit::Nanosecond, tz) => {
+                let val = arr
+                    .as_any()
+                    .downcast_ref::<TimestampNanosecondArray>()
+                    .unwrap()
+                    .value(idx);
+                Ok(Arc::new(
+                    TimestampNanosecondArray::from(vec![val]).with_timezone_opt(tz.clone()),
+                ))
+            }
+            ArrowDataType::Decimal128(p, s) => {
+                let val = arr
+                    .as_any()
+                    .downcast_ref::<Decimal128Array>()
+                    .unwrap()
+                    .value(idx);
+                Ok(Arc::new(
+                    Decimal128Array::from(vec![val])
+                        .with_precision_and_scale(*p, *s)
+                        .map_err(|e| Error::internal(e.to_string()))?,
+                ))
+            }
+            _ => Ok(new_null_array(arr.data_type(), 1)),
+        }
+    }
+
+    fn get_source_row<'a>(
+        &self,
+        source_batches: &'a [RecordBatch],
+        global_idx: usize,
+    ) -> (&'a RecordBatch, usize) {
+        let mut remaining = global_idx;
+        for batch in source_batches {
+            if remaining < batch.num_rows() {
+                return (batch, remaining);
+            }
+            remaining -= batch.num_rows();
+        }
+        panic!("Source row index out of bounds");
+    }
+
+    async fn evaluate_merge_clause_condition(
+        &self,
+        condition: Option<&yachtsql_ir::Expr>,
+        target_batch: &RecordBatch,
+        target_row: usize,
+        source: Option<(&RecordBatch, usize)>,
+    ) -> Result<bool> {
+        let condition = match condition {
+            Some(c) => c,
+            None => return Ok(true),
+        };
+
+        let cond_sql = self.expr_to_sql(condition)?;
+
+        let (schema, batch) = match source {
+            Some((source_batch, source_row)) => {
+                let schema = self.create_combined_schema(target_batch, source_batch)?;
+                let batch =
+                    self.create_combined_row(target_batch, target_row, source_batch, source_row)?;
+                (schema, batch)
+            }
+            None => {
+                let single_row = self.extract_single_row(target_batch, target_row)?;
+                (target_batch.schema(), single_row)
+            }
+        };
+
+        let mem_table = MemTable::try_new(schema.clone(), vec![vec![batch]])
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let tmp_name = format!(
+            "__tmp_merge_clause_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        self.ctx
+            .register_table(&tmp_name, Arc::new(mem_table))
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let query = format!("SELECT {} FROM {}", cond_sql, tmp_name);
+        let result = self
+            .ctx
+            .sql(&query)
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let batches = result
+            .collect()
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let _ = self.ctx.deregister_table(&tmp_name);
+
+        if batches.is_empty() || batches[0].num_rows() == 0 {
+            return Ok(false);
+        }
+
+        let col = batches[0].column(0);
+        if let Some(bool_arr) = col
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+        {
+            return Ok(bool_arr.value(0));
+        }
+
+        Ok(false)
+    }
+
+    fn extract_single_row(&self, batch: &RecordBatch, row: usize) -> Result<RecordBatch> {
+        let columns: Vec<ArrayRef> = (0..batch.num_columns())
+            .map(|col_idx| self.extract_single_value(batch.column(col_idx), row))
+            .collect::<Result<_>>()?;
+
+        RecordBatch::try_new(batch.schema(), columns).map_err(|e| Error::internal(e.to_string()))
+    }
+
+    fn extract_target_row(&self, batch: &RecordBatch, row: usize) -> Result<Vec<ScalarValue>> {
+        let mut values = Vec::new();
+        for col_idx in 0..batch.num_columns() {
+            let col = batch.column(col_idx);
+            let scalar = ScalarValue::try_from_array(col, row)
+                .map_err(|e| Error::internal(e.to_string()))?;
+            values.push(scalar);
+        }
+        Ok(values)
+    }
+
+    async fn apply_merge_update(
+        &self,
+        target_batch: &RecordBatch,
+        target_row: usize,
+        source_batch: &RecordBatch,
+        source_row: usize,
+        assignments: &[yachtsql_ir::Assignment],
+        target_schema: &Arc<ArrowSchema>,
+    ) -> Result<Vec<ScalarValue>> {
+        let combined_schema = self.create_combined_schema(target_batch, source_batch)?;
+        let combined_batch =
+            self.create_combined_row(target_batch, target_row, source_batch, source_row)?;
+
+        let mem_table = MemTable::try_new(combined_schema.clone(), vec![vec![combined_batch]])
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let tmp_name = format!(
+            "__tmp_merge_update_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        self.ctx
+            .register_table(&tmp_name, Arc::new(mem_table))
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let mut row = self.extract_target_row(target_batch, target_row)?;
+
+        for assignment in assignments {
+            let col_name = assignment.column.to_lowercase();
+            let col_idx = target_schema
+                .fields()
+                .iter()
+                .position(|f| f.name().to_lowercase() == col_name)
+                .ok_or_else(|| {
+                    Error::internal(format!("Column not found: {}", assignment.column))
+                })?;
+
+            let value_sql = self.expr_to_sql(&assignment.value)?;
+            let query = format!("SELECT {} FROM {}", value_sql, tmp_name);
+            let result = self
+                .ctx
+                .sql(&query)
+                .await
+                .map_err(|e| Error::internal(e.to_string()))?;
+            let batches = result
+                .collect()
+                .await
+                .map_err(|e| Error::internal(e.to_string()))?;
+
+            if !batches.is_empty() && batches[0].num_rows() > 0 {
+                let value = ScalarValue::try_from_array(batches[0].column(0), 0)
+                    .map_err(|e| Error::internal(e.to_string()))?;
+                row[col_idx] = value;
+            }
+        }
+
+        let _ = self.ctx.deregister_table(&tmp_name);
+
+        Ok(row)
+    }
+
+    async fn apply_merge_update_target_only(
+        &self,
+        target_batch: &RecordBatch,
+        target_row: usize,
+        assignments: &[yachtsql_ir::Assignment],
+        target_schema: &Arc<ArrowSchema>,
+    ) -> Result<Vec<ScalarValue>> {
+        let single_row = self.extract_single_row(target_batch, target_row)?;
+
+        let mem_table = MemTable::try_new(target_batch.schema(), vec![vec![single_row]])
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let tmp_name = format!(
+            "__tmp_merge_update_target_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        self.ctx
+            .register_table(&tmp_name, Arc::new(mem_table))
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let mut row = self.extract_target_row(target_batch, target_row)?;
+
+        for assignment in assignments {
+            let col_name = assignment.column.to_lowercase();
+            let col_idx = target_schema
+                .fields()
+                .iter()
+                .position(|f| f.name().to_lowercase() == col_name)
+                .ok_or_else(|| {
+                    Error::internal(format!("Column not found: {}", assignment.column))
+                })?;
+
+            let value_sql = self.expr_to_sql(&assignment.value)?;
+            let query = format!("SELECT {} FROM {}", value_sql, tmp_name);
+            let result = self
+                .ctx
+                .sql(&query)
+                .await
+                .map_err(|e| Error::internal(e.to_string()))?;
+            let batches = result
+                .collect()
+                .await
+                .map_err(|e| Error::internal(e.to_string()))?;
+
+            if !batches.is_empty() && batches[0].num_rows() > 0 {
+                let value = ScalarValue::try_from_array(batches[0].column(0), 0)
+                    .map_err(|e| Error::internal(e.to_string()))?;
+                row[col_idx] = value;
+            }
+        }
+
+        let _ = self.ctx.deregister_table(&tmp_name);
+
+        Ok(row)
+    }
+
+    async fn evaluate_not_matched_condition(
+        &self,
+        condition: Option<&yachtsql_ir::Expr>,
+        source_batch: &RecordBatch,
+        source_row: usize,
+    ) -> Result<bool> {
+        let condition = match condition {
+            Some(c) => c,
+            None => return Ok(true),
+        };
+
+        let cond_sql = self.expr_to_sql(condition)?;
+        let single_row = self.extract_single_row(source_batch, source_row)?;
+
+        let mem_table = MemTable::try_new(source_batch.schema(), vec![vec![single_row]])
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let tmp_name = format!(
+            "__tmp_merge_not_matched_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        self.ctx
+            .register_table(&tmp_name, Arc::new(mem_table))
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let query = format!("SELECT {} FROM {}", cond_sql, tmp_name);
+        let result = self
+            .ctx
+            .sql(&query)
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let batches = result
+            .collect()
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let _ = self.ctx.deregister_table(&tmp_name);
+
+        if batches.is_empty() || batches[0].num_rows() == 0 {
+            return Ok(false);
+        }
+
+        let col = batches[0].column(0);
+        if let Some(bool_arr) = col
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+        {
+            return Ok(bool_arr.value(0));
+        }
+
+        Ok(false)
+    }
+
+    async fn build_insert_row(
+        &self,
+        source_batch: &RecordBatch,
+        source_row: usize,
+        columns: &[String],
+        values: &[yachtsql_ir::Expr],
+        target_schema: &Arc<ArrowSchema>,
+        _source_schema: &Arc<ArrowSchema>,
+    ) -> Result<Vec<ScalarValue>> {
+        let single_row = self.extract_single_row(source_batch, source_row)?;
+
+        let mem_table = MemTable::try_new(source_batch.schema(), vec![vec![single_row]])
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let tmp_name = format!(
+            "__tmp_merge_insert_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        self.ctx
+            .register_table(&tmp_name, Arc::new(mem_table))
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let mut row: Vec<ScalarValue> = target_schema
+            .fields()
+            .iter()
+            .map(|_| ScalarValue::Null)
+            .collect();
+
+        let columns_lower: Vec<String> = columns.iter().map(|c| c.to_lowercase()).collect();
+
+        for (i, value_expr) in values.iter().enumerate() {
+            let col_name = if i < columns_lower.len() {
+                &columns_lower[i]
+            } else {
+                continue;
+            };
+
+            let col_idx = target_schema
+                .fields()
+                .iter()
+                .position(|f| f.name().to_lowercase() == *col_name);
+
+            let col_idx = match col_idx {
+                Some(idx) => idx,
+                None => continue,
+            };
+
+            let value_sql = self.expr_to_sql(value_expr)?;
+            let query = format!("SELECT {} FROM {}", value_sql, tmp_name);
+            let result = self
+                .ctx
+                .sql(&query)
+                .await
+                .map_err(|e| Error::internal(e.to_string()))?;
+            let batches = result
+                .collect()
+                .await
+                .map_err(|e| Error::internal(e.to_string()))?;
+
+            if !batches.is_empty() && batches[0].num_rows() > 0 {
+                let value = ScalarValue::try_from_array(batches[0].column(0), 0)
+                    .map_err(|e| Error::internal(e.to_string()))?;
+                row[col_idx] = value;
+            }
+        }
+
+        let _ = self.ctx.deregister_table(&tmp_name);
+
+        Ok(row)
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn build_result_batches(
+        &self,
+        rows: &[Vec<ScalarValue>],
+        schema: &Arc<ArrowSchema>,
+    ) -> Result<Vec<RecordBatch>> {
+        if rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let num_cols = schema.fields().len();
+        let mut columns: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+
+        for col_idx in 0..num_cols {
+            let col_values: Vec<ScalarValue> = rows.iter().map(|r| r[col_idx].clone()).collect();
+            let arr = ScalarValue::iter_to_array(col_values)
+                .map_err(|e| Error::internal(e.to_string()))?;
+            columns.push(arr);
+        }
+
+        let batch = RecordBatch::try_new(schema.clone(), columns)
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        Ok(vec![batch])
     }
 
     #[allow(clippy::wildcard_enum_match_arm)]
