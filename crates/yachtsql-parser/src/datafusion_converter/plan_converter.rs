@@ -63,6 +63,7 @@ pub fn convert_plan(plan: &LogicalPlan) -> DFResult<DFLogicalPlan> {
             input,
             group_by,
             aggregates,
+            schema,
             ..
         } => {
             let input_plan = convert_plan(input)?;
@@ -70,7 +71,11 @@ pub fn convert_plan(plan: &LogicalPlan) -> DFResult<DFLogicalPlan> {
                 group_by.iter().map(convert_expr).collect::<DFResult<_>>()?;
             let agg_exprs: Vec<DFExpr> = aggregates
                 .iter()
-                .map(convert_expr)
+                .zip(schema.fields.iter().skip(group_by.len()))
+                .map(|(e, field)| {
+                    let df_expr = convert_expr(e)?;
+                    Ok(df_expr.alias(field.name.clone()))
+                })
                 .collect::<DFResult<_>>()?;
             LogicalPlanBuilder::from(input_plan)
                 .aggregate(group_exprs, agg_exprs)?
