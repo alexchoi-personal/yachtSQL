@@ -21,9 +21,10 @@ pub use pass::{OptimizationPass, PassOverhead, PassTarget};
 pub use planner::{
     PhysicalPlanner, ProjectionPushdown, apply_cross_to_hash_join, apply_distinct_elimination,
     apply_empty_propagation, apply_filter_merging, apply_filter_pushdown_aggregate,
-    apply_limit_pushdown, apply_outer_to_inner_join, apply_predicate_inference,
-    apply_predicate_simplification, apply_project_merging, apply_short_circuit_ordering,
-    apply_sort_elimination, apply_topn_pushdown, apply_trivial_predicate_removal, fold_constants,
+    apply_filter_pushdown_project, apply_limit_pushdown, apply_outer_to_inner_join,
+    apply_predicate_inference, apply_predicate_simplification, apply_project_merging,
+    apply_short_circuit_ordering, apply_sort_elimination, apply_sort_pushdown_project,
+    apply_topn_pushdown, apply_trivial_predicate_removal, fold_constants,
 };
 use rustc_hash::FxHashMap;
 pub use stats::{ColumnStats, TableStats};
@@ -40,11 +41,100 @@ pub enum OptimizationLevel {
     Full,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct RuleFlags {
+    pub trivial_predicate_removal: Option<bool>,
+    pub empty_propagation: Option<bool>,
+    pub filter_pushdown_project: Option<bool>,
+    pub sort_pushdown_project: Option<bool>,
+    pub filter_merging: Option<bool>,
+    pub predicate_simplification: Option<bool>,
+    pub project_merging: Option<bool>,
+    pub distinct_elimination: Option<bool>,
+    pub cross_to_hash_join: Option<bool>,
+    pub outer_to_inner_join: Option<bool>,
+    pub filter_pushdown_aggregate: Option<bool>,
+    pub sort_elimination: Option<bool>,
+    pub limit_pushdown: Option<bool>,
+    pub topn_pushdown: Option<bool>,
+    pub predicate_inference: Option<bool>,
+    pub short_circuit_ordering: Option<bool>,
+}
+
+impl RuleFlags {
+    pub fn all_enabled() -> Self {
+        Self {
+            trivial_predicate_removal: Some(true),
+            empty_propagation: Some(true),
+            filter_pushdown_project: Some(true),
+            sort_pushdown_project: Some(true),
+            filter_merging: Some(true),
+            predicate_simplification: Some(true),
+            project_merging: Some(true),
+            distinct_elimination: Some(true),
+            cross_to_hash_join: Some(true),
+            outer_to_inner_join: Some(true),
+            filter_pushdown_aggregate: Some(true),
+            sort_elimination: Some(true),
+            limit_pushdown: Some(true),
+            topn_pushdown: Some(true),
+            predicate_inference: Some(true),
+            short_circuit_ordering: Some(true),
+        }
+    }
+
+    pub fn all_disabled() -> Self {
+        Self {
+            trivial_predicate_removal: Some(false),
+            empty_propagation: Some(false),
+            filter_pushdown_project: Some(false),
+            sort_pushdown_project: Some(false),
+            filter_merging: Some(false),
+            predicate_simplification: Some(false),
+            project_merging: Some(false),
+            distinct_elimination: Some(false),
+            cross_to_hash_join: Some(false),
+            outer_to_inner_join: Some(false),
+            filter_pushdown_aggregate: Some(false),
+            sort_elimination: Some(false),
+            limit_pushdown: Some(false),
+            topn_pushdown: Some(false),
+            predicate_inference: Some(false),
+            short_circuit_ordering: Some(false),
+        }
+    }
+
+    pub fn only(rule: &str) -> Self {
+        let mut flags = Self::all_disabled();
+        match rule {
+            "trivial_predicate_removal" => flags.trivial_predicate_removal = Some(true),
+            "empty_propagation" => flags.empty_propagation = Some(true),
+            "filter_pushdown_project" => flags.filter_pushdown_project = Some(true),
+            "sort_pushdown_project" => flags.sort_pushdown_project = Some(true),
+            "filter_merging" => flags.filter_merging = Some(true),
+            "predicate_simplification" => flags.predicate_simplification = Some(true),
+            "project_merging" => flags.project_merging = Some(true),
+            "distinct_elimination" => flags.distinct_elimination = Some(true),
+            "cross_to_hash_join" => flags.cross_to_hash_join = Some(true),
+            "outer_to_inner_join" => flags.outer_to_inner_join = Some(true),
+            "filter_pushdown_aggregate" => flags.filter_pushdown_aggregate = Some(true),
+            "sort_elimination" => flags.sort_elimination = Some(true),
+            "limit_pushdown" => flags.limit_pushdown = Some(true),
+            "topn_pushdown" => flags.topn_pushdown = Some(true),
+            "predicate_inference" => flags.predicate_inference = Some(true),
+            "short_circuit_ordering" => flags.short_circuit_ordering = Some(true),
+            _ => {}
+        }
+        flags
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct OptimizerSettings {
     pub level: OptimizationLevel,
     pub table_stats: FxHashMap<String, TableStats>,
     pub disable_join_reorder: bool,
+    pub rules: RuleFlags,
 }
 
 impl Default for OptimizerSettings {
@@ -59,6 +149,7 @@ impl OptimizerSettings {
             level,
             table_stats: FxHashMap::default(),
             disable_join_reorder: false,
+            rules: RuleFlags::default(),
         }
     }
 
@@ -75,6 +166,11 @@ impl OptimizerSettings {
         self
     }
 
+    pub fn with_rules(mut self, rules: RuleFlags) -> Self {
+        self.rules = rules;
+        self
+    }
+
     fn join_reorder_enabled(&self) -> bool {
         !self.disable_join_reorder && self.level >= OptimizationLevel::Standard
     }
@@ -85,6 +181,13 @@ impl OptimizerSettings {
 
     fn projection_pushdown_enabled(&self) -> bool {
         self.level >= OptimizationLevel::Basic
+    }
+
+    fn rule_enabled(&self, flag: Option<bool>, min_level: OptimizationLevel) -> bool {
+        match flag {
+            Some(enabled) => enabled,
+            None => self.level >= min_level,
+        }
     }
 }
 
@@ -132,27 +235,88 @@ pub fn optimize_with_settings(
     let planner = PhysicalPlanner::with_settings(settings.filter_pushdown_enabled());
     let mut physical_plan = planner.plan(plan_to_optimize)?;
 
-    if settings.level >= OptimizationLevel::Basic {
+    if settings.rule_enabled(
+        settings.rules.trivial_predicate_removal,
+        OptimizationLevel::Basic,
+    ) {
         physical_plan = apply_trivial_predicate_removal(physical_plan);
+    }
+    if settings.rule_enabled(settings.rules.empty_propagation, OptimizationLevel::Basic) {
         physical_plan = apply_empty_propagation(physical_plan);
-        physical_plan = apply_filter_merging(physical_plan);
-        physical_plan = apply_predicate_simplification(physical_plan);
+    }
+    if settings.rule_enabled(settings.rules.project_merging, OptimizationLevel::Basic) {
         physical_plan = apply_project_merging(physical_plan);
+    }
+    if settings.rule_enabled(
+        settings.rules.filter_pushdown_project,
+        OptimizationLevel::Basic,
+    ) {
+        physical_plan = apply_filter_pushdown_project(physical_plan);
+    }
+    if settings.rule_enabled(
+        settings.rules.sort_pushdown_project,
+        OptimizationLevel::Basic,
+    ) {
+        physical_plan = apply_sort_pushdown_project(physical_plan);
+    }
+    if settings.rule_enabled(settings.rules.filter_merging, OptimizationLevel::Basic) {
+        physical_plan = apply_filter_merging(physical_plan);
+    }
+    if settings.rule_enabled(
+        settings.rules.predicate_simplification,
+        OptimizationLevel::Basic,
+    ) {
+        physical_plan = apply_predicate_simplification(physical_plan);
+    }
+    if settings.rule_enabled(
+        settings.rules.distinct_elimination,
+        OptimizationLevel::Basic,
+    ) {
         physical_plan = apply_distinct_elimination(physical_plan);
     }
-
-    if settings.level >= OptimizationLevel::Standard {
+    if settings.rule_enabled(
+        settings.rules.cross_to_hash_join,
+        OptimizationLevel::Standard,
+    ) {
         physical_plan = apply_cross_to_hash_join(physical_plan);
+    }
+    if settings.rule_enabled(
+        settings.rules.outer_to_inner_join,
+        OptimizationLevel::Standard,
+    ) {
         physical_plan = apply_outer_to_inner_join(physical_plan);
+    }
+    if settings.rule_enabled(
+        settings.rules.filter_pushdown_aggregate,
+        OptimizationLevel::Standard,
+    ) {
         physical_plan = apply_filter_pushdown_aggregate(physical_plan);
+    }
+    if settings.rule_enabled(settings.rules.sort_elimination, OptimizationLevel::Standard) {
         physical_plan = apply_sort_elimination(physical_plan);
+    }
+    if settings.rule_enabled(settings.rules.limit_pushdown, OptimizationLevel::Standard) {
         physical_plan = apply_limit_pushdown(physical_plan);
+    }
+    if settings.rule_enabled(settings.rules.topn_pushdown, OptimizationLevel::Standard) {
         physical_plan = apply_topn_pushdown(physical_plan);
     }
-
-    if settings.level >= OptimizationLevel::Aggressive {
+    if settings.rule_enabled(
+        settings.rules.predicate_inference,
+        OptimizationLevel::Aggressive,
+    ) {
         physical_plan = apply_predicate_inference(physical_plan);
+    }
+    if settings.rule_enabled(
+        settings.rules.short_circuit_ordering,
+        OptimizationLevel::Aggressive,
+    ) {
         physical_plan = apply_short_circuit_ordering(physical_plan);
+    }
+    if settings.rule_enabled(
+        settings.rules.filter_pushdown_aggregate,
+        OptimizationLevel::Aggressive,
+    ) {
         physical_plan = apply_filter_pushdown_aggregate(physical_plan);
     }
 

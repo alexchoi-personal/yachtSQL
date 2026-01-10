@@ -1,6 +1,21 @@
 #![coverage(off)]
 
+use yachtsql_ir::Expr;
+
+use super::project_merging::substitute_column_refs;
 use crate::PhysicalPlan;
+
+fn is_simple_column_ref(expr: &Expr) -> bool {
+    match expr {
+        Expr::Column { .. } => true,
+        Expr::Alias { expr: inner, .. } => is_simple_column_ref(inner),
+        _ => false,
+    }
+}
+
+fn all_simple_refs(expressions: &[Expr]) -> bool {
+    expressions.iter().all(is_simple_column_ref)
+}
 
 pub fn apply_topn_pushdown(plan: PhysicalPlan) -> PhysicalPlan {
     match plan {
@@ -605,8 +620,45 @@ pub fn apply_topn_pushdown(plan: PhysicalPlan) -> PhysicalPlan {
 
 use yachtsql_ir::SortExpr;
 
+fn remap_sort_exprs(sort_exprs: &[SortExpr], proj_exprs: &[Expr]) -> Vec<SortExpr> {
+    sort_exprs
+        .iter()
+        .map(|se| SortExpr {
+            expr: substitute_column_refs(&se.expr, proj_exprs),
+            asc: se.asc,
+            nulls_first: se.nulls_first,
+        })
+        .collect()
+}
+
 fn try_push_topn(input: PhysicalPlan, sort_exprs: Vec<SortExpr>, limit: usize) -> PhysicalPlan {
     match input {
+        PhysicalPlan::Project {
+            input: proj_input,
+            expressions,
+            schema,
+        } => {
+            if all_simple_refs(&expressions) {
+                let remapped = remap_sort_exprs(&sort_exprs, &expressions);
+                let pushed = try_push_topn(*proj_input, remapped, limit);
+                PhysicalPlan::Project {
+                    input: Box::new(pushed),
+                    expressions,
+                    schema,
+                }
+            } else {
+                PhysicalPlan::TopN {
+                    input: Box::new(PhysicalPlan::Project {
+                        input: proj_input,
+                        expressions,
+                        schema,
+                    }),
+                    sort_exprs,
+                    limit,
+                }
+            }
+        }
+
         PhysicalPlan::Union {
             inputs,
             all: true,
@@ -636,8 +688,8 @@ fn try_push_topn(input: PhysicalPlan, sort_exprs: Vec<SortExpr>, limit: usize) -
             }
         }
 
-        _ => PhysicalPlan::TopN {
-            input: Box::new(input),
+        other => PhysicalPlan::TopN {
+            input: Box::new(other),
             sort_exprs,
             limit,
         },
@@ -1157,6 +1209,112 @@ mod tests {
                 }
             }
             _ => panic!("Expected TopN"),
+        }
+    }
+
+    fn col_expr(idx: usize, name: &str) -> Expr {
+        Expr::Column {
+            table: None,
+            name: name.to_string(),
+            index: Some(idx),
+        }
+    }
+
+    #[test]
+    fn pushes_topn_through_simple_project_into_union() {
+        let scan_a = make_scan("a", 2);
+        let scan_b = make_scan("b", 2);
+
+        let union = PhysicalPlan::Union {
+            inputs: vec![scan_a, scan_b],
+            all: true,
+            schema: make_table_schema("union", 2),
+            parallel: false,
+            hints: ExecutionHints::default(),
+        };
+
+        let project = PhysicalPlan::Project {
+            input: Box::new(union),
+            expressions: vec![col_expr(0, "col0"), col_expr(1, "col1")],
+            schema: make_table_schema("proj", 2),
+        };
+
+        let plan = PhysicalPlan::TopN {
+            input: Box::new(project),
+            sort_exprs: make_sort_exprs(),
+            limit: 10,
+        };
+
+        let result = apply_topn_pushdown(plan);
+
+        match result {
+            PhysicalPlan::Project { input, .. } => match *input {
+                PhysicalPlan::TopN {
+                    input: topn_input,
+                    limit,
+                    ..
+                } => {
+                    assert_eq!(limit, 10);
+                    match *topn_input {
+                        PhysicalPlan::Union { inputs, .. } => {
+                            assert_eq!(inputs.len(), 2);
+                            for branch in inputs {
+                                assert!(matches!(branch, PhysicalPlan::TopN { limit: 10, .. }));
+                            }
+                        }
+                        _ => panic!("Expected Union inside TopN"),
+                    }
+                }
+                _ => panic!("Expected TopN inside Project"),
+            },
+            _ => panic!("Expected Project at top"),
+        }
+    }
+
+    #[test]
+    fn does_not_push_topn_through_computed_project() {
+        let scan_a = make_scan("a", 2);
+        let scan_b = make_scan("b", 2);
+
+        let union = PhysicalPlan::Union {
+            inputs: vec![scan_a, scan_b],
+            all: true,
+            schema: make_table_schema("union", 2),
+            parallel: false,
+            hints: ExecutionHints::default(),
+        };
+
+        let project = PhysicalPlan::Project {
+            input: Box::new(union),
+            expressions: vec![Expr::BinaryOp {
+                left: Box::new(col_expr(0, "col0")),
+                op: yachtsql_ir::BinaryOp::Add,
+                right: Box::new(Expr::Literal(Literal::Int64(1))),
+            }],
+            schema: make_table_schema("proj", 1),
+        };
+
+        let plan = PhysicalPlan::TopN {
+            input: Box::new(project),
+            sort_exprs: make_sort_exprs(),
+            limit: 10,
+        };
+
+        let result = apply_topn_pushdown(plan);
+
+        match result {
+            PhysicalPlan::TopN { input, limit, .. } => {
+                assert_eq!(limit, 10);
+                match *input {
+                    PhysicalPlan::Project {
+                        input: proj_input, ..
+                    } => {
+                        assert!(matches!(*proj_input, PhysicalPlan::Union { .. }));
+                    }
+                    _ => panic!("Expected Project inside TopN"),
+                }
+            }
+            _ => panic!("Expected TopN at top"),
         }
     }
 }

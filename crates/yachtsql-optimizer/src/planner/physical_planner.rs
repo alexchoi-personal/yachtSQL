@@ -1,7 +1,7 @@
 #![coverage(off)]
 
 use yachtsql_common::error::Result;
-use yachtsql_ir::{JoinType, LogicalPlan, SetOperationType};
+use yachtsql_ir::{Expr, JoinType, LogicalPlan, SetOperationType};
 
 use super::equi_join::{extract_equi_join_keys, extract_equi_join_keys_partial};
 use super::predicate::{
@@ -10,6 +10,18 @@ use super::predicate::{
     remap_predicate_indices, split_and_predicates,
 };
 use crate::{ExecutionHints, PhysicalPlan};
+
+fn is_simple_column_ref(expr: &Expr) -> bool {
+    match expr {
+        Expr::Column { .. } => true,
+        Expr::Alias { expr: inner, .. } => is_simple_column_ref(inner),
+        _ => false,
+    }
+}
+
+fn all_simple_refs(expressions: &[Expr]) -> bool {
+    expressions.iter().all(is_simple_column_ref)
+}
 
 pub struct PhysicalPlanner {
     filter_pushdown_enabled: bool,
@@ -953,6 +965,39 @@ impl PhysicalPlanner {
                     input: Box::new(optimized_input),
                     sort_exprs: sort_exprs.clone(),
                     limit: limit_val,
+                })
+            }
+            (
+                LogicalPlan::Project {
+                    input: proj_input,
+                    expressions,
+                    schema,
+                },
+                Some(limit_val),
+                None,
+            ) => {
+                if let LogicalPlan::Sort {
+                    input: sort_input,
+                    sort_exprs,
+                } = proj_input.as_ref()
+                    && all_simple_refs(expressions)
+                {
+                    let optimized_input = self.plan(sort_input)?;
+                    return Ok(PhysicalPlan::Project {
+                        input: Box::new(PhysicalPlan::TopN {
+                            input: Box::new(optimized_input),
+                            sort_exprs: sort_exprs.clone(),
+                            limit: limit_val,
+                        }),
+                        expressions: expressions.clone(),
+                        schema: schema.clone(),
+                    });
+                }
+                let optimized_input = self.plan(input)?;
+                Ok(PhysicalPlan::Limit {
+                    input: Box::new(optimized_input),
+                    limit,
+                    offset,
                 })
             }
             _ => {

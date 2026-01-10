@@ -85,7 +85,7 @@ impl AsyncQueryExecutor {
     }
 
     fn get_optimizer_settings(&self) -> OptimizerSettings {
-        use yachtsql_optimizer::OptimizationLevel;
+        use yachtsql_optimizer::{OptimizationLevel, RuleFlags};
 
         let table_stats = self.catalog.collect_table_stats();
         let join_reorder = self
@@ -112,10 +112,34 @@ impl AsyncQueryExecutor {
             OptimizationLevel::Basic
         };
 
+        let get_rule = |name: &str| -> Option<bool> {
+            self.session.get_variable(name).and_then(|v| v.as_bool())
+        };
+
+        let rules = RuleFlags {
+            trivial_predicate_removal: get_rule("OPTIMIZER_TRIVIAL_PREDICATE"),
+            empty_propagation: get_rule("OPTIMIZER_EMPTY_PROPAGATION"),
+            filter_pushdown_project: get_rule("OPTIMIZER_FILTER_PUSHDOWN_PROJECT"),
+            sort_pushdown_project: get_rule("OPTIMIZER_SORT_PUSHDOWN_PROJECT"),
+            filter_merging: get_rule("OPTIMIZER_FILTER_MERGING"),
+            predicate_simplification: get_rule("OPTIMIZER_PREDICATE_SIMPLIFICATION"),
+            project_merging: get_rule("OPTIMIZER_PROJECT_MERGING"),
+            distinct_elimination: get_rule("OPTIMIZER_DISTINCT_ELIMINATION"),
+            cross_to_hash_join: get_rule("OPTIMIZER_CROSS_TO_HASH_JOIN"),
+            outer_to_inner_join: get_rule("OPTIMIZER_OUTER_TO_INNER_JOIN"),
+            filter_pushdown_aggregate: get_rule("OPTIMIZER_FILTER_PUSHDOWN_AGGREGATE"),
+            sort_elimination: get_rule("OPTIMIZER_SORT_ELIMINATION"),
+            limit_pushdown: get_rule("OPTIMIZER_LIMIT_PUSHDOWN"),
+            topn_pushdown: get_rule("OPTIMIZER_TOPN_PUSHDOWN"),
+            predicate_inference: get_rule("OPTIMIZER_PREDICATE_INFERENCE"),
+            short_circuit_ordering: get_rule("OPTIMIZER_SHORT_CIRCUIT_ORDERING"),
+        };
+
         OptimizerSettings {
             level,
             table_stats,
             disable_join_reorder: !join_reorder,
+            rules,
         }
     }
 

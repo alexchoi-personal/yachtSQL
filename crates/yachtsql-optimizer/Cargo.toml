@@ -31,3 +31,7 @@ harness = false
 [[bench]]
 name = "optimization_levels"
 harness = false
+
+[[bench]]
+name = "optimizer_passes"
+harness = false
