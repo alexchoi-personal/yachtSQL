@@ -5,9 +5,9 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::{DataType as ArrowDataType, Field as ArrowField, TimeUnit};
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{Column, Result as DFResult, ScalarValue, TableReference};
-use datafusion::logical_expr::expr::InList;
+use datafusion::logical_expr::expr::{Exists, InList, InSubquery};
 use datafusion::logical_expr::{
-    BinaryExpr, Case, Cast, Expr as DFExpr, ExprFunctionExt, Like, Operator, WindowFrame,
+    BinaryExpr, Case, Cast, Expr as DFExpr, ExprFunctionExt, Like, Operator, Subquery, WindowFrame,
     WindowFrameBound, WindowFrameUnits,
 };
 use datafusion::prelude::*;
@@ -16,6 +16,8 @@ use yachtsql_ir::{
     AggregateFunction, BinaryOp, DateTimeField, Expr, Literal, ScalarFunction, UnaryOp,
     WindowFunction,
 };
+
+use super::plan_converter::convert_plan;
 
 pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
     match expr {
@@ -451,12 +453,31 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
             }
         }
 
-        Expr::Exists { negated, .. } | Expr::InSubquery { negated, .. } => {
-            if *negated {
-                Ok(lit(true))
-            } else {
-                Ok(lit(false))
-            }
+        Expr::Exists { subquery, negated } => {
+            let df_plan = convert_plan(subquery)?;
+            let subq = Subquery {
+                subquery: Arc::new(df_plan),
+                outer_ref_columns: vec![],
+            };
+            Ok(DFExpr::Exists(Exists::new(subq, *negated)))
+        }
+
+        Expr::InSubquery {
+            expr: inner,
+            subquery,
+            negated,
+        } => {
+            let inner_expr = convert_expr(inner)?;
+            let df_plan = convert_plan(subquery)?;
+            let subq = Subquery {
+                subquery: Arc::new(df_plan),
+                outer_ref_columns: vec![],
+            };
+            Ok(DFExpr::InSubquery(InSubquery::new(
+                Box::new(inner_expr),
+                subq,
+                *negated,
+            )))
         }
 
         Expr::InUnnest {
@@ -474,8 +495,24 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
             }
         }
 
-        Expr::ScalarSubquery(_) | Expr::ArraySubquery(_) | Expr::Subquery(_) => {
-            Ok(lit(ScalarValue::Null))
+        Expr::ScalarSubquery(subquery) | Expr::Subquery(subquery) => {
+            let df_plan = convert_plan(subquery)?;
+            let subq = Subquery {
+                subquery: Arc::new(df_plan),
+                outer_ref_columns: vec![],
+            };
+            Ok(DFExpr::ScalarSubquery(subq))
+        }
+
+        Expr::ArraySubquery(subquery) => {
+            let df_plan = convert_plan(subquery)?;
+            let subq = Subquery {
+                subquery: Arc::new(df_plan),
+                outer_ref_columns: vec![],
+            };
+            Ok(datafusion::functions_aggregate::array_agg::array_agg(
+                DFExpr::ScalarSubquery(subq),
+            ))
         }
 
         _ => Err(datafusion::common::DataFusionError::NotImplemented(
