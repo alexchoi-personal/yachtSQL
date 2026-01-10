@@ -253,6 +253,21 @@ impl YachtSQLSession {
     }
 
     async fn execute_query(&self, plan: &LogicalPlan) -> Result<Vec<RecordBatch>> {
+        if let LogicalPlan::WithCte { ctes, body } = plan {
+            for cte in ctes {
+                let cte_batches = Box::pin(self.execute_query(&cte.query)).await?;
+                if !cte_batches.is_empty() {
+                    let schema = cte_batches[0].schema();
+                    let mem_table = MemTable::try_new(schema, vec![cte_batches])
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                    let _ = self
+                        .ctx
+                        .register_table(cte.name.to_lowercase(), Arc::new(mem_table));
+                }
+            }
+            return Box::pin(self.execute_query(body)).await;
+        }
+
         let df_plan = self.convert_plan(plan)?;
         let df = DataFrame::new(self.ctx.state(), df_plan);
         df.collect()
@@ -265,8 +280,8 @@ impl YachtSQLSession {
         match plan {
             LogicalPlan::Scan {
                 table_name,
+                schema,
                 projection,
-                ..
             } => {
                 let lower = table_name.to_lowercase();
                 let provider = self
@@ -278,7 +293,15 @@ impl YachtSQLSession {
 
                 let source = provider_as_source(provider);
                 let proj_cols: Option<Vec<usize>> = projection.clone();
-                LogicalPlanBuilder::scan(&lower, source, proj_cols)
+
+                let scan_alias = schema
+                    .fields
+                    .first()
+                    .and_then(|f| f.table.as_ref())
+                    .map(|t| t.to_lowercase())
+                    .unwrap_or_else(|| lower.clone());
+
+                LogicalPlanBuilder::scan(scan_alias, source, proj_cols)
                     .map_err(|e| Error::internal(e.to_string()))?
                     .build()
                     .map_err(|e| Error::internal(e.to_string()))
@@ -498,27 +521,7 @@ impl YachtSQLSession {
                     .map_err(|e| Error::internal(e.to_string()))
             }
 
-            LogicalPlan::WithCte { ctes, body } => {
-                for cte in ctes {
-                    let cte_plan = self.convert_plan(&cte.query)?;
-                    let cte_df = DataFrame::new(self.ctx.state(), cte_plan);
-                    let batches = cte_df
-                        .collect()
-                        .now_or_never()
-                        .ok_or_else(|| Error::internal("CTE collection failed"))?
-                        .map_err(|e| Error::internal(e.to_string()))?;
-
-                    if !batches.is_empty() {
-                        let schema = batches[0].schema();
-                        let mem_table = MemTable::try_new(schema, vec![batches])
-                            .map_err(|e| Error::internal(e.to_string()))?;
-                        let _ = self
-                            .ctx
-                            .register_table(cte.name.to_lowercase(), Arc::new(mem_table));
-                    }
-                }
-                self.convert_plan(body)
-            }
+            LogicalPlan::WithCte { body, .. } => self.convert_plan(body),
 
             _ => Err(Error::internal(format!(
                 "Query conversion not implemented: {:?}",
