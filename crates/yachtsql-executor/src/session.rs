@@ -1103,19 +1103,9 @@ impl YachtSQLSession {
                 let subquery_tables = extract_tables_from_plan(subquery);
                 let df_plan = self.convert_subquery_plan(subquery, &subquery_tables)?;
                 let outer_refs = df_plan.all_out_ref_exprs();
-                let final_plan = if !outer_refs.is_empty() && !has_single_row_guarantee(subquery) {
-                    LogicalPlanBuilder::from(df_plan)
-                        .limit(0, Some(1))
-                        .map_err(|e| Error::internal(e.to_string()))?
-                        .build()
-                        .map_err(|e| Error::internal(e.to_string()))?
-                } else {
-                    df_plan
-                };
-                let final_outer_refs = final_plan.all_out_ref_exprs();
                 let subq = Subquery {
-                    subquery: Arc::new(final_plan),
-                    outer_ref_columns: final_outer_refs,
+                    subquery: Arc::new(df_plan),
+                    outer_ref_columns: outer_refs,
                 };
                 Ok(DFExpr::ScalarSubquery(subq))
             }
@@ -1280,7 +1270,7 @@ impl YachtSQLSession {
 
             LogicalPlan::Filter { input, predicate } => {
                 let input_plan = self.convert_subquery_plan(input, subquery_tables)?;
-                let predicate_expr = Self::convert_subquery_expr(predicate, subquery_tables)?;
+                let predicate_expr = self.convert_subquery_expr(predicate, subquery_tables)?;
                 LogicalPlanBuilder::from(input_plan)
                     .filter(predicate_expr)
                     .map_err(|e| Error::internal(e.to_string()))?
@@ -1298,7 +1288,7 @@ impl YachtSQLSession {
                     .iter()
                     .zip(schema.fields.iter())
                     .map(|(e, field)| {
-                        let df_expr = Self::convert_subquery_expr(e, subquery_tables)?;
+                        let df_expr = self.convert_subquery_expr(e, subquery_tables)?;
                         let expr_name = df_expr.schema_name().to_string();
                         if expr_name != field.name {
                             Ok(df_expr.alias(&field.name))
@@ -1324,13 +1314,13 @@ impl YachtSQLSession {
                 let input_plan = self.convert_subquery_plan(input, subquery_tables)?;
                 let group_exprs: Vec<DFExpr> = group_by
                     .iter()
-                    .map(|e| Self::convert_subquery_expr(e, subquery_tables))
+                    .map(|e| self.convert_subquery_expr(e, subquery_tables))
                     .collect::<Result<_>>()?;
                 let agg_exprs: Vec<DFExpr> = aggregates
                     .iter()
                     .zip(schema.fields.iter().skip(group_by.len()))
                     .map(|(e, field)| {
-                        let df_expr = Self::convert_subquery_expr(e, subquery_tables)?;
+                        let df_expr = self.convert_subquery_expr(e, subquery_tables)?;
                         Ok(df_expr.alias(field.name.clone()))
                     })
                     .collect::<Result<_>>()?;
@@ -1346,7 +1336,7 @@ impl YachtSQLSession {
                 let df_sort_exprs: Vec<DFSortExpr> = sort_exprs
                     .iter()
                     .map(|se| {
-                        let expr = Self::convert_subquery_expr(&se.expr, subquery_tables)?;
+                        let expr = self.convert_subquery_expr(&se.expr, subquery_tables)?;
                         Ok(DFSortExpr {
                             expr,
                             asc: se.asc,
@@ -1444,6 +1434,7 @@ impl YachtSQLSession {
     }
 
     fn convert_subquery_expr(
+        &self,
         expr: &yachtsql_ir::Expr,
         subquery_tables: &HashSet<String>,
     ) -> Result<DFExpr> {
@@ -1452,8 +1443,9 @@ impl YachtSQLSession {
                 if let Some(t) = table {
                     let t_lower = t.to_lowercase();
                     if !subquery_tables.contains(&t_lower) {
+                        let data_type = self.lookup_column_type(t, name);
                         return Ok(DFExpr::OuterReferenceColumn(
-                            ArrowDataType::Utf8,
+                            data_type,
                             datafusion::common::Column::new(Some(t.clone()), name.clone()),
                         ));
                     }
@@ -1466,8 +1458,8 @@ impl YachtSQLSession {
             }
 
             yachtsql_ir::Expr::BinaryOp { left, op, right } => {
-                let left_expr = Self::convert_subquery_expr(left, subquery_tables)?;
-                let right_expr = Self::convert_subquery_expr(right, subquery_tables)?;
+                let left_expr = self.convert_subquery_expr(left, subquery_tables)?;
+                let right_expr = self.convert_subquery_expr(right, subquery_tables)?;
                 let operator = match op {
                     yachtsql_ir::BinaryOp::Add => datafusion::logical_expr::Operator::Plus,
                     yachtsql_ir::BinaryOp::Sub => datafusion::logical_expr::Operator::Minus,
@@ -4240,6 +4232,24 @@ impl YachtSQLSession {
         (None, table)
     }
 
+    fn lookup_column_type(&self, table_name: &str, column_name: &str) -> ArrowDataType {
+        let (schema_name, table) = self.resolve_table_name(table_name);
+        let table_ref = Self::table_reference(schema_name.as_deref(), &table);
+        if let Some(Ok(provider)) = self.ctx.table_provider(table_ref).now_or_never() {
+            let schema = provider.schema();
+            if let Ok(field) = schema.field_with_name(column_name) {
+                return field.data_type().clone();
+            }
+            let col_lower = column_name.to_lowercase();
+            for field in schema.fields() {
+                if field.name().to_lowercase() == col_lower {
+                    return field.data_type().clone();
+                }
+            }
+        }
+        ArrowDataType::Utf8
+    }
+
     async fn apply_column_defaults(
         &self,
         batches: &[RecordBatch],
@@ -4556,73 +4566,6 @@ fn extract_tables_from_plan(plan: &LogicalPlan) -> HashSet<String> {
         | LogicalPlan::TryCatch { .. }
         | LogicalPlan::GapFill { .. }
         | LogicalPlan::Explain { .. } => HashSet::new(),
-    }
-}
-
-fn has_single_row_guarantee(plan: &LogicalPlan) -> bool {
-    match plan {
-        LogicalPlan::Aggregate { group_by, .. } => group_by.is_empty(),
-        LogicalPlan::Limit { limit, .. } => matches!(limit, Some(n) if *n <= 1),
-        LogicalPlan::Values { values, .. } => values.len() <= 1,
-        LogicalPlan::Empty { .. } => true,
-        LogicalPlan::Project { input, .. }
-        | LogicalPlan::Filter { input, .. }
-        | LogicalPlan::Sort { input, .. }
-        | LogicalPlan::Window { input, .. }
-        | LogicalPlan::Qualify { input, .. } => has_single_row_guarantee(input),
-        LogicalPlan::WithCte { body, .. } => has_single_row_guarantee(body),
-        LogicalPlan::Scan { .. }
-        | LogicalPlan::Sample { .. }
-        | LogicalPlan::Join { .. }
-        | LogicalPlan::Distinct { .. }
-        | LogicalPlan::SetOperation { .. }
-        | LogicalPlan::Unnest { .. }
-        | LogicalPlan::GapFill { .. }
-        | LogicalPlan::Insert { .. }
-        | LogicalPlan::Update { .. }
-        | LogicalPlan::Delete { .. }
-        | LogicalPlan::Merge { .. }
-        | LogicalPlan::CreateTable { .. }
-        | LogicalPlan::DropTable { .. }
-        | LogicalPlan::AlterTable { .. }
-        | LogicalPlan::Truncate { .. }
-        | LogicalPlan::CreateView { .. }
-        | LogicalPlan::DropView { .. }
-        | LogicalPlan::CreateSchema { .. }
-        | LogicalPlan::DropSchema { .. }
-        | LogicalPlan::UndropSchema { .. }
-        | LogicalPlan::AlterSchema { .. }
-        | LogicalPlan::CreateFunction { .. }
-        | LogicalPlan::DropFunction { .. }
-        | LogicalPlan::CreateProcedure { .. }
-        | LogicalPlan::DropProcedure { .. }
-        | LogicalPlan::Call { .. }
-        | LogicalPlan::ExportData { .. }
-        | LogicalPlan::LoadData { .. }
-        | LogicalPlan::Declare { .. }
-        | LogicalPlan::SetVariable { .. }
-        | LogicalPlan::SetMultipleVariables { .. }
-        | LogicalPlan::If { .. }
-        | LogicalPlan::While { .. }
-        | LogicalPlan::Loop { .. }
-        | LogicalPlan::Block { .. }
-        | LogicalPlan::Repeat { .. }
-        | LogicalPlan::For { .. }
-        | LogicalPlan::Return { .. }
-        | LogicalPlan::Raise { .. }
-        | LogicalPlan::ExecuteImmediate { .. }
-        | LogicalPlan::Break { .. }
-        | LogicalPlan::Continue { .. }
-        | LogicalPlan::CreateSnapshot { .. }
-        | LogicalPlan::DropSnapshot { .. }
-        | LogicalPlan::Assert { .. }
-        | LogicalPlan::Grant { .. }
-        | LogicalPlan::Revoke { .. }
-        | LogicalPlan::BeginTransaction
-        | LogicalPlan::Commit
-        | LogicalPlan::Rollback
-        | LogicalPlan::TryCatch { .. }
-        | LogicalPlan::Explain { .. } => false,
     }
 }
 
