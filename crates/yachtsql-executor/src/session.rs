@@ -14,7 +14,7 @@ use datafusion::execution::FunctionRegistry;
 use datafusion::logical_expr::{
     ColumnarValue, EmptyRelation, Expr as DFExpr, JoinType as DFJoinType,
     LogicalPlan as DFLogicalPlan, LogicalPlanBuilder, ScalarUDF, ScalarUDFImpl, Signature,
-    SortExpr as DFSortExpr, Volatility,
+    SortExpr as DFSortExpr, Subquery, Volatility,
 };
 use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
@@ -1006,39 +1006,188 @@ impl YachtSQLSession {
     }
 
     fn convert_expr(&self, expr: &yachtsql_ir::Expr) -> Result<DFExpr> {
-        if let yachtsql_ir::Expr::UserDefinedAggregate {
-            name,
-            args,
-            distinct,
-            filter,
-        } = expr
-        {
-            let df_args: Vec<DFExpr> = args
-                .iter()
-                .map(|a| self.convert_expr(a))
-                .collect::<Result<_>>()?;
-            let df_filter = filter
-                .as_ref()
-                .map(|f| self.convert_expr(f))
-                .transpose()?
-                .map(Box::new);
+        match expr {
+            yachtsql_ir::Expr::UserDefinedAggregate {
+                name,
+                args,
+                distinct,
+                filter,
+            } => {
+                let df_args: Vec<DFExpr> = args
+                    .iter()
+                    .map(|a| self.convert_expr(a))
+                    .collect::<Result<_>>()?;
+                let df_filter = filter
+                    .as_ref()
+                    .map(|f| self.convert_expr(f))
+                    .transpose()?
+                    .map(Box::new);
 
-            let lower_name = name.to_lowercase();
-            let udaf = self
-                .ctx
-                .udaf(&lower_name)
-                .map_err(|e| Error::internal(e.to_string()))?;
+                let lower_name = name.to_lowercase();
+                let udaf = self
+                    .ctx
+                    .udaf(&lower_name)
+                    .map_err(|e| Error::internal(e.to_string()))?;
 
-            let agg = DFExpr::AggregateFunction(
-                datafusion::logical_expr::expr::AggregateFunction::new_udf(
-                    udaf, df_args, *distinct, df_filter, None, None,
-                ),
-            );
-            return Ok(agg);
+                Ok(DFExpr::AggregateFunction(
+                    datafusion::logical_expr::expr::AggregateFunction::new_udf(
+                        udaf, df_args, *distinct, df_filter, None, None,
+                    ),
+                ))
+            }
+
+            yachtsql_ir::Expr::BinaryOp { left, op, right } => {
+                let left_expr = self.convert_expr(left)?;
+                let right_expr = self.convert_expr(right)?;
+                let operator = match op {
+                    yachtsql_ir::BinaryOp::Add => datafusion::logical_expr::Operator::Plus,
+                    yachtsql_ir::BinaryOp::Sub => datafusion::logical_expr::Operator::Minus,
+                    yachtsql_ir::BinaryOp::Mul => datafusion::logical_expr::Operator::Multiply,
+                    yachtsql_ir::BinaryOp::Div => datafusion::logical_expr::Operator::Divide,
+                    yachtsql_ir::BinaryOp::Mod => datafusion::logical_expr::Operator::Modulo,
+                    yachtsql_ir::BinaryOp::Eq => datafusion::logical_expr::Operator::Eq,
+                    yachtsql_ir::BinaryOp::NotEq => datafusion::logical_expr::Operator::NotEq,
+                    yachtsql_ir::BinaryOp::Lt => datafusion::logical_expr::Operator::Lt,
+                    yachtsql_ir::BinaryOp::LtEq => datafusion::logical_expr::Operator::LtEq,
+                    yachtsql_ir::BinaryOp::Gt => datafusion::logical_expr::Operator::Gt,
+                    yachtsql_ir::BinaryOp::GtEq => datafusion::logical_expr::Operator::GtEq,
+                    yachtsql_ir::BinaryOp::And => datafusion::logical_expr::Operator::And,
+                    yachtsql_ir::BinaryOp::Or => datafusion::logical_expr::Operator::Or,
+                    yachtsql_ir::BinaryOp::BitwiseAnd => {
+                        datafusion::logical_expr::Operator::BitwiseAnd
+                    }
+                    yachtsql_ir::BinaryOp::BitwiseOr => {
+                        datafusion::logical_expr::Operator::BitwiseOr
+                    }
+                    yachtsql_ir::BinaryOp::BitwiseXor => {
+                        datafusion::logical_expr::Operator::BitwiseXor
+                    }
+                    yachtsql_ir::BinaryOp::ShiftLeft => {
+                        datafusion::logical_expr::Operator::BitwiseShiftLeft
+                    }
+                    yachtsql_ir::BinaryOp::ShiftRight => {
+                        datafusion::logical_expr::Operator::BitwiseShiftRight
+                    }
+                    yachtsql_ir::BinaryOp::Concat => {
+                        datafusion::logical_expr::Operator::StringConcat
+                    }
+                };
+                Ok(DFExpr::BinaryExpr(
+                    datafusion::logical_expr::BinaryExpr::new(
+                        Box::new(left_expr),
+                        operator,
+                        Box::new(right_expr),
+                    ),
+                ))
+            }
+
+            yachtsql_ir::Expr::UnaryOp { op, expr: inner } => {
+                let inner_expr = self.convert_expr(inner)?;
+                match op {
+                    yachtsql_ir::UnaryOp::Not => Ok(DFExpr::Not(Box::new(inner_expr))),
+                    yachtsql_ir::UnaryOp::Minus => Ok(DFExpr::Negative(Box::new(inner_expr))),
+                    yachtsql_ir::UnaryOp::Plus => Ok(inner_expr),
+                    yachtsql_ir::UnaryOp::BitwiseNot => Ok(DFExpr::BinaryExpr(
+                        datafusion::logical_expr::BinaryExpr::new(
+                            Box::new(DFExpr::Literal(datafusion::scalar::ScalarValue::Int64(
+                                Some(-1),
+                            ))),
+                            datafusion::logical_expr::Operator::BitwiseXor,
+                            Box::new(inner_expr),
+                        ),
+                    )),
+                }
+            }
+
+            yachtsql_ir::Expr::ScalarSubquery(subquery) | yachtsql_ir::Expr::Subquery(subquery) => {
+                let df_plan = self.convert_plan(subquery)?;
+                let subq = Subquery {
+                    subquery: Arc::new(df_plan),
+                    outer_ref_columns: vec![],
+                };
+                Ok(DFExpr::ScalarSubquery(subq))
+            }
+
+            yachtsql_ir::Expr::ArraySubquery(subquery) => {
+                let df_plan = self.convert_plan(subquery)?;
+                let subq = Subquery {
+                    subquery: Arc::new(df_plan),
+                    outer_ref_columns: vec![],
+                };
+                Ok(datafusion::functions_aggregate::array_agg::array_agg(
+                    DFExpr::ScalarSubquery(subq),
+                ))
+            }
+
+            yachtsql_ir::Expr::InSubquery {
+                expr,
+                subquery,
+                negated,
+            } => {
+                let left_expr = self.convert_expr(expr)?;
+                let df_plan = self.convert_plan(subquery)?;
+                let subq = Subquery {
+                    subquery: Arc::new(df_plan),
+                    outer_ref_columns: vec![],
+                };
+                Ok(DFExpr::InSubquery(
+                    datafusion::logical_expr::expr::InSubquery::new(
+                        Box::new(left_expr),
+                        subq,
+                        *negated,
+                    ),
+                ))
+            }
+
+            yachtsql_ir::Expr::Exists { subquery, negated } => {
+                let df_plan = self.convert_plan(subquery)?;
+                let subq = Subquery {
+                    subquery: Arc::new(df_plan),
+                    outer_ref_columns: vec![],
+                };
+                Ok(DFExpr::Exists(datafusion::logical_expr::expr::Exists::new(
+                    subq, *negated,
+                )))
+            }
+
+            yachtsql_ir::Expr::Literal(_)
+            | yachtsql_ir::Expr::Column { .. }
+            | yachtsql_ir::Expr::ScalarFunction { .. }
+            | yachtsql_ir::Expr::Aggregate { .. }
+            | yachtsql_ir::Expr::Window { .. }
+            | yachtsql_ir::Expr::AggregateWindow { .. }
+            | yachtsql_ir::Expr::Case { .. }
+            | yachtsql_ir::Expr::Cast { .. }
+            | yachtsql_ir::Expr::IsNull { .. }
+            | yachtsql_ir::Expr::IsDistinctFrom { .. }
+            | yachtsql_ir::Expr::InList { .. }
+            | yachtsql_ir::Expr::InUnnest { .. }
+            | yachtsql_ir::Expr::Between { .. }
+            | yachtsql_ir::Expr::Like { .. }
+            | yachtsql_ir::Expr::Extract { .. }
+            | yachtsql_ir::Expr::Substring { .. }
+            | yachtsql_ir::Expr::Trim { .. }
+            | yachtsql_ir::Expr::Position { .. }
+            | yachtsql_ir::Expr::Overlay { .. }
+            | yachtsql_ir::Expr::Array { .. }
+            | yachtsql_ir::Expr::ArrayAccess { .. }
+            | yachtsql_ir::Expr::Struct { .. }
+            | yachtsql_ir::Expr::StructAccess { .. }
+            | yachtsql_ir::Expr::TypedString { .. }
+            | yachtsql_ir::Expr::Interval { .. }
+            | yachtsql_ir::Expr::Alias { .. }
+            | yachtsql_ir::Expr::Wildcard { .. }
+            | yachtsql_ir::Expr::Parameter { .. }
+            | yachtsql_ir::Expr::Variable { .. }
+            | yachtsql_ir::Expr::Placeholder { .. }
+            | yachtsql_ir::Expr::Lambda { .. }
+            | yachtsql_ir::Expr::AtTimeZone { .. }
+            | yachtsql_ir::Expr::JsonAccess { .. }
+            | yachtsql_ir::Expr::Default => {
+                yachtsql_parser::DataFusionConverter::convert_expr(expr)
+                    .map_err(|e| Error::internal(e.to_string()))
+            }
         }
-
-        yachtsql_parser::DataFusionConverter::convert_expr(expr)
-            .map_err(|e| Error::internal(e.to_string()))
     }
 
     fn convert_sort_expr(&self, se: &SortExpr) -> Result<DFSortExpr> {
