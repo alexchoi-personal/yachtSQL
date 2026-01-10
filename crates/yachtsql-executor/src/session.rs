@@ -750,12 +750,23 @@ impl YachtSQLSession {
             }
 
             LogicalPlan::Project {
-                input, expressions, ..
+                input,
+                expressions,
+                schema,
             } => {
                 let input_plan = self.convert_plan(input)?;
                 let project_exprs: Vec<DFExpr> = expressions
                     .iter()
-                    .map(|e| self.convert_expr(e))
+                    .zip(schema.fields.iter())
+                    .map(|(e, field)| {
+                        let df_expr = self.convert_expr(e)?;
+                        let expr_name = df_expr.schema_name().to_string();
+                        if expr_name != field.name {
+                            Ok(df_expr.alias(&field.name))
+                        } else {
+                            Ok(df_expr)
+                        }
+                    })
                     .collect::<Result<_>>()?;
                 LogicalPlanBuilder::from(input_plan)
                     .project(project_exprs)
