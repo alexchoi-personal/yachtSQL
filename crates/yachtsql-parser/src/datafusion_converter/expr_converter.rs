@@ -995,6 +995,336 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
 
         ScalarFunction::StringFromJson | ScalarFunction::BoolFromJson => Ok(lit(ScalarValue::Null)),
 
+        ScalarFunction::CurrentDatetime => Ok(DFExpr::Cast(Cast::new(
+            Box::new(datetime::now()),
+            ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+        ))),
+
+        ScalarFunction::DateAdd => {
+            let mut iter = args.into_iter();
+            let date = iter.next().unwrap();
+            let interval = iter.next().unwrap();
+            Ok(date + interval)
+        }
+
+        ScalarFunction::DateSub => {
+            let mut iter = args.into_iter();
+            let date = iter.next().unwrap();
+            let interval = iter.next().unwrap();
+            Ok(date - interval)
+        }
+
+        ScalarFunction::FormatDate
+        | ScalarFunction::FormatTimestamp
+        | ScalarFunction::FormatDatetime
+        | ScalarFunction::FormatTime => {
+            let mut iter = args.into_iter();
+            let format_str = iter.next().unwrap();
+            let date_expr = iter.next().unwrap();
+            Ok(datafusion::functions::datetime::to_char().call(vec![date_expr, format_str]))
+        }
+
+        ScalarFunction::ParseDate => {
+            let mut iter = args.into_iter();
+            let format_str = iter.next().unwrap();
+            let date_str = iter.next().unwrap();
+            Ok(datafusion::functions::datetime::to_date().call(vec![date_str, format_str]))
+        }
+
+        ScalarFunction::ParseTimestamp => {
+            let mut iter = args.into_iter();
+            let format_str = iter.next().unwrap();
+            let ts_str = iter.next().unwrap();
+            Ok(datafusion::functions::datetime::to_timestamp().call(vec![ts_str, format_str]))
+        }
+
+        ScalarFunction::ParseDatetime => {
+            let mut iter = args.into_iter();
+            let format_str = iter.next().unwrap();
+            let dt_str = iter.next().unwrap();
+            let ts = datafusion::functions::datetime::to_timestamp().call(vec![dt_str, format_str]);
+            Ok(DFExpr::Cast(Cast::new(
+                Box::new(ts),
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+            )))
+        }
+
+        ScalarFunction::ParseTime => {
+            let mut iter = args.into_iter();
+            let _format_str = iter.next().unwrap();
+            let time_str = iter.next().unwrap();
+            Ok(DFExpr::Cast(Cast::new(
+                Box::new(time_str),
+                ArrowDataType::Time64(TimeUnit::Nanosecond),
+            )))
+        }
+
+        ScalarFunction::Date => {
+            let mut iter = args.into_iter();
+            let arg1 = iter.next().unwrap();
+            match iter.next() {
+                Some(arg2) => match iter.next() {
+                    Some(arg3) => Ok(datetime::make_date(arg1, arg2, arg3)),
+                    None => Ok(DFExpr::Cast(Cast::new(
+                        Box::new(arg1),
+                        ArrowDataType::Date32,
+                    ))),
+                },
+                None => Ok(DFExpr::Cast(Cast::new(
+                    Box::new(arg1),
+                    ArrowDataType::Date32,
+                ))),
+            }
+        }
+
+        ScalarFunction::Time => {
+            let mut iter = args.into_iter();
+            let arg1 = iter.next().unwrap();
+            match iter.next() {
+                Some(arg2) => match iter.next() {
+                    Some(arg3) => {
+                        let hours_nanos =
+                            DFExpr::Cast(Cast::new(Box::new(arg1), ArrowDataType::Int64))
+                                * lit(3_600_000_000_000i64);
+                        let mins_nanos =
+                            DFExpr::Cast(Cast::new(Box::new(arg2), ArrowDataType::Int64))
+                                * lit(60_000_000_000i64);
+                        let secs_nanos =
+                            DFExpr::Cast(Cast::new(Box::new(arg3), ArrowDataType::Int64))
+                                * lit(1_000_000_000i64);
+                        let total_nanos = hours_nanos + mins_nanos + secs_nanos;
+                        Ok(DFExpr::Cast(Cast::new(
+                            Box::new(total_nanos),
+                            ArrowDataType::Time64(TimeUnit::Nanosecond),
+                        )))
+                    }
+                    None => Ok(DFExpr::Cast(Cast::new(
+                        Box::new(arg1),
+                        ArrowDataType::Time64(TimeUnit::Nanosecond),
+                    ))),
+                },
+                None => Ok(DFExpr::Cast(Cast::new(
+                    Box::new(arg1),
+                    ArrowDataType::Time64(TimeUnit::Nanosecond),
+                ))),
+            }
+        }
+
+        ScalarFunction::Datetime => {
+            let mut iter = args.into_iter();
+            let arg1 = iter.next().unwrap();
+            match iter.next() {
+                Some(arg2) => match iter.next() {
+                    Some(arg3) => match iter.next() {
+                        Some(arg4) => match iter.next() {
+                            Some(arg5) => match iter.next() {
+                                Some(arg6) => {
+                                    let date = datetime::make_date(arg1, arg2, arg3);
+                                    let hours_nanos = DFExpr::Cast(Cast::new(
+                                        Box::new(arg4),
+                                        ArrowDataType::Int64,
+                                    )) * lit(3_600_000_000_000i64);
+                                    let mins_nanos = DFExpr::Cast(Cast::new(
+                                        Box::new(arg5),
+                                        ArrowDataType::Int64,
+                                    )) * lit(60_000_000_000i64);
+                                    let secs_nanos = DFExpr::Cast(Cast::new(
+                                        Box::new(arg6),
+                                        ArrowDataType::Int64,
+                                    )) * lit(1_000_000_000i64);
+                                    let time_nanos = hours_nanos + mins_nanos + secs_nanos;
+                                    let date_ts = DFExpr::Cast(Cast::new(
+                                        Box::new(date),
+                                        ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                                    ));
+                                    let time_interval =
+                                        DFExpr::Literal(ScalarValue::IntervalMonthDayNano(Some(
+                                            datafusion::arrow::datatypes::IntervalMonthDayNano::new(
+                                                0, 0, 0,
+                                            ),
+                                        )));
+                                    Ok(date_ts
+                                        + time_interval
+                                        + DFExpr::Cast(Cast::new(
+                                            Box::new(time_nanos),
+                                            ArrowDataType::Duration(TimeUnit::Nanosecond),
+                                        )))
+                                }
+                                None => Ok(DFExpr::Cast(Cast::new(
+                                    Box::new(arg1),
+                                    ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                                ))),
+                            },
+                            None => Ok(DFExpr::Cast(Cast::new(
+                                Box::new(arg1),
+                                ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                            ))),
+                        },
+                        None => {
+                            let date_ts = DFExpr::Cast(Cast::new(
+                                Box::new(arg1),
+                                ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                            ));
+                            let time_ts = DFExpr::Cast(Cast::new(
+                                Box::new(arg2),
+                                ArrowDataType::Duration(TimeUnit::Nanosecond),
+                            ));
+                            Ok(date_ts + time_ts)
+                        }
+                    },
+                    None => Ok(DFExpr::Cast(Cast::new(
+                        Box::new(arg1),
+                        ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                    ))),
+                },
+                None => Ok(DFExpr::Cast(Cast::new(
+                    Box::new(arg1),
+                    ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                ))),
+            }
+        }
+
+        ScalarFunction::Timestamp => {
+            let mut iter = args.into_iter();
+            let arg = iter.next().unwrap();
+            Ok(DFExpr::Cast(Cast::new(
+                Box::new(arg),
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+            )))
+        }
+
+        ScalarFunction::TimestampMicros => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(DFExpr::Cast(Cast::new(
+                Box::new(arg * lit(1000i64)),
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+            )))
+        }
+
+        ScalarFunction::TimestampMillis => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(DFExpr::Cast(Cast::new(
+                Box::new(arg * lit(1_000_000i64)),
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+            )))
+        }
+
+        ScalarFunction::TimestampSeconds => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(DFExpr::Cast(Cast::new(
+                Box::new(arg * lit(1_000_000_000i64)),
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+            )))
+        }
+
+        ScalarFunction::UnixDate => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(DFExpr::Cast(Cast::new(Box::new(arg), ArrowDataType::Int64)))
+        }
+
+        ScalarFunction::UnixMicros => {
+            let arg = args.into_iter().next().unwrap();
+            let ts_nanos = DFExpr::Cast(Cast::new(Box::new(arg), ArrowDataType::Int64));
+            Ok(ts_nanos / lit(1000i64))
+        }
+
+        ScalarFunction::UnixMillis => {
+            let arg = args.into_iter().next().unwrap();
+            let ts_nanos = DFExpr::Cast(Cast::new(Box::new(arg), ArrowDataType::Int64));
+            Ok(ts_nanos / lit(1_000_000i64))
+        }
+
+        ScalarFunction::UnixSeconds => {
+            let arg = args.into_iter().next().unwrap();
+            let ts_nanos = DFExpr::Cast(Cast::new(Box::new(arg), ArrowDataType::Int64));
+            Ok(ts_nanos / lit(1_000_000_000i64))
+        }
+
+        ScalarFunction::DateFromUnixDate => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(DFExpr::Cast(Cast::new(
+                Box::new(arg),
+                ArrowDataType::Date32,
+            )))
+        }
+
+        ScalarFunction::LastDay => {
+            let arg = args.into_iter().next().unwrap();
+            let month_truncated = datetime::date_trunc(lit("month"), arg.clone());
+            let next_month = month_truncated
+                + DFExpr::Literal(ScalarValue::IntervalMonthDayNano(Some(
+                    datafusion::arrow::datatypes::IntervalMonthDayNano::new(1, 0, 0),
+                )));
+            let last_day = next_month
+                - DFExpr::Literal(ScalarValue::IntervalMonthDayNano(Some(
+                    datafusion::arrow::datatypes::IntervalMonthDayNano::new(0, 1, 0),
+                )));
+            Ok(DFExpr::Cast(Cast::new(
+                Box::new(last_day),
+                ArrowDataType::Date32,
+            )))
+        }
+
+        ScalarFunction::DateBucket => {
+            let mut iter = args.into_iter();
+            let date = iter.next().unwrap();
+            let part = iter.next().unwrap_or_else(|| lit("day"));
+            Ok(datetime::date_trunc(part, date))
+        }
+
+        ScalarFunction::DatetimeBucket => {
+            let mut iter = args.into_iter();
+            let dt = iter.next().unwrap();
+            let part = iter.next().unwrap_or_else(|| lit("day"));
+            Ok(datetime::date_trunc(part, dt))
+        }
+
+        ScalarFunction::TimestampBucket => {
+            let mut iter = args.into_iter();
+            let ts = iter.next().unwrap();
+            let part = iter.next().unwrap_or_else(|| lit("day"));
+            Ok(datetime::date_trunc(part, ts))
+        }
+
+        ScalarFunction::GenerateDateArray => {
+            let mut iter = args.into_iter();
+            let start = iter.next().unwrap();
+            let stop = iter.next().unwrap();
+            let _step = iter.next();
+            Ok(datafusion::functions_array::expr_fn::range(
+                DFExpr::Cast(Cast::new(Box::new(start), ArrowDataType::Int64)),
+                DFExpr::Cast(Cast::new(Box::new(stop), ArrowDataType::Int64)) + lit(1i64),
+                lit(1i64),
+            ))
+        }
+
+        ScalarFunction::GenerateTimestampArray => {
+            let mut iter = args.into_iter();
+            let start = iter.next().unwrap();
+            let stop = iter.next().unwrap();
+            let _interval = iter.next();
+            Ok(datafusion::functions_array::expr_fn::range(
+                DFExpr::Cast(Cast::new(Box::new(start), ArrowDataType::Int64)),
+                DFExpr::Cast(Cast::new(Box::new(stop), ArrowDataType::Int64)) + lit(1i64),
+                lit(86_400_000_000_000i64),
+            ))
+        }
+
+        ScalarFunction::JustifyDays => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(arg)
+        }
+
+        ScalarFunction::JustifyHours => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(arg)
+        }
+
+        ScalarFunction::JustifyInterval => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(arg)
+        }
+
         ScalarFunction::Custom(_) => Ok(lit(ScalarValue::Null)),
 
         _ => Err(datafusion::common::DataFusionError::NotImplemented(
