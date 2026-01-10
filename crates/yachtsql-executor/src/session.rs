@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use datafusion::arrow::array::{ArrayRef, RecordBatch, StringArray};
@@ -6,6 +6,7 @@ use datafusion::arrow::compute::cast;
 use datafusion::arrow::datatypes::{
     DataType as ArrowDataType, Field as ArrowField, IntervalUnit, Schema as ArrowSchema, TimeUnit,
 };
+use datafusion::catalog_common::MemorySchemaProvider;
 use datafusion::common::{TableReference, ToDFSchema};
 use datafusion::datasource::{MemTable, provider_as_source};
 use datafusion::logical_expr::{
@@ -14,6 +15,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::prelude::*;
 use futures::FutureExt;
+use parking_lot::RwLock;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::{DataType, Field, FieldMode, Schema};
 use yachtsql_ir::plan::{AlterTableOp, FunctionBody};
@@ -22,8 +24,9 @@ use yachtsql_parser::{CatalogProvider, FunctionDefinition, ViewDefinition};
 
 pub struct YachtSQLSession {
     ctx: SessionContext,
-    views: HashMap<String, ViewDefinition>,
-    functions: HashMap<String, FunctionDefinition>,
+    views: RwLock<HashMap<String, ViewDefinition>>,
+    functions: RwLock<HashMap<String, FunctionDefinition>>,
+    schemas: RwLock<HashSet<String>>,
 }
 
 struct SessionCatalog<'a> {
@@ -32,11 +35,21 @@ struct SessionCatalog<'a> {
 
 impl<'a> CatalogProvider for SessionCatalog<'a> {
     fn get_table_schema(&self, name: &str) -> Option<Schema> {
-        let lower = name.to_lowercase();
+        let (schema_name, table) = YachtSQLSession::parse_table_name(name);
+
+        if let Some(ref schema) = schema_name {
+            let catalog = self.session.ctx.catalog("datafusion")?;
+            let schema_provider = catalog.schema(schema)?;
+            let table_provider = schema_provider.table(&table).now_or_never()?.ok()??;
+            let arrow_schema = table_provider.schema();
+            return Some(arrow_schema_to_yachtsql(&arrow_schema));
+        }
+
+        let table_ref = YachtSQLSession::table_reference(schema_name.as_deref(), &table);
         let provider = self
             .session
             .ctx
-            .table_provider(TableReference::bare(lower.clone()))
+            .table_provider(table_ref)
             .now_or_never()?
             .ok()?;
         let arrow_schema = provider.schema();
@@ -44,11 +57,15 @@ impl<'a> CatalogProvider for SessionCatalog<'a> {
     }
 
     fn get_view(&self, name: &str) -> Option<ViewDefinition> {
-        self.session.views.get(&name.to_lowercase()).cloned()
+        self.session.views.read().get(&name.to_lowercase()).cloned()
     }
 
     fn get_function(&self, name: &str) -> Option<FunctionDefinition> {
-        self.session.functions.get(&name.to_lowercase()).cloned()
+        self.session
+            .functions
+            .read()
+            .get(&name.to_lowercase())
+            .cloned()
     }
 }
 
@@ -76,16 +93,35 @@ impl YachtSQLSession {
     pub fn new() -> Self {
         Self {
             ctx: SessionContext::new(),
-            views: HashMap::new(),
-            functions: HashMap::new(),
+            views: RwLock::new(HashMap::new()),
+            functions: RwLock::new(HashMap::new()),
+            schemas: RwLock::new(HashSet::new()),
         }
     }
 
     pub fn with_config(config: SessionConfig) -> Self {
         Self {
             ctx: SessionContext::new_with_config(config),
-            views: HashMap::new(),
-            functions: HashMap::new(),
+            views: RwLock::new(HashMap::new()),
+            functions: RwLock::new(HashMap::new()),
+            schemas: RwLock::new(HashSet::new()),
+        }
+    }
+
+    fn parse_table_name(name: &str) -> (Option<String>, String) {
+        let lower = name.to_lowercase();
+        if let Some(dot_idx) = lower.find('.') {
+            let (schema, table) = lower.split_at(dot_idx);
+            (Some(schema.to_string()), table[1..].to_string())
+        } else {
+            (None, lower)
+        }
+    }
+
+    fn table_reference(schema: Option<&str>, table: &str) -> TableReference {
+        match schema {
+            Some(s) => TableReference::partial(s.to_owned(), table.to_owned()),
+            None => TableReference::bare(table.to_owned()),
         }
     }
 
@@ -283,10 +319,11 @@ impl YachtSQLSession {
                 schema,
                 projection,
             } => {
-                let lower = table_name.to_lowercase();
+                let (schema_name, table) = Self::parse_table_name(table_name);
+                let table_ref = Self::table_reference(schema_name.as_deref(), &table);
                 let provider = self
                     .ctx
-                    .table_provider(TableReference::bare(lower.clone()))
+                    .table_provider(table_ref)
                     .now_or_never()
                     .ok_or_else(|| Error::internal(format!("Table not found: {}", table_name)))?
                     .map_err(|e| Error::internal(e.to_string()))?;
@@ -299,7 +336,7 @@ impl YachtSQLSession {
                     .first()
                     .and_then(|f| f.table.as_ref())
                     .map(|t| t.to_lowercase())
-                    .unwrap_or_else(|| lower.clone());
+                    .unwrap_or(table);
 
                 LogicalPlanBuilder::scan(scan_alias, source, proj_cols)
                     .map_err(|e| Error::internal(e.to_string()))?
@@ -552,12 +589,10 @@ impl YachtSQLSession {
         or_replace: bool,
         query: Option<&LogicalPlan>,
     ) -> Result<Vec<RecordBatch>> {
-        let lower = table_name.to_lowercase();
+        let (schema_name, table) = Self::parse_table_name(table_name);
+        let table_ref = Self::table_reference(schema_name.as_deref(), &table);
 
-        let existing = self
-            .ctx
-            .table_provider(TableReference::bare(lower.clone()))
-            .now_or_never();
+        let existing = self.ctx.table_provider(table_ref.clone()).now_or_never();
         if existing.is_some() && existing.unwrap().is_ok() {
             if if_not_exists {
                 return Ok(vec![]);
@@ -568,13 +603,23 @@ impl YachtSQLSession {
                     table_name
                 )));
             }
-            let _ = self.ctx.deregister_table(&lower);
+            if let Some(ref schema) = schema_name {
+                let catalog = self
+                    .ctx
+                    .catalog("datafusion")
+                    .ok_or_else(|| Error::internal("Default catalog 'datafusion' not found"))?;
+                if let Some(schema_provider) = catalog.schema(schema) {
+                    let _ = schema_provider.deregister_table(&table);
+                }
+            } else {
+                let _ = self.ctx.deregister_table(&table);
+            }
         }
 
-        let (schema, batches) = match query {
+        let (arrow_schema, batches) = match query {
             Some(q) => {
                 let result = self.execute_query(q).await?;
-                let schema = if result.is_empty() {
+                let arrow_schema = if result.is_empty() {
                     let fields: Vec<ArrowField> = columns
                         .iter()
                         .map(|c| {
@@ -589,7 +634,7 @@ impl YachtSQLSession {
                 } else {
                     result[0].schema()
                 };
-                (schema, result)
+                (arrow_schema, result)
             }
             None => {
                 let fields: Vec<ArrowField> = columns
@@ -598,8 +643,8 @@ impl YachtSQLSession {
                         ArrowField::new(&c.name, yachtsql_type_to_arrow(&c.data_type), c.nullable)
                     })
                     .collect();
-                let schema = Arc::new(ArrowSchema::new(fields));
-                (schema, vec![])
+                let arrow_schema = Arc::new(ArrowSchema::new(fields));
+                (arrow_schema, vec![])
             }
         };
 
@@ -609,11 +654,25 @@ impl YachtSQLSession {
             vec![batches]
         };
 
-        let mem_table =
-            MemTable::try_new(schema, partitions).map_err(|e| Error::internal(e.to_string()))?;
-        self.ctx
-            .register_table(&lower, Arc::new(mem_table))
+        let mem_table = MemTable::try_new(arrow_schema, partitions)
             .map_err(|e| Error::internal(e.to_string()))?;
+
+        if let Some(ref schema) = schema_name {
+            let catalog = self
+                .ctx
+                .catalog("datafusion")
+                .ok_or_else(|| Error::internal("Default catalog 'datafusion' not found"))?;
+            let schema_provider = catalog
+                .schema(schema)
+                .ok_or_else(|| Error::internal(format!("Schema not found: {}", schema)))?;
+            schema_provider
+                .register_table(table.clone(), Arc::new(mem_table))
+                .map_err(|e| Error::internal(e.to_string()))?;
+        } else {
+            self.ctx
+                .register_table(&table, Arc::new(mem_table))
+                .map_err(|e| Error::internal(e.to_string()))?;
+        }
 
         Ok(vec![])
     }
@@ -624,9 +683,28 @@ impl YachtSQLSession {
         if_exists: bool,
     ) -> Result<Vec<RecordBatch>> {
         for table_name in table_names {
-            let lower = table_name.to_lowercase();
-            let result = self.ctx.deregister_table(&lower);
-            if result.is_err() && !if_exists {
+            let (schema_name, table) = Self::parse_table_name(table_name);
+
+            let dropped = if let Some(ref schema) = schema_name {
+                let catalog = self
+                    .ctx
+                    .catalog("datafusion")
+                    .ok_or_else(|| Error::internal("Default catalog 'datafusion' not found"))?;
+                match catalog.schema(schema) {
+                    Some(schema_provider) => schema_provider
+                        .deregister_table(&table)
+                        .map_err(|e| Error::internal(e.to_string()))?
+                        .is_some(),
+                    None => false,
+                }
+            } else {
+                self.ctx
+                    .deregister_table(&table)
+                    .map_err(|e| Error::internal(e.to_string()))?
+                    .is_some()
+            };
+
+            if !dropped && !if_exists {
                 return Err(Error::internal(format!(
                     "Table {} does not exist",
                     table_name
@@ -642,30 +720,68 @@ impl YachtSQLSession {
         _columns: &[String],
         source: &LogicalPlan,
     ) -> Result<Vec<RecordBatch>> {
-        let lower = table_name.to_lowercase();
+        let (schema_name, table) = Self::parse_table_name(table_name);
         let new_batches = self.execute_query(source).await?;
 
-        let provider = self
-            .ctx
-            .table_provider(TableReference::bare(lower.clone()))
-            .now_or_never()
-            .ok_or_else(|| Error::internal(format!("Table not found: {}", table_name)))?
-            .map_err(|e| Error::internal(e.to_string()))?;
+        let (_provider, table_schema) = if let Some(ref schema) = schema_name {
+            let catalog = self
+                .ctx
+                .catalog("datafusion")
+                .ok_or_else(|| Error::internal("Default catalog 'datafusion' not found"))?;
+            let schema_provider = catalog
+                .schema(schema)
+                .ok_or_else(|| Error::internal(format!("Schema not found: {}", schema)))?;
+            let provider = schema_provider
+                .table(&table)
+                .now_or_never()
+                .ok_or_else(|| Error::internal(format!("Table not found: {}", table_name)))?
+                .map_err(|e| Error::internal(e.to_string()))?
+                .ok_or_else(|| Error::internal(format!("Table not found: {}", table_name)))?;
+            let table_schema = provider.schema();
+            (provider, table_schema)
+        } else {
+            let table_ref = Self::table_reference(schema_name.as_deref(), &table);
+            let provider = self
+                .ctx
+                .table_provider(table_ref)
+                .now_or_never()
+                .ok_or_else(|| Error::internal(format!("Table not found: {}", table_name)))?
+                .map_err(|e| Error::internal(e.to_string()))?;
+            let table_schema = provider.schema();
+            (provider, table_schema)
+        };
 
-        let table_schema = provider.schema();
-
-        let existing_df = self
-            .ctx
-            .table(TableReference::bare(lower.clone()))
-            .now_or_never()
-            .ok_or_else(|| Error::internal("Table read failed"))?
-            .map_err(|e| Error::internal(e.to_string()))?;
-
-        let existing_batches = existing_df
-            .collect()
-            .now_or_never()
-            .ok_or_else(|| Error::internal("Collection failed"))?
-            .map_err(|e| Error::internal(e.to_string()))?;
+        let existing_batches = if let Some(ref schema) = schema_name {
+            let catalog = self.ctx.catalog("datafusion").unwrap();
+            let schema_provider = catalog.schema(schema).unwrap();
+            let table_provider = schema_provider
+                .table(&table)
+                .now_or_never()
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let scan = table_provider
+                .scan(&self.ctx.state(), None, &[], None)
+                .now_or_never()
+                .ok_or_else(|| Error::internal("Scan failed"))?
+                .map_err(|e| Error::internal(e.to_string()))?;
+            datafusion::physical_plan::collect(scan, self.ctx.task_ctx())
+                .now_or_never()
+                .ok_or_else(|| Error::internal("Collection failed"))?
+                .map_err(|e| Error::internal(e.to_string()))?
+        } else {
+            let existing_df = self
+                .ctx
+                .table(TableReference::bare(table.clone()))
+                .now_or_never()
+                .ok_or_else(|| Error::internal("Table read failed"))?
+                .map_err(|e| Error::internal(e.to_string()))?;
+            existing_df
+                .collect()
+                .now_or_never()
+                .ok_or_else(|| Error::internal("Collection failed"))?
+                .map_err(|e| Error::internal(e.to_string()))?
+        };
 
         let casted_batches: Vec<RecordBatch> = new_batches
             .into_iter()
@@ -675,15 +791,133 @@ impl YachtSQLSession {
         let mut all_batches = existing_batches;
         all_batches.extend(casted_batches);
 
-        let _ = self.ctx.deregister_table(&lower);
+        if let Some(ref schema) = schema_name {
+            let catalog = self.ctx.catalog("datafusion").unwrap();
+            let schema_provider = catalog.schema(schema).unwrap();
+            let _ = schema_provider.deregister_table(&table);
 
-        let partitions = if all_batches.is_empty() {
-            vec![]
+            let partitions = if all_batches.is_empty() {
+                vec![]
+            } else {
+                vec![all_batches]
+            };
+
+            let mem_table = MemTable::try_new(table_schema, partitions)
+                .map_err(|e| Error::internal(e.to_string()))?;
+            schema_provider
+                .register_table(table, Arc::new(mem_table))
+                .map_err(|e| Error::internal(e.to_string()))?;
         } else {
-            vec![all_batches]
-        };
+            let _ = self.ctx.deregister_table(&table);
 
-        let mem_table = MemTable::try_new(table_schema, partitions)
+            let partitions = if all_batches.is_empty() {
+                vec![]
+            } else {
+                vec![all_batches]
+            };
+
+            let mem_table = MemTable::try_new(table_schema, partitions)
+                .map_err(|e| Error::internal(e.to_string()))?;
+            self.ctx
+                .register_table(&table, Arc::new(mem_table))
+                .map_err(|e| Error::internal(e.to_string()))?;
+        }
+
+        Ok(vec![])
+    }
+
+    async fn execute_update(
+        &self,
+        table_name: &str,
+        _alias: Option<&str>,
+        assignments: &[yachtsql_ir::Assignment],
+        _from: Option<&LogicalPlan>,
+        filter: Option<&yachtsql_ir::Expr>,
+    ) -> Result<Vec<RecordBatch>> {
+        let lower = table_name.to_lowercase();
+        let provider = self
+            .ctx
+            .table_provider(TableReference::bare(lower.clone()))
+            .now_or_never()
+            .ok_or_else(|| Error::internal(format!("Table not found: {}", table_name)))?
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let schema = provider.schema();
+        let source = provider_as_source(provider);
+
+        let scan = LogicalPlanBuilder::scan(&lower, source, None)
+            .map_err(|e| Error::internal(e.to_string()))?
+            .build()
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let df = DataFrame::new(self.ctx.state(), scan);
+        let all_rows = df
+            .collect()
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        if all_rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut updated_batches = Vec::new();
+
+        for batch in &all_rows {
+            let num_rows = batch.num_rows();
+            let mut mask = vec![false; num_rows];
+
+            if let Some(filter_expr) = filter {
+                let filter_sql = self.expr_to_sql(filter_expr)?;
+                let filter_batch = self.evaluate_filter(batch, &filter_sql).await?;
+                for (i, m) in mask.iter_mut().enumerate() {
+                    if filter_batch.get(i).copied().unwrap_or(false) {
+                        *m = true;
+                    }
+                }
+            } else {
+                mask.fill(true);
+            }
+
+            let mut new_columns: Vec<ArrayRef> = batch.columns().to_vec();
+
+            for assignment in assignments {
+                let col_name = assignment.column.to_lowercase();
+                let col_idx = schema
+                    .fields()
+                    .iter()
+                    .position(|f| f.name().to_lowercase() == col_name)
+                    .ok_or_else(|| {
+                        Error::internal(format!("Column not found: {}", assignment.column))
+                    })?;
+
+                let value_sql = self.expr_to_sql(&assignment.value)?;
+                let new_values = self
+                    .evaluate_expr(batch, &value_sql, schema.field(col_idx).data_type())
+                    .await?;
+
+                let mut builder = datafusion::arrow::array::make_builder(
+                    schema.field(col_idx).data_type(),
+                    num_rows,
+                );
+
+                for (i, m) in mask.iter().enumerate() {
+                    if *m {
+                        self.append_value(&mut builder, &new_values, i)?;
+                    } else {
+                        self.append_value(&mut builder, batch.column(col_idx), i)?;
+                    }
+                }
+
+                new_columns[col_idx] = builder.finish();
+            }
+
+            let updated_batch = RecordBatch::try_new(schema.clone(), new_columns)
+                .map_err(|e| Error::internal(e.to_string()))?;
+            updated_batches.push(updated_batch);
+        }
+
+        let _ = self.ctx.deregister_table(&lower);
+        let mem_table = MemTable::try_new(schema, vec![updated_batches])
             .map_err(|e| Error::internal(e.to_string()))?;
         self.ctx
             .register_table(&lower, Arc::new(mem_table))
@@ -692,24 +926,331 @@ impl YachtSQLSession {
         Ok(vec![])
     }
 
-    async fn execute_update(
-        &self,
-        _table_name: &str,
-        _alias: Option<&str>,
-        _assignments: &[yachtsql_ir::Assignment],
-        _from: Option<&LogicalPlan>,
-        _filter: Option<&yachtsql_ir::Expr>,
-    ) -> Result<Vec<RecordBatch>> {
-        Err(Error::internal("UPDATE not yet implemented"))
-    }
-
     async fn execute_delete(
         &self,
-        _table_name: &str,
+        table_name: &str,
         _alias: Option<&str>,
-        _filter: Option<&yachtsql_ir::Expr>,
+        filter: Option<&yachtsql_ir::Expr>,
     ) -> Result<Vec<RecordBatch>> {
-        Err(Error::internal("DELETE not yet implemented"))
+        let lower = table_name.to_lowercase();
+        let provider = self
+            .ctx
+            .table_provider(TableReference::bare(lower.clone()))
+            .now_or_never()
+            .ok_or_else(|| Error::internal(format!("Table not found: {}", table_name)))?
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let schema = provider.schema();
+        let source = provider_as_source(provider);
+
+        let scan = LogicalPlanBuilder::scan(&lower, source, None)
+            .map_err(|e| Error::internal(e.to_string()))?
+            .build()
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let df = DataFrame::new(self.ctx.state(), scan);
+
+        let result_df = match filter {
+            Some(filter_expr) => {
+                let df_filter = self.convert_expr(filter_expr)?;
+                df.filter(df_filter.not())
+                    .map_err(|e| Error::internal(e.to_string()))?
+            }
+            None => {
+                let _ = self.ctx.deregister_table(&lower);
+                let mem_table = MemTable::try_new(schema, vec![])
+                    .map_err(|e| Error::internal(e.to_string()))?;
+                self.ctx
+                    .register_table(&lower, Arc::new(mem_table))
+                    .map_err(|e| Error::internal(e.to_string()))?;
+                return Ok(vec![]);
+            }
+        };
+
+        let remaining_rows = result_df
+            .collect()
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let _ = self.ctx.deregister_table(&lower);
+        let mem_table = MemTable::try_new(schema, vec![remaining_rows])
+            .map_err(|e| Error::internal(e.to_string()))?;
+        self.ctx
+            .register_table(&lower, Arc::new(mem_table))
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        Ok(vec![])
+    }
+
+    #[allow(clippy::only_used_in_recursion, clippy::wildcard_enum_match_arm)]
+    fn expr_to_sql(&self, expr: &yachtsql_ir::Expr) -> Result<String> {
+        use yachtsql_ir::{BinaryOp, Expr, Literal};
+        match expr {
+            Expr::Literal(lit) => match lit {
+                Literal::Null => Ok("NULL".to_string()),
+                Literal::Bool(b) => Ok(if *b { "TRUE" } else { "FALSE" }.to_string()),
+                Literal::Int64(i) => Ok(i.to_string()),
+                Literal::Float64(f) => Ok(f.to_string()),
+                Literal::String(s) => Ok(format!("'{}'", s.replace('\'', "''"))),
+                Literal::Numeric(d) => Ok(d.to_string()),
+                Literal::BigNumeric(d) => Ok(d.to_string()),
+                Literal::Date(d) => Ok(format!(
+                    "DATE '{}'",
+                    chrono::NaiveDate::from_num_days_from_ce_opt(*d)
+                        .map(|d| d.format("%Y-%m-%d").to_string())
+                        .unwrap_or_default()
+                )),
+                Literal::Timestamp(ts) => Ok(format!(
+                    "TIMESTAMP '{}'",
+                    chrono::DateTime::from_timestamp_micros(*ts)
+                        .map(|d| d.format("%Y-%m-%d %H:%M:%S%.6f").to_string())
+                        .unwrap_or_default()
+                )),
+                _ => Err(Error::internal(format!(
+                    "Unsupported literal type: {:?}",
+                    std::mem::discriminant(lit)
+                ))),
+            },
+            Expr::Column { name, table, .. } => match table {
+                Some(t) => Ok(format!("{}.{}", t, name)),
+                None => Ok(name.clone()),
+            },
+            Expr::BinaryOp { left, op, right } => {
+                let l = self.expr_to_sql(left)?;
+                let r = self.expr_to_sql(right)?;
+                let op_str = match op {
+                    BinaryOp::Eq => "=",
+                    BinaryOp::NotEq => "<>",
+                    BinaryOp::Lt => "<",
+                    BinaryOp::LtEq => "<=",
+                    BinaryOp::Gt => ">",
+                    BinaryOp::GtEq => ">=",
+                    BinaryOp::And => "AND",
+                    BinaryOp::Or => "OR",
+                    BinaryOp::Add => "+",
+                    BinaryOp::Sub => "-",
+                    BinaryOp::Mul => "*",
+                    BinaryOp::Div => "/",
+                    BinaryOp::Mod => "%",
+                    BinaryOp::BitwiseAnd => "&",
+                    BinaryOp::BitwiseOr => "|",
+                    BinaryOp::BitwiseXor => "^",
+                    BinaryOp::Concat => "||",
+                    BinaryOp::ShiftLeft => "<<",
+                    BinaryOp::ShiftRight => ">>",
+                };
+                Ok(format!("({} {} {})", l, op_str, r))
+            }
+            Expr::IsNull { expr, negated } => {
+                let inner = self.expr_to_sql(expr)?;
+                let op = if *negated { "IS NOT NULL" } else { "IS NULL" };
+                Ok(format!("({} {})", inner, op))
+            }
+            Expr::Like {
+                expr,
+                pattern,
+                negated,
+                ..
+            } => {
+                let e = self.expr_to_sql(expr)?;
+                let p = self.expr_to_sql(pattern)?;
+                let neg = if *negated { "NOT " } else { "" };
+                Ok(format!("({} {}LIKE {})", e, neg, p))
+            }
+            Expr::InList {
+                expr,
+                list,
+                negated,
+            } => {
+                let e = self.expr_to_sql(expr)?;
+                let values: Vec<String> = list
+                    .iter()
+                    .map(|v| self.expr_to_sql(v))
+                    .collect::<Result<_>>()?;
+                let neg = if *negated { "NOT " } else { "" };
+                Ok(format!("({} {}IN ({}))", e, neg, values.join(", ")))
+            }
+            Expr::Between {
+                expr,
+                low,
+                high,
+                negated,
+            } => {
+                let e = self.expr_to_sql(expr)?;
+                let l = self.expr_to_sql(low)?;
+                let h = self.expr_to_sql(high)?;
+                let neg = if *negated { "NOT " } else { "" };
+                Ok(format!("({} {}BETWEEN {} AND {})", e, neg, l, h))
+            }
+            _ => Err(Error::internal(format!(
+                "Expression not supported in UPDATE/DELETE: {:?}",
+                std::mem::discriminant(expr)
+            ))),
+        }
+    }
+
+    async fn evaluate_filter(&self, batch: &RecordBatch, filter_sql: &str) -> Result<Vec<bool>> {
+        let schema = batch.schema();
+        let mem_table = MemTable::try_new(schema.clone(), vec![vec![batch.clone()]])
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let tmp_name = format!(
+            "__tmp_filter_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        self.ctx
+            .register_table(&tmp_name, Arc::new(mem_table))
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let query = format!("SELECT {} FROM {}", filter_sql, tmp_name);
+        let result = self
+            .ctx
+            .sql(&query)
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let batches = result
+            .collect()
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let _ = self.ctx.deregister_table(&tmp_name);
+
+        let mut values = Vec::new();
+        for b in batches {
+            if b.num_columns() > 0 {
+                let col = b.column(0);
+                if let Some(bool_arr) = col
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+                {
+                    for i in 0..bool_arr.len() {
+                        values.push(bool_arr.value(i));
+                    }
+                }
+            }
+        }
+        Ok(values)
+    }
+
+    async fn evaluate_expr(
+        &self,
+        batch: &RecordBatch,
+        expr_sql: &str,
+        _target_type: &ArrowDataType,
+    ) -> Result<ArrayRef> {
+        let schema = batch.schema();
+        let mem_table = MemTable::try_new(schema.clone(), vec![vec![batch.clone()]])
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let tmp_name = format!(
+            "__tmp_expr_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        self.ctx
+            .register_table(&tmp_name, Arc::new(mem_table))
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        let query = format!("SELECT {} FROM {}", expr_sql, tmp_name);
+        let result = self
+            .ctx
+            .sql(&query)
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let batches = result
+            .collect()
+            .await
+            .map_err(|e| Error::internal(e.to_string()))?;
+        let _ = self.ctx.deregister_table(&tmp_name);
+
+        if batches.is_empty() || batches[0].num_columns() == 0 {
+            return Err(Error::internal("Expression evaluation returned no data"));
+        }
+
+        Ok(batches[0].column(0).clone())
+    }
+
+    #[allow(clippy::only_used_in_recursion, clippy::wildcard_enum_match_arm)]
+    fn append_value(
+        &self,
+        builder: &mut Box<dyn datafusion::arrow::array::ArrayBuilder>,
+        source: &ArrayRef,
+        idx: usize,
+    ) -> Result<()> {
+        use datafusion::arrow::array::*;
+
+        let is_null = source.is_null(idx);
+
+        match source.data_type() {
+            ArrowDataType::Int64 => {
+                let b = builder.as_any_mut().downcast_mut::<Int64Builder>().unwrap();
+                if is_null {
+                    b.append_null();
+                } else {
+                    let arr = source.as_any().downcast_ref::<Int64Array>().unwrap();
+                    b.append_value(arr.value(idx));
+                }
+            }
+            ArrowDataType::Float64 => {
+                let b = builder
+                    .as_any_mut()
+                    .downcast_mut::<Float64Builder>()
+                    .unwrap();
+                if is_null {
+                    b.append_null();
+                } else {
+                    let arr = source.as_any().downcast_ref::<Float64Array>().unwrap();
+                    b.append_value(arr.value(idx));
+                }
+            }
+            ArrowDataType::Utf8 => {
+                let b = builder
+                    .as_any_mut()
+                    .downcast_mut::<StringBuilder>()
+                    .unwrap();
+                if is_null {
+                    b.append_null();
+                } else {
+                    let arr = source.as_any().downcast_ref::<StringArray>().unwrap();
+                    b.append_value(arr.value(idx));
+                }
+            }
+            ArrowDataType::Boolean => {
+                let b = builder
+                    .as_any_mut()
+                    .downcast_mut::<BooleanBuilder>()
+                    .unwrap();
+                if is_null {
+                    b.append_null();
+                } else {
+                    let arr = source.as_any().downcast_ref::<BooleanArray>().unwrap();
+                    b.append_value(arr.value(idx));
+                }
+            }
+            ArrowDataType::Date32 => {
+                let b = builder
+                    .as_any_mut()
+                    .downcast_mut::<Date32Builder>()
+                    .unwrap();
+                if is_null {
+                    b.append_null();
+                } else {
+                    let arr = source.as_any().downcast_ref::<Date32Array>().unwrap();
+                    b.append_value(arr.value(idx));
+                }
+            }
+            _ => {
+                return Err(Error::internal(format!(
+                    "Unsupported data type for UPDATE: {:?}",
+                    source.data_type()
+                )));
+            }
+        }
+        Ok(())
     }
 
     async fn execute_truncate(&self, table_name: &str) -> Result<Vec<RecordBatch>> {
@@ -743,56 +1284,183 @@ impl YachtSQLSession {
 
     async fn execute_create_view(
         &self,
-        _name: &str,
-        _query_sql: &str,
-        _column_aliases: &[String],
-        _or_replace: bool,
-        _if_not_exists: bool,
+        name: &str,
+        query_sql: &str,
+        column_aliases: &[String],
+        or_replace: bool,
+        if_not_exists: bool,
     ) -> Result<Vec<RecordBatch>> {
-        Err(Error::internal("CREATE VIEW not yet implemented"))
+        let lower = name.to_lowercase();
+
+        {
+            let views = self.views.read();
+            if views.contains_key(&lower) {
+                if if_not_exists {
+                    return Ok(vec![]);
+                }
+                if !or_replace {
+                    return Err(Error::internal(format!("View {} already exists", name)));
+                }
+            }
+        }
+
+        self.views.write().insert(
+            lower,
+            ViewDefinition {
+                query: query_sql.to_string(),
+                column_aliases: column_aliases.to_vec(),
+            },
+        );
+
+        Ok(vec![])
     }
 
-    async fn execute_drop_view(&self, _name: &str, _if_exists: bool) -> Result<Vec<RecordBatch>> {
-        Err(Error::internal("DROP VIEW not yet implemented"))
+    async fn execute_drop_view(&self, name: &str, if_exists: bool) -> Result<Vec<RecordBatch>> {
+        let lower = name.to_lowercase();
+
+        match self.views.write().remove(&lower) {
+            Some(_) => Ok(vec![]),
+            None => {
+                if if_exists {
+                    Ok(vec![])
+                } else {
+                    Err(Error::internal(format!("View {} not found", name)))
+                }
+            }
+        }
     }
 
     async fn execute_create_schema(
         &self,
-        _name: &str,
-        _if_not_exists: bool,
+        name: &str,
+        if_not_exists: bool,
     ) -> Result<Vec<RecordBatch>> {
+        let lower = name.to_lowercase();
+
+        {
+            let schemas = self.schemas.read();
+            if schemas.contains(&lower) {
+                if if_not_exists {
+                    return Ok(vec![]);
+                }
+                return Err(Error::internal(format!("Schema already exists: {}", name)));
+            }
+        }
+
+        let catalog = self
+            .ctx
+            .catalog("datafusion")
+            .ok_or_else(|| Error::internal("Default catalog 'datafusion' not found"))?;
+
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        catalog
+            .register_schema(&lower, schema_provider)
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        self.schemas.write().insert(lower);
+
         Ok(vec![])
     }
 
     async fn execute_drop_schema(
         &self,
-        _name: &str,
-        _if_exists: bool,
-        _cascade: bool,
+        name: &str,
+        if_exists: bool,
+        cascade: bool,
     ) -> Result<Vec<RecordBatch>> {
+        let lower = name.to_lowercase();
+
+        {
+            let schemas = self.schemas.read();
+            if !schemas.contains(&lower) {
+                if if_exists {
+                    return Ok(vec![]);
+                }
+                return Err(Error::internal(format!("Schema not found: {}", name)));
+            }
+        }
+
+        let catalog = self
+            .ctx
+            .catalog("datafusion")
+            .ok_or_else(|| Error::internal("Default catalog 'datafusion' not found"))?;
+
+        if let Some(schema) = catalog.schema(&lower) {
+            let tables = schema.table_names();
+            if !cascade && !tables.is_empty() {
+                return Err(Error::internal(format!(
+                    "Schema {} is not empty. Use CASCADE to drop.",
+                    name
+                )));
+            }
+            for table_name in tables {
+                schema
+                    .deregister_table(&table_name)
+                    .map_err(|e| Error::internal(e.to_string()))?;
+            }
+        }
+
+        catalog
+            .deregister_schema(&lower, cascade)
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        self.schemas.write().remove(&lower);
+
         Ok(vec![])
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn execute_create_function(
         &self,
-        _name: &str,
-        _args: &[yachtsql_ir::FunctionArg],
-        _return_type: &DataType,
-        _body: &FunctionBody,
-        _or_replace: bool,
-        _if_not_exists: bool,
-        _is_aggregate: bool,
+        name: &str,
+        args: &[yachtsql_ir::FunctionArg],
+        return_type: &DataType,
+        body: &FunctionBody,
+        or_replace: bool,
+        if_not_exists: bool,
+        is_aggregate: bool,
     ) -> Result<Vec<RecordBatch>> {
-        Err(Error::internal("CREATE FUNCTION not yet implemented"))
+        let lower = name.to_lowercase();
+
+        {
+            let functions = self.functions.read();
+            if functions.contains_key(&lower) {
+                if if_not_exists {
+                    return Ok(vec![]);
+                }
+                if !or_replace {
+                    return Err(Error::internal(format!("Function {} already exists", name)));
+                }
+            }
+        }
+
+        self.functions.write().insert(
+            lower,
+            FunctionDefinition {
+                name: name.to_string(),
+                parameters: args.to_vec(),
+                return_type: return_type.clone(),
+                body: body.clone(),
+                is_aggregate,
+            },
+        );
+
+        Ok(vec![])
     }
 
-    async fn execute_drop_function(
-        &self,
-        _name: &str,
-        _if_exists: bool,
-    ) -> Result<Vec<RecordBatch>> {
-        Err(Error::internal("DROP FUNCTION not yet implemented"))
+    async fn execute_drop_function(&self, name: &str, if_exists: bool) -> Result<Vec<RecordBatch>> {
+        let lower = name.to_lowercase();
+
+        match self.functions.write().remove(&lower) {
+            Some(_) => Ok(vec![]),
+            None => {
+                if if_exists {
+                    Ok(vec![])
+                } else {
+                    Err(Error::internal(format!("Function {} not found", name)))
+                }
+            }
+        }
     }
 
     async fn execute_explain(
