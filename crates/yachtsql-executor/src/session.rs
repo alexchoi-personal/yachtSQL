@@ -34,6 +34,13 @@ pub struct ProcedureDefinition {
     pub body: Vec<LogicalPlan>,
 }
 
+enum ControlFlow {
+    Normal(Vec<RecordBatch>),
+    Break(Option<String>),
+    Continue(Option<String>),
+    Return,
+}
+
 #[derive(Debug)]
 struct UserDefinedScalarFunction {
     name: String,
@@ -440,7 +447,11 @@ impl YachtSQLSession {
     pub async fn execute_sql(&self, sql: &str) -> Result<Vec<RecordBatch>> {
         let catalog = SessionCatalog { session: self };
         let plan = yachtsql_parser::parse_and_plan(sql, &catalog)?;
-        self.execute_plan(&plan).await
+        match self.execute_plan(&plan).await {
+            Ok(result) => Ok(result),
+            Err(e) if e.to_string().contains("RETURN_SIGNAL") => Ok(vec![]),
+            Err(e) => Err(e),
+        }
     }
 
     #[allow(clippy::wildcard_enum_match_arm)]
@@ -660,18 +671,208 @@ impl YachtSQLSession {
                 Ok(vec![])
             }
 
+            LogicalPlan::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let cond_value = self.eval_bool_expr(condition);
+                let branch = if cond_value {
+                    then_branch
+                } else {
+                    match else_branch {
+                        Some(b) => b,
+                        None => return Ok(vec![]),
+                    }
+                };
+                self.execute_statements(branch).await
+            }
+
+            LogicalPlan::While {
+                condition,
+                body,
+                label,
+            } => {
+                let my_label = label.as_ref().map(|l| l.to_lowercase());
+                loop {
+                    let cond_value = self.eval_bool_expr(condition);
+                    if !cond_value {
+                        break;
+                    }
+                    match self.execute_statements_with_control(body).await? {
+                        ControlFlow::Normal(result) => {
+                            if !result.is_empty() {
+                                return Ok(result);
+                            }
+                        }
+                        ControlFlow::Break(None) => break,
+                        ControlFlow::Break(Some(ref target))
+                            if my_label.as_ref() == Some(target) =>
+                        {
+                            break;
+                        }
+                        ControlFlow::Break(Some(lbl)) => {
+                            return Err(Error::internal(format!("BREAK_SIGNAL:{}", lbl)));
+                        }
+                        ControlFlow::Continue(None) => continue,
+                        ControlFlow::Continue(Some(ref target))
+                            if my_label.as_ref() == Some(target) =>
+                        {
+                            continue;
+                        }
+                        ControlFlow::Continue(Some(lbl)) => {
+                            return Err(Error::internal(format!("CONTINUE_SIGNAL:{}", lbl)));
+                        }
+                        ControlFlow::Return => return Err(Error::internal("RETURN_SIGNAL")),
+                    }
+                }
+                Ok(vec![])
+            }
+
+            LogicalPlan::Loop { body, label } => {
+                let my_label = label.as_ref().map(|l| l.to_lowercase());
+                loop {
+                    match self.execute_statements_with_control(body).await? {
+                        ControlFlow::Normal(result) => {
+                            if !result.is_empty() {
+                                return Ok(result);
+                            }
+                        }
+                        ControlFlow::Break(None) => break,
+                        ControlFlow::Break(Some(ref target))
+                            if my_label.as_ref() == Some(target) =>
+                        {
+                            break;
+                        }
+                        ControlFlow::Break(Some(lbl)) => {
+                            return Err(Error::internal(format!("BREAK_SIGNAL:{}", lbl)));
+                        }
+                        ControlFlow::Continue(None) => continue,
+                        ControlFlow::Continue(Some(ref target))
+                            if my_label.as_ref() == Some(target) =>
+                        {
+                            continue;
+                        }
+                        ControlFlow::Continue(Some(lbl)) => {
+                            return Err(Error::internal(format!("CONTINUE_SIGNAL:{}", lbl)));
+                        }
+                        ControlFlow::Return => return Err(Error::internal("RETURN_SIGNAL")),
+                    }
+                }
+                Ok(vec![])
+            }
+
+            LogicalPlan::Block { body, label: _ } => self.execute_statements(body).await,
+
+            LogicalPlan::Repeat {
+                body,
+                until_condition,
+            } => {
+                loop {
+                    match self.execute_statements_with_control(body).await? {
+                        ControlFlow::Normal(result) => {
+                            if !result.is_empty() {
+                                return Ok(result);
+                            }
+                        }
+                        ControlFlow::Break(None) => break,
+                        ControlFlow::Break(Some(lbl)) => {
+                            return Err(Error::internal(format!("BREAK_SIGNAL:{}", lbl)));
+                        }
+                        ControlFlow::Continue(_) => {}
+                        ControlFlow::Return => return Err(Error::internal("RETURN_SIGNAL")),
+                    }
+                    let cond_value = self.eval_bool_expr(until_condition);
+                    if cond_value {
+                        break;
+                    }
+                }
+                Ok(vec![])
+            }
+
+            LogicalPlan::For {
+                variable,
+                query,
+                body,
+            } => {
+                let batches = Box::pin(self.execute_query(query)).await?;
+                'outer: for batch in &batches {
+                    let schema = batch.schema();
+                    for row_idx in 0..batch.num_rows() {
+                        use datafusion::arrow::array::StructArray;
+                        let arrays: Vec<Arc<dyn datafusion::arrow::array::Array>> = (0..batch
+                            .num_columns())
+                            .map(|i| {
+                                let val = ScalarValue::try_from_array(batch.column(i), row_idx)
+                                    .unwrap_or(ScalarValue::Null);
+                                val.to_array().map_err(|e| Error::internal(e.to_string()))
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        let struct_array = StructArray::new(schema.fields().clone(), arrays, None);
+                        let struct_val = ScalarValue::Struct(Arc::new(struct_array));
+                        self.variables
+                            .write()
+                            .insert(variable.to_lowercase(), struct_val);
+                        match self.execute_statements_with_control(body).await? {
+                            ControlFlow::Normal(result) => {
+                                if !result.is_empty() {
+                                    return Ok(result);
+                                }
+                            }
+                            ControlFlow::Break(None) => break 'outer,
+                            ControlFlow::Break(Some(lbl)) => {
+                                return Err(Error::internal(format!("BREAK_SIGNAL:{}", lbl)));
+                            }
+                            ControlFlow::Continue(None) => continue,
+                            ControlFlow::Continue(Some(lbl)) => {
+                                return Err(Error::internal(format!("CONTINUE_SIGNAL:{}", lbl)));
+                            }
+                            ControlFlow::Return => return Err(Error::internal("RETURN_SIGNAL")),
+                        }
+                    }
+                }
+                Ok(vec![])
+            }
+
+            LogicalPlan::Break { label } => {
+                let lbl = label.as_ref().map(|l| l.to_lowercase());
+                Err(Error::internal(format!(
+                    "BREAK_SIGNAL:{}",
+                    lbl.unwrap_or_default()
+                )))
+            }
+
+            LogicalPlan::Continue { label } => {
+                let lbl = label.as_ref().map(|l| l.to_lowercase());
+                Err(Error::internal(format!(
+                    "CONTINUE_SIGNAL:{}",
+                    lbl.unwrap_or_default()
+                )))
+            }
+
+            LogicalPlan::Return { value: _ } => Err(Error::internal("RETURN_SIGNAL")),
+
+            LogicalPlan::Assert { condition, message } => {
+                let cond_value = self.eval_bool_expr(condition);
+                if !cond_value {
+                    let msg = message
+                        .as_ref()
+                        .map(|e| {
+                            let val = self.eval_const_expr(e);
+                            match val {
+                                ScalarValue::Utf8(Some(s)) => s,
+                                _ => "Assertion failed".to_string(),
+                            }
+                        })
+                        .unwrap_or_else(|| "Assertion failed".to_string());
+                    return Err(Error::internal(msg));
+                }
+                Ok(vec![])
+            }
+
             LogicalPlan::ExportData { .. }
             | LogicalPlan::LoadData { .. }
-            | LogicalPlan::If { .. }
-            | LogicalPlan::While { .. }
-            | LogicalPlan::Loop { .. }
-            | LogicalPlan::Block { .. }
-            | LogicalPlan::Repeat { .. }
-            | LogicalPlan::For { .. }
-            | LogicalPlan::Return { .. }
             | LogicalPlan::Raise { .. }
-            | LogicalPlan::Break { .. }
-            | LogicalPlan::Continue { .. }
             | LogicalPlan::Grant { .. }
             | LogicalPlan::Revoke { .. }
             | LogicalPlan::GapFill { .. }
@@ -679,7 +880,6 @@ impl YachtSQLSession {
             | LogicalPlan::DropSnapshot { .. }
             | LogicalPlan::ExecuteImmediate { .. }
             | LogicalPlan::TryCatch { .. }
-            | LogicalPlan::Assert { .. }
             | LogicalPlan::Unnest { .. } => Ok(vec![]),
         }
     }
@@ -705,6 +905,87 @@ impl YachtSQLSession {
         df.collect()
             .await
             .map_err(|e| Error::internal(e.to_string()))
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn eval_bool_expr(&self, expr: &yachtsql_ir::Expr) -> bool {
+        let val = self.eval_const_expr(expr);
+        match val {
+            ScalarValue::Boolean(Some(b)) => b,
+            ScalarValue::Int64(Some(i)) => i != 0,
+            ScalarValue::UInt64(Some(u)) => u != 0,
+            _ => false,
+        }
+    }
+
+    async fn execute_statements(&self, stmts: &[LogicalPlan]) -> Result<Vec<RecordBatch>> {
+        for stmt in stmts {
+            let result = Box::pin(self.execute_plan(stmt)).await?;
+            if !result.is_empty() {
+                return Ok(result);
+            }
+        }
+        Ok(vec![])
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    async fn execute_statements_with_control(&self, stmts: &[LogicalPlan]) -> Result<ControlFlow> {
+        for stmt in stmts {
+            match stmt {
+                LogicalPlan::Break { label } => {
+                    return Ok(ControlFlow::Break(label.as_ref().map(|l| l.to_lowercase())));
+                }
+                LogicalPlan::Continue { label } => {
+                    return Ok(ControlFlow::Continue(
+                        label.as_ref().map(|l| l.to_lowercase()),
+                    ));
+                }
+                LogicalPlan::Return { .. } => {
+                    return Ok(ControlFlow::Return);
+                }
+                _ => {}
+            }
+            let result = Box::pin(self.execute_plan(stmt)).await;
+            match result {
+                Ok(batches) => {
+                    if !batches.is_empty() {
+                        return Ok(ControlFlow::Normal(batches));
+                    }
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("RETURN_SIGNAL") {
+                        return Ok(ControlFlow::Return);
+                    }
+                    if let Some(idx) = msg.find("BREAK_SIGNAL:") {
+                        let after = &msg[idx + "BREAK_SIGNAL:".len()..];
+                        let lbl = if after.is_empty() {
+                            None
+                        } else {
+                            Some(after.to_string())
+                        };
+                        return Ok(ControlFlow::Break(lbl));
+                    }
+                    if msg.contains("BREAK_SIGNAL") {
+                        return Ok(ControlFlow::Break(None));
+                    }
+                    if let Some(idx) = msg.find("CONTINUE_SIGNAL:") {
+                        let after = &msg[idx + "CONTINUE_SIGNAL:".len()..];
+                        let lbl = if after.is_empty() {
+                            None
+                        } else {
+                            Some(after.to_string())
+                        };
+                        return Ok(ControlFlow::Continue(lbl));
+                    }
+                    if msg.contains("CONTINUE_SIGNAL") {
+                        return Ok(ControlFlow::Continue(None));
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Ok(ControlFlow::Normal(vec![]))
     }
 
     fn set_outer_aliases(&self, plan: &LogicalPlan) {
@@ -1562,7 +1843,36 @@ impl YachtSQLSession {
             }
 
             yachtsql_ir::Expr::Column {
-                name, index: None, ..
+                table: Some(table_name),
+                name,
+                index: None,
+                ..
+            } => {
+                let var_name = table_name.to_lowercase();
+                let field_name = name.to_lowercase();
+                let variables = self.variables.read();
+                if let Some(ScalarValue::Struct(struct_arr)) = variables.get(&var_name) {
+                    let schema = struct_arr.fields();
+                    for (idx, field) in schema.iter().enumerate() {
+                        if field.name().to_lowercase() == field_name {
+                            let col = struct_arr.column(idx);
+                            if !col.is_empty() {
+                                let val = ScalarValue::try_from_array(col, 0)
+                                    .map_err(|e| Error::internal(e.to_string()))?;
+                                return Ok(DFExpr::Literal(val));
+                            }
+                        }
+                    }
+                }
+                yachtsql_parser::DataFusionConverter::convert_expr(expr)
+                    .map_err(|e| Error::internal(e.to_string()))
+            }
+
+            yachtsql_ir::Expr::Column {
+                table: None,
+                name,
+                index: None,
+                ..
             } => {
                 let var_name = name.to_lowercase();
                 let variables = self.variables.read();
@@ -3336,7 +3646,33 @@ impl YachtSQLSession {
                     .unwrap_or(ScalarValue::Null)
             }
             yachtsql_ir::Expr::Column {
-                name, index: None, ..
+                table: Some(table_name),
+                name,
+                index: None,
+                ..
+            } => {
+                let var_name = table_name.to_lowercase();
+                let field_name = name.to_lowercase();
+                let variables = self.variables.read();
+                if let Some(ScalarValue::Struct(struct_arr)) = variables.get(&var_name) {
+                    let schema = struct_arr.fields();
+                    for (idx, field) in schema.iter().enumerate() {
+                        if field.name().to_lowercase() == field_name {
+                            let col = struct_arr.column(idx);
+                            if !col.is_empty() {
+                                return ScalarValue::try_from_array(col, 0)
+                                    .unwrap_or(ScalarValue::Null);
+                            }
+                        }
+                    }
+                }
+                ScalarValue::Null
+            }
+            yachtsql_ir::Expr::Column {
+                table: None,
+                name,
+                index: None,
+                ..
             } => {
                 let var_name = name.to_lowercase();
                 let variables = self.variables.read();
@@ -3409,6 +3745,12 @@ impl YachtSQLSession {
                 BinaryOp::Mul => ScalarValue::Int64(Some(l * r)),
                 BinaryOp::Div => ScalarValue::Int64(Some(l / r)),
                 BinaryOp::Mod => ScalarValue::Int64(Some(l % r)),
+                BinaryOp::Lt => ScalarValue::Boolean(Some(l < r)),
+                BinaryOp::LtEq => ScalarValue::Boolean(Some(l <= r)),
+                BinaryOp::Gt => ScalarValue::Boolean(Some(l > r)),
+                BinaryOp::GtEq => ScalarValue::Boolean(Some(l >= r)),
+                BinaryOp::Eq => ScalarValue::Boolean(Some(l == r)),
+                BinaryOp::NotEq => ScalarValue::Boolean(Some(l != r)),
                 _ => ScalarValue::Null,
             },
             (ScalarValue::Float64(Some(l)), ScalarValue::Float64(Some(r))) => match op {
@@ -3416,10 +3758,29 @@ impl YachtSQLSession {
                 BinaryOp::Sub => ScalarValue::Float64(Some(l - r)),
                 BinaryOp::Mul => ScalarValue::Float64(Some(l * r)),
                 BinaryOp::Div => ScalarValue::Float64(Some(l / r)),
+                BinaryOp::Lt => ScalarValue::Boolean(Some(l < r)),
+                BinaryOp::LtEq => ScalarValue::Boolean(Some(l <= r)),
+                BinaryOp::Gt => ScalarValue::Boolean(Some(l > r)),
+                BinaryOp::GtEq => ScalarValue::Boolean(Some(l >= r)),
+                BinaryOp::Eq => ScalarValue::Boolean(Some(l == r)),
+                BinaryOp::NotEq => ScalarValue::Boolean(Some(l != r)),
                 _ => ScalarValue::Null,
             },
             (ScalarValue::Utf8(Some(l)), ScalarValue::Utf8(Some(r))) => match op {
                 BinaryOp::Concat => ScalarValue::Utf8(Some(format!("{}{}", l, r))),
+                BinaryOp::Eq => ScalarValue::Boolean(Some(l == r)),
+                BinaryOp::NotEq => ScalarValue::Boolean(Some(l != r)),
+                BinaryOp::Lt => ScalarValue::Boolean(Some(l < r)),
+                BinaryOp::LtEq => ScalarValue::Boolean(Some(l <= r)),
+                BinaryOp::Gt => ScalarValue::Boolean(Some(l > r)),
+                BinaryOp::GtEq => ScalarValue::Boolean(Some(l >= r)),
+                _ => ScalarValue::Null,
+            },
+            (ScalarValue::Boolean(Some(l)), ScalarValue::Boolean(Some(r))) => match op {
+                BinaryOp::And => ScalarValue::Boolean(Some(*l && *r)),
+                BinaryOp::Or => ScalarValue::Boolean(Some(*l || *r)),
+                BinaryOp::Eq => ScalarValue::Boolean(Some(l == r)),
+                BinaryOp::NotEq => ScalarValue::Boolean(Some(l != r)),
                 _ => ScalarValue::Null,
             },
             _ => ScalarValue::Null,
