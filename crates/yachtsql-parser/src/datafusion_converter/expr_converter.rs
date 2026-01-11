@@ -1227,8 +1227,8 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             let mut iter = args.into_iter();
             let date1 = iter.next().unwrap();
             let date2 = iter.next().unwrap();
-            let _part = iter.next().unwrap_or_else(|| lit("day"));
-            Ok(date1.clone() - date2.clone())
+            let part = iter.next().unwrap_or_else(|| lit("DAY"));
+            Ok(date_diff_udf().call(vec![date1, date2, part]))
         }
 
         ScalarFunction::RegexpContains => {
@@ -1613,6 +1613,26 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
         ScalarFunction::JustifyInterval => {
             let arg = args.into_iter().next().unwrap();
             Ok(arg)
+        }
+
+        ScalarFunction::LaxBool => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(lax_bool_udf().call(vec![arg]))
+        }
+
+        ScalarFunction::LaxInt64 => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(lax_int64_udf().call(vec![arg]))
+        }
+
+        ScalarFunction::LaxFloat64 => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(lax_float64_udf().call(vec![arg]))
+        }
+
+        ScalarFunction::LaxString => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(lax_string_udf().call(vec![arg]))
         }
 
         ScalarFunction::Custom(func_name) => Err(datafusion::common::DataFusionError::Plan(
@@ -3228,4 +3248,464 @@ fn string_from_json_udf() -> datafusion::logical_expr::ScalarUDF {
     }
 
     ScalarUDF::from(StringFromJsonUdf::new())
+}
+
+fn date_diff_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{
+        Array, ArrayRef, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
+        TimestampNanosecondArray, TimestampSecondArray,
+    };
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct DateDiffUdf {
+        signature: Signature,
+    }
+
+    impl DateDiffUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    fn extract_nanos(arr: &ArrayRef, idx: usize) -> Option<i64> {
+        if arr.is_null(idx) {
+            return None;
+        }
+        if let Some(ts) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
+            return Some(ts.value(idx));
+        }
+        if let Some(ts) = arr.as_any().downcast_ref::<TimestampMicrosecondArray>() {
+            return Some(ts.value(idx) * 1_000);
+        }
+        if let Some(ts) = arr.as_any().downcast_ref::<TimestampMillisecondArray>() {
+            return Some(ts.value(idx) * 1_000_000);
+        }
+        if let Some(ts) = arr.as_any().downcast_ref::<TimestampSecondArray>() {
+            return Some(ts.value(idx) * 1_000_000_000);
+        }
+        if let Some(d32) = arr
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Date32Array>()
+        {
+            return Some(d32.value(idx) as i64 * 86_400_000_000_000);
+        }
+        if let Some(d64) = arr
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Date64Array>()
+        {
+            return Some(d64.value(idx) * 1_000_000);
+        }
+        None
+    }
+
+    impl ScalarUDFImpl for DateDiffUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "date_diff_bigquery"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Int64)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let ts1_arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let ts2_arr = match &args[1] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let part_arr = match &args[2] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let parts = part_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected string array for date part".to_string(),
+                    )
+                })?;
+
+            let mut builder = datafusion::arrow::array::Int64Builder::new();
+            for i in 0..num_rows {
+                let nanos1 = extract_nanos(&ts1_arr, i);
+                let nanos2 = extract_nanos(&ts2_arr, i);
+
+                match (nanos1, nanos2) {
+                    (Some(n1), Some(n2)) => {
+                        let diff_nanos = n1 - n2;
+                        let part = parts.value(i).to_uppercase();
+                        let result = match part.as_str() {
+                            "NANOSECOND" => diff_nanos,
+                            "MICROSECOND" => diff_nanos / 1_000,
+                            "MILLISECOND" => diff_nanos / 1_000_000,
+                            "SECOND" => diff_nanos / 1_000_000_000,
+                            "MINUTE" => diff_nanos / 60_000_000_000,
+                            "HOUR" => diff_nanos / 3_600_000_000_000,
+                            "DAY" => diff_nanos / 86_400_000_000_000,
+                            "WEEK" => diff_nanos / (7 * 86_400_000_000_000),
+                            "MONTH" => {
+                                let days = diff_nanos / 86_400_000_000_000;
+                                days / 30
+                            }
+                            "QUARTER" => {
+                                let days = diff_nanos / 86_400_000_000_000;
+                                days / 91
+                            }
+                            "YEAR" => {
+                                let days = diff_nanos / 86_400_000_000_000;
+                                days / 365
+                            }
+                            _ => diff_nanos / 86_400_000_000_000,
+                        };
+                        builder.append_value(result);
+                    }
+                    _ => builder.append_null(),
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(DateDiffUdf::new())
+}
+
+fn lax_bool_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, BooleanBuilder, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct LaxBoolUdf {
+        signature: Signature,
+    }
+
+    impl LaxBoolUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for LaxBoolUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "lax_bool"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Boolean)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let mut builder = BooleanBuilder::new();
+            for i in 0..arr.len() {
+                if arr.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                if let Some(b) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+                {
+                    builder.append_value(b.value(i));
+                } else if let Some(i64s) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Int64Array>()
+                {
+                    builder.append_value(i64s.value(i) != 0);
+                } else if let Some(f64s) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Float64Array>()
+                {
+                    builder.append_value(f64s.value(i) != 0.0);
+                } else if let Some(strs) = arr.as_any().downcast_ref::<StringArray>() {
+                    let s = strs.value(i).to_lowercase();
+                    match s.as_str() {
+                        "true" | "1" => builder.append_value(true),
+                        "false" | "0" => builder.append_value(false),
+                        _ => builder.append_null(),
+                    }
+                } else {
+                    builder.append_null();
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(LaxBoolUdf::new())
+}
+
+fn lax_int64_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, Int64Builder, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct LaxInt64Udf {
+        signature: Signature,
+    }
+
+    impl LaxInt64Udf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for LaxInt64Udf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "lax_int64"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Int64)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let mut builder = Int64Builder::new();
+            for i in 0..arr.len() {
+                if arr.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                if let Some(i64s) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Int64Array>()
+                {
+                    builder.append_value(i64s.value(i));
+                } else if let Some(f64s) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Float64Array>()
+                {
+                    builder.append_value(f64s.value(i) as i64);
+                } else if let Some(b) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+                {
+                    builder.append_value(if b.value(i) { 1 } else { 0 });
+                } else if let Some(strs) = arr.as_any().downcast_ref::<StringArray>() {
+                    match strs.value(i).trim().parse::<i64>() {
+                        Ok(v) => builder.append_value(v),
+                        Err(_) => match strs.value(i).trim().parse::<f64>() {
+                            Ok(v) => builder.append_value(v as i64),
+                            Err(_) => builder.append_null(),
+                        },
+                    }
+                } else {
+                    builder.append_null();
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(LaxInt64Udf::new())
+}
+
+fn lax_float64_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, Float64Builder, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct LaxFloat64Udf {
+        signature: Signature,
+    }
+
+    impl LaxFloat64Udf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for LaxFloat64Udf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "lax_float64"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Float64)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let mut builder = Float64Builder::new();
+            for i in 0..arr.len() {
+                if arr.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                if let Some(f64s) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Float64Array>()
+                {
+                    builder.append_value(f64s.value(i));
+                } else if let Some(i64s) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Int64Array>()
+                {
+                    builder.append_value(i64s.value(i) as f64);
+                } else if let Some(b) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+                {
+                    builder.append_value(if b.value(i) { 1.0 } else { 0.0 });
+                } else if let Some(strs) = arr.as_any().downcast_ref::<StringArray>() {
+                    match strs.value(i).trim().parse::<f64>() {
+                        Ok(v) => builder.append_value(v),
+                        Err(_) => builder.append_null(),
+                    }
+                } else {
+                    builder.append_null();
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(LaxFloat64Udf::new())
+}
+
+fn lax_string_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, StringArray, StringBuilder};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct LaxStringUdf {
+        signature: Signature,
+    }
+
+    impl LaxStringUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::variadic_any(Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for LaxStringUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "lax_string"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Utf8)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let mut builder = StringBuilder::new();
+            for i in 0..arr.len() {
+                if arr.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                if let Some(strs) = arr.as_any().downcast_ref::<StringArray>() {
+                    builder.append_value(strs.value(i));
+                } else if let Some(i64s) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Int64Array>()
+                {
+                    builder.append_value(i64s.value(i).to_string());
+                } else if let Some(f64s) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Float64Array>()
+                {
+                    builder.append_value(f64s.value(i).to_string());
+                } else if let Some(b) = arr
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::BooleanArray>()
+                {
+                    builder.append_value(b.value(i).to_string());
+                } else {
+                    builder.append_null();
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(LaxStringUdf::new())
 }

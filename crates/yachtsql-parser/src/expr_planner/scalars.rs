@@ -112,9 +112,11 @@ pub fn try_scalar_function(name: &str) -> Result<ScalarFunction> {
         "CURRENT_TIME" => Ok(ScalarFunction::CurrentTime),
         "CURRENT_DATETIME" => Ok(ScalarFunction::CurrentDatetime),
         "EXTRACT" => Ok(ScalarFunction::Extract),
-        "DATE_ADD" => Ok(ScalarFunction::DateAdd),
-        "DATE_SUB" => Ok(ScalarFunction::DateSub),
-        "DATE_DIFF" | "DATEDIFF" => Ok(ScalarFunction::DateDiff),
+        "DATE_ADD" | "DATETIME_ADD" | "TIMESTAMP_ADD" | "TIME_ADD" => Ok(ScalarFunction::DateAdd),
+        "DATE_SUB" | "DATETIME_SUB" | "TIMESTAMP_SUB" | "TIME_SUB" => Ok(ScalarFunction::DateSub),
+        "DATE_DIFF" | "DATEDIFF" | "DATETIME_DIFF" | "TIMESTAMP_DIFF" | "TIME_DIFF" => {
+            Ok(ScalarFunction::DateDiff)
+        }
         "DATE_TRUNC" => Ok(ScalarFunction::DateTrunc),
         "DATE_BUCKET" => Ok(ScalarFunction::DateBucket),
         "DATETIME_TRUNC" => Ok(ScalarFunction::DatetimeTrunc),
@@ -166,6 +168,10 @@ pub fn try_scalar_function(name: &str) -> Result<ScalarFunction> {
         "STRING" => Ok(ScalarFunction::String),
         "SAFE_CAST" => Ok(ScalarFunction::SafeCast),
         "CAST" => Ok(ScalarFunction::Cast),
+        "LAX_BOOL" => Ok(ScalarFunction::LaxBool),
+        "LAX_INT64" => Ok(ScalarFunction::LaxInt64),
+        "LAX_FLOAT64" => Ok(ScalarFunction::LaxFloat64),
+        "LAX_STRING" => Ok(ScalarFunction::LaxString),
         "TYPEOF" => Ok(ScalarFunction::TypeOf),
         "MD5" => Ok(ScalarFunction::Md5),
         "SHA1" => Ok(ScalarFunction::Sha1),

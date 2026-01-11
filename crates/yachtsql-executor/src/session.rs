@@ -846,7 +846,11 @@ impl YachtSQLSession {
                 self.set_outer_aliases(input);
                 let group_exprs: Vec<DFExpr> = group_by
                     .iter()
-                    .map(|e| self.convert_expr(e))
+                    .zip(schema.fields.iter())
+                    .map(|(e, field)| {
+                        let df_expr = self.convert_expr(e)?;
+                        Ok(df_expr.alias(field.name.clone()))
+                    })
                     .collect::<Result<_>>()?;
                 let agg_exprs: Vec<DFExpr> = aggregates
                     .iter()
