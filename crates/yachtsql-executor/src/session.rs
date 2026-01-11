@@ -999,8 +999,18 @@ impl YachtSQLSession {
                 let input_plan = self.convert_plan_inner(input)?;
                 let mut builder = LogicalPlanBuilder::from(input_plan);
 
-                for col in columns {
-                    let col_name = match &col.expr {
+                struct UnnestInfo {
+                    internal_name: String,
+                    output_alias: Option<String>,
+                    with_offset: bool,
+                    offset_alias: Option<String>,
+                }
+
+                let mut expr_projections: Vec<(DFExpr, String)> = Vec::new();
+                let mut unnest_infos: Vec<UnnestInfo> = Vec::new();
+
+                for (idx, col) in columns.iter().enumerate() {
+                    let internal_name = match &col.expr {
                         yachtsql_ir::Expr::Column { name, .. } => name.clone(),
                         yachtsql_ir::Expr::Alias { name, .. } => name.clone(),
                         yachtsql_ir::Expr::Literal(_)
@@ -1043,15 +1053,96 @@ impl YachtSQLSession {
                         | yachtsql_ir::Expr::AtTimeZone { .. }
                         | yachtsql_ir::Expr::JsonAccess { .. }
                         | yachtsql_ir::Expr::Default => {
-                            return Err(Error::internal(format!(
-                                "Unnest column must be a column reference, got: {:?}",
-                                col.expr
-                            )));
+                            let gen_name = format!("__unnest_expr_{}", idx);
+                            let df_expr = self.convert_expr(&col.expr)?;
+                            expr_projections.push((df_expr, gen_name.clone()));
+                            gen_name
                         }
                     };
-                    let col_expr = datafusion::common::Column::new_unqualified(&col_name);
+                    unnest_infos.push(UnnestInfo {
+                        internal_name,
+                        output_alias: col.alias.clone(),
+                        with_offset: col.with_offset,
+                        offset_alias: col.offset_alias.clone(),
+                    });
+                }
+
+                if !expr_projections.is_empty() {
+                    let current_schema = builder.schema();
+                    let mut proj_exprs: Vec<DFExpr> = current_schema
+                        .columns()
+                        .iter()
+                        .map(|c| DFExpr::Column(c.clone()))
+                        .collect();
+                    for (expr, name) in expr_projections {
+                        proj_exprs.push(expr.alias(&name));
+                    }
+                    builder = builder
+                        .project(proj_exprs)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                }
+
+                for info in &unnest_infos {
+                    let col_expr = datafusion::common::Column::new_unqualified(&info.internal_name);
                     builder = builder
                         .unnest_column(col_expr)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                }
+
+                let has_offset = unnest_infos.iter().any(|info| info.with_offset);
+                let has_alias = unnest_infos.iter().any(|info| info.output_alias.is_some());
+
+                if has_offset {
+                    let row_num_expr = datafusion::functions_window::expr_fn::row_number();
+                    let offset_col_name = "__unnest_offset__";
+                    let window_expr = row_num_expr.alias(offset_col_name);
+                    builder = builder
+                        .window(vec![window_expr])
+                        .map_err(|e| Error::internal(e.to_string()))?;
+
+                    let schema = builder.schema();
+                    let mut proj_exprs: Vec<DFExpr> = Vec::new();
+
+                    for (col, info) in schema
+                        .columns()
+                        .iter()
+                        .take(unnest_infos.len())
+                        .zip(unnest_infos.iter())
+                    {
+                        let expr = DFExpr::Column(col.clone());
+                        if let Some(alias) = &info.output_alias {
+                            proj_exprs.push(expr.alias(alias));
+                        } else {
+                            proj_exprs.push(expr);
+                        }
+
+                        if info.with_offset {
+                            let offset_name = info.offset_alias.as_deref().unwrap_or("offset");
+                            let offset_col = DFExpr::Column(
+                                datafusion::common::Column::new_unqualified(offset_col_name),
+                            );
+                            let offset_expr =
+                                (offset_col - datafusion::prelude::lit(1i64)).alias(offset_name);
+                            proj_exprs.push(offset_expr);
+                        }
+                    }
+                    builder = builder
+                        .project(proj_exprs)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                } else if has_alias {
+                    let schema = builder.schema();
+                    let mut proj_exprs: Vec<DFExpr> = Vec::new();
+
+                    for (col, info) in schema.columns().iter().zip(unnest_infos.iter()) {
+                        let expr = DFExpr::Column(col.clone());
+                        if let Some(alias) = &info.output_alias {
+                            proj_exprs.push(expr.alias(alias));
+                        } else {
+                            proj_exprs.push(expr);
+                        }
+                    }
+                    builder = builder
+                        .project(proj_exprs)
                         .map_err(|e| Error::internal(e.to_string()))?;
                 }
 
