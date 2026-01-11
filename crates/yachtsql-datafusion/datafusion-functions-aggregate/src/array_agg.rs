@@ -239,7 +239,11 @@ impl Accumulator for ArrayAggAccumulator {
             self.values.iter().map(|a| a.as_ref()).collect();
 
         if element_arrays.is_empty() {
-            return Ok(ScalarValue::new_null_list(self.datatype.clone(), true, 1));
+            return Ok(ScalarValue::List(ScalarValue::new_list_from_iter(
+                std::iter::empty::<ScalarValue>(),
+                &self.datatype,
+                true,
+            )));
         }
 
         let concated_array = arrow::compute::concat(&element_arrays)?;
@@ -463,22 +467,40 @@ impl Accumulator for OrderSensitiveArrayAggAccumulator {
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
         if self.values.is_empty() {
-            return Ok(ScalarValue::new_null_list(
-                self.datatypes[0].clone(),
+            return Ok(ScalarValue::List(ScalarValue::new_list_from_iter(
+                std::iter::empty::<ScalarValue>(),
+                &self.datatypes[0],
                 true,
-                1,
-            ));
+            )));
         }
 
-        let values = self.values.clone();
+        let sort_options: Vec<_> = self
+            .ordering_req
+            .iter()
+            .map(|sort_expr| sort_expr.options)
+            .collect();
+
+        let mut indices: Vec<usize> = (0..self.values.len()).collect();
+        indices.sort_by(|&a, &b| {
+            datafusion_common::utils::compare_rows(
+                &self.ordering_values[a],
+                &self.ordering_values[b],
+                &sort_options,
+            )
+            .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let sorted_values: Vec<ScalarValue> =
+            indices.iter().map(|&i| self.values[i].clone()).collect();
+
         let array = if self.reverse {
             ScalarValue::new_list_from_iter(
-                values.into_iter().rev(),
+                sorted_values.into_iter().rev(),
                 &self.datatypes[0],
                 true,
             )
         } else {
-            ScalarValue::new_list_from_iter(values.into_iter(), &self.datatypes[0], true)
+            ScalarValue::new_list_from_iter(sorted_values.into_iter(), &self.datatypes[0], true)
         };
         Ok(ScalarValue::List(array))
     }

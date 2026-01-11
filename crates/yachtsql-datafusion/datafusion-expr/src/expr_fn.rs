@@ -934,7 +934,14 @@ impl ExprFunctionExt for Expr {
     ) -> ExprFuncBuilder {
         let mut builder = match self {
             Expr::AggregateFunction(udaf) => {
-                ExprFuncBuilder::new(Some(ExprFuncKind::Aggregate(udaf)))
+                let existing_order_by = udaf.order_by.clone();
+                let existing_filter = udaf.filter.clone();
+                let existing_distinct = udaf.distinct;
+                let mut b = ExprFuncBuilder::new(Some(ExprFuncKind::Aggregate(udaf)));
+                b.order_by = existing_order_by;
+                b.filter = existing_filter.map(|f| *f);
+                b.distinct = existing_distinct;
+                b
             }
             Expr::WindowFunction(udwf) => {
                 ExprFuncBuilder::new(Some(ExprFuncKind::Window(udwf)))
