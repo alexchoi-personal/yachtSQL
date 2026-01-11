@@ -136,7 +136,10 @@ impl AggregateUDFImpl for ArrayAgg {
         }
 
         if acc_args.ordering_req.is_empty() {
-            return Ok(Box::new(ArrayAggAccumulator::try_new(&data_type)?));
+            return Ok(Box::new(ArrayAggAccumulator::try_new(
+                &data_type,
+                acc_args.ignore_nulls,
+            )?));
         }
 
         let ordering_dtypes = acc_args
@@ -150,6 +153,7 @@ impl AggregateUDFImpl for ArrayAgg {
             &ordering_dtypes,
             acc_args.ordering_req.clone(),
             acc_args.is_reversed,
+            acc_args.ignore_nulls,
         )
         .map(|acc| Box::new(acc) as _)
     }
@@ -167,21 +171,21 @@ impl AggregateUDFImpl for ArrayAgg {
 pub struct ArrayAggAccumulator {
     values: Vec<ArrayRef>,
     datatype: DataType,
+    ignore_nulls: bool,
 }
 
 impl ArrayAggAccumulator {
-    /// new array_agg accumulator based on given item data type
-    pub fn try_new(datatype: &DataType) -> Result<Self> {
+    pub fn try_new(datatype: &DataType, ignore_nulls: bool) -> Result<Self> {
         Ok(Self {
             values: vec![],
             datatype: datatype.clone(),
+            ignore_nulls,
         })
     }
 }
 
 impl Accumulator for ArrayAggAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
-        // Append value like Int64Array(1,2,3)
         if values.is_empty() {
             return Ok(());
         }
@@ -191,7 +195,18 @@ impl Accumulator for ArrayAggAccumulator {
         }
 
         let val = Arc::clone(&values[0]);
-        if val.len() > 0 {
+        if val.len() == 0 {
+            return Ok(());
+        }
+
+        if self.ignore_nulls {
+            use arrow::compute::filter;
+            let validity = arrow::compute::is_not_null(&val)?;
+            let filtered = filter(&val, &validity)?;
+            if filtered.len() > 0 {
+                self.values.push(filtered);
+            }
+        } else {
             self.values.push(val);
         }
         Ok(())
@@ -318,30 +333,21 @@ impl Accumulator for DistinctArrayAggAccumulator {
 /// and then their results are merged.
 #[derive(Debug)]
 pub(crate) struct OrderSensitiveArrayAggAccumulator {
-    /// Stores entries in the `ARRAY_AGG` result.
     values: Vec<ScalarValue>,
-    /// Stores values of ordering requirement expressions corresponding to each
-    /// entry in `values`. This information is used when merging results from
-    /// different partitions. For detailed information how merging is done, see
-    /// [`merge_ordered_arrays`].
     ordering_values: Vec<Vec<ScalarValue>>,
-    /// Stores datatypes of expressions inside values and ordering requirement
-    /// expressions.
     datatypes: Vec<DataType>,
-    /// Stores the ordering requirement of the `Accumulator`.
     ordering_req: LexOrdering,
-    /// Whether the aggregation is running in reverse.
     reverse: bool,
+    ignore_nulls: bool,
 }
 
 impl OrderSensitiveArrayAggAccumulator {
-    /// Create a new order-sensitive ARRAY_AGG accumulator based on the given
-    /// item data type.
     pub fn try_new(
         datatype: &DataType,
         ordering_dtypes: &[DataType],
         ordering_req: LexOrdering,
         reverse: bool,
+        ignore_nulls: bool,
     ) -> Result<Self> {
         let mut datatypes = vec![datatype.clone()];
         datatypes.extend(ordering_dtypes.iter().cloned());
@@ -351,6 +357,7 @@ impl OrderSensitiveArrayAggAccumulator {
             datatypes,
             ordering_req,
             reverse,
+            ignore_nulls,
         })
     }
 }
@@ -364,6 +371,9 @@ impl Accumulator for OrderSensitiveArrayAggAccumulator {
         let n_row = values[0].len();
         for index in 0..n_row {
             let row = get_row_at_idx(values, index)?;
+            if self.ignore_nulls && row[0].is_null() {
+                continue;
+            }
             self.values.push(row[0].clone());
             self.ordering_values.push(row[1..].to_vec());
         }
