@@ -1561,6 +1561,19 @@ impl YachtSQLSession {
                 )))
             }
 
+            yachtsql_ir::Expr::Column {
+                name, index: None, ..
+            } => {
+                let var_name = name.to_lowercase();
+                let variables = self.variables.read();
+                if let Some(value) = variables.get(&var_name) {
+                    Ok(DFExpr::Literal(value.clone()))
+                } else {
+                    yachtsql_parser::DataFusionConverter::convert_expr(expr)
+                        .map_err(|e| Error::internal(e.to_string()))
+                }
+            }
+
             yachtsql_ir::Expr::Literal(_)
             | yachtsql_ir::Expr::Column { .. }
             | yachtsql_ir::Expr::ScalarFunction { .. }
@@ -3316,6 +3329,16 @@ impl YachtSQLSession {
             },
             yachtsql_ir::Expr::Variable { name } => {
                 let var_name = name.trim_start_matches('@').to_lowercase();
+                let variables = self.variables.read();
+                variables
+                    .get(&var_name)
+                    .cloned()
+                    .unwrap_or(ScalarValue::Null)
+            }
+            yachtsql_ir::Expr::Column {
+                name, index: None, ..
+            } => {
+                let var_name = name.to_lowercase();
                 let variables = self.variables.read();
                 variables
                     .get(&var_name)

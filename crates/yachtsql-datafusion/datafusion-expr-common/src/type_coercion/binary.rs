@@ -135,6 +135,21 @@ fn signature(lhs: &DataType, op: &Operator, rhs: &DataType) -> Result<Signature>
             })
         }
         Plus | Minus | Multiply | Divide | Modulo =>  {
+            if matches!(lhs, Null) {
+                return Ok(Signature {
+                    lhs: rhs.clone(),
+                    rhs: rhs.clone(),
+                    ret: rhs.clone(),
+                });
+            }
+            if matches!(rhs, Null) {
+                return Ok(Signature {
+                    lhs: lhs.clone(),
+                    rhs: lhs.clone(),
+                    ret: lhs.clone(),
+                });
+            }
+
             let get_result = |lhs, rhs| {
                 use arrow::compute::kernels::numeric::*;
                 let l = new_empty_array(lhs);
@@ -524,7 +539,8 @@ fn type_union_resolution_coercion(
         _ => {
             // Numeric coercion is the same as comparison coercion, both find the narrowest type
             // that can accommodate both types
-            binary_numeric_coercion(lhs_type, rhs_type)
+            null_coercion(lhs_type, rhs_type)
+                .or_else(|| binary_numeric_coercion(lhs_type, rhs_type))
                 .or_else(|| list_coercion(lhs_type, rhs_type))
                 .or_else(|| temporal_coercion_nonstrict_timezone(lhs_type, rhs_type))
                 .or_else(|| string_coercion(lhs_type, rhs_type))
