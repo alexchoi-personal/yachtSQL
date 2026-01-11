@@ -1772,13 +1772,37 @@ impl YachtSQLSession {
                 let subquery_tables = extract_tables_from_plan(subquery);
                 let df_plan = self.convert_subquery_plan(subquery, &subquery_tables)?;
                 let outer_refs = df_plan.all_out_ref_exprs();
+                let (inner_plan, order_by) = extract_sort_from_plan(&df_plan);
+                let schema = inner_plan.schema();
+                if schema.fields().len() != 1 {
+                    return Err(Error::internal(format!(
+                        "ARRAY subquery must return exactly one column, got {}",
+                        schema.fields().len()
+                    )));
+                }
+                let col_name = schema.fields()[0].name().clone();
+                let agg_expr = datafusion::functions_aggregate::array_agg::array_agg(
+                    DFExpr::Column(datafusion::common::Column::new_unqualified(col_name)),
+                );
+                let agg_expr_with_order = if let Some(order_exprs) = order_by {
+                    use datafusion::logical_expr::ExprFunctionExt;
+                    agg_expr
+                        .order_by(order_exprs)
+                        .build()
+                        .map_err(|e| Error::internal(e.to_string()))?
+                } else {
+                    agg_expr
+                };
+                let agg_plan = LogicalPlanBuilder::from(inner_plan)
+                    .aggregate(Vec::<DFExpr>::new(), vec![agg_expr_with_order])
+                    .map_err(|e| Error::internal(e.to_string()))?
+                    .build()
+                    .map_err(|e| Error::internal(e.to_string()))?;
                 let subq = Subquery {
-                    subquery: Arc::new(df_plan),
+                    subquery: Arc::new(agg_plan),
                     outer_ref_columns: outer_refs,
                 };
-                Ok(datafusion::functions_aggregate::array_agg::array_agg(
-                    DFExpr::ScalarSubquery(subq),
-                ))
+                Ok(DFExpr::ScalarSubquery(subq))
             }
 
             yachtsql_ir::Expr::InSubquery {
@@ -5616,6 +5640,68 @@ fn convert_join_type(jt: &JoinType) -> DFJoinType {
         JoinType::Right => DFJoinType::Right,
         JoinType::Full => DFJoinType::Full,
         JoinType::Cross => DFJoinType::Inner,
+    }
+}
+
+fn extract_sort_from_plan(
+    plan: &DFLogicalPlan,
+) -> (
+    DFLogicalPlan,
+    Option<Vec<datafusion::logical_expr::SortExpr>>,
+) {
+    fn sort_exprs_valid_for_schema(
+        exprs: &[datafusion::logical_expr::SortExpr],
+        schema: &datafusion::common::DFSchema,
+    ) -> bool {
+        exprs.iter().all(|sort_expr| {
+            if let DFExpr::Column(col) = &sort_expr.expr {
+                schema
+                    .field_with_name(col.relation.as_ref(), &col.name)
+                    .is_ok()
+            } else {
+                false
+            }
+        })
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    match plan {
+        DFLogicalPlan::Sort(datafusion::logical_expr::Sort {
+            expr,
+            input,
+            fetch: _,
+        }) => (input.as_ref().clone(), Some(expr.clone())),
+        DFLogicalPlan::Projection(proj) => {
+            let (inner_input, order_by) = extract_sort_from_plan(&proj.input);
+            if let Some(ref order_exprs) = order_by
+                && sort_exprs_valid_for_schema(order_exprs, &proj.schema)
+            {
+                let new_proj = datafusion::logical_expr::Projection::try_new(
+                    proj.expr.clone(),
+                    Arc::new(inner_input),
+                )
+                .ok()
+                .map(DFLogicalPlan::Projection);
+                if let Some(p) = new_proj {
+                    return (p, order_by);
+                }
+            }
+            (plan.clone(), None)
+        }
+        DFLogicalPlan::Limit(limit) => {
+            let (inner_input, order_by) = extract_sort_from_plan(&limit.input);
+            if order_by.is_some() {
+                let new_limit = DFLogicalPlan::Limit(datafusion::logical_expr::Limit {
+                    skip: limit.skip.clone(),
+                    fetch: limit.fetch.clone(),
+                    input: Arc::new(inner_input),
+                });
+                (new_limit, order_by)
+            } else {
+                (plan.clone(), None)
+            }
+        }
+        _ => (plan.clone(), None),
     }
 }
 

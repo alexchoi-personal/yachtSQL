@@ -2,7 +2,7 @@
 
 use sqlparser::ast::{self, SetExpr};
 use yachtsql_common::error::{Error, Result};
-use yachtsql_common::types::DataType;
+use yachtsql_common::types::{DataType, StructField};
 use yachtsql_ir::{Expr, LogicalPlan, PlanField, PlanSchema, SetOperationType};
 
 use super::Planner;
@@ -240,6 +240,13 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                 }
             }
             plan = self.plan_projection(plan, &select.projection, &select.named_window)?;
+
+            if matches!(
+                select.value_table_mode,
+                Some(ast::ValueTableMode::AsStruct | ast::ValueTableMode::DistinctAsStruct)
+            ) {
+                plan = self.wrap_projection_as_struct(plan)?;
+            }
         }
 
         if select.distinct.is_some() {
@@ -321,6 +328,47 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
             ),
             _ => None,
         }
+    }
+
+    fn wrap_projection_as_struct(&self, plan: LogicalPlan) -> Result<LogicalPlan> {
+        let LogicalPlan::Project {
+            input,
+            expressions,
+            schema,
+        } = plan
+        else {
+            return Err(Error::internal("Expected Project plan for AS STRUCT"));
+        };
+
+        let struct_fields: Vec<(Option<String>, Expr)> = expressions
+            .into_iter()
+            .zip(schema.fields.iter())
+            .map(|(expr, field)| (Some(field.name.clone()), expr))
+            .collect();
+
+        let struct_expr = Expr::Struct {
+            fields: struct_fields,
+        };
+
+        let struct_field_types: Vec<StructField> = schema
+            .fields
+            .iter()
+            .map(|f| StructField {
+                name: f.name.clone(),
+                data_type: f.data_type.clone(),
+            })
+            .collect();
+
+        let struct_schema = PlanSchema::from_fields(vec![PlanField::new(
+            "$struct".to_string(),
+            DataType::Struct(struct_field_types),
+        )]);
+
+        Ok(LogicalPlan::Project {
+            input,
+            expressions: vec![struct_expr],
+            schema: struct_schema,
+        })
     }
 
     fn extract_limit_value(&self, limit: &ast::Expr) -> Result<usize> {

@@ -578,13 +578,27 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
 
         Expr::ArraySubquery(subquery) => {
             let df_plan = convert_plan(subquery)?;
+            let schema = df_plan.schema();
+            if schema.fields().len() != 1 {
+                return Err(DataFusionError::Plan(format!(
+                    "ARRAY subquery must return exactly one column, got {}",
+                    schema.fields().len()
+                )));
+            }
+            let col_name = schema.fields()[0].name().clone();
+            let agg_plan = datafusion::logical_expr::LogicalPlanBuilder::from(df_plan)
+                .aggregate(
+                    Vec::<DFExpr>::new(),
+                    vec![datafusion::functions_aggregate::array_agg::array_agg(
+                        DFExpr::Column(Column::new_unqualified(col_name)),
+                    )],
+                )?
+                .build()?;
             let subq = Subquery {
-                subquery: Arc::new(df_plan),
+                subquery: Arc::new(agg_plan),
                 outer_ref_columns: vec![],
             };
-            Ok(datafusion::functions_aggregate::array_agg::array_agg(
-                DFExpr::ScalarSubquery(subq),
-            ))
+            Ok(DFExpr::ScalarSubquery(subq))
         }
 
         _ => Err(datafusion::common::DataFusionError::NotImplemented(
