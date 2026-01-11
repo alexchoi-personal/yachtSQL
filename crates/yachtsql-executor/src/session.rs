@@ -1862,7 +1862,6 @@ impl YachtSQLSession {
             | yachtsql_ir::Expr::ScalarSubquery(_)
             | yachtsql_ir::Expr::ArraySubquery(_)
             | yachtsql_ir::Expr::Parameter { .. }
-            | yachtsql_ir::Expr::Variable { .. }
             | yachtsql_ir::Expr::Placeholder { .. }
             | yachtsql_ir::Expr::Lambda { .. }
             | yachtsql_ir::Expr::AtTimeZone { .. }
@@ -1870,6 +1869,16 @@ impl YachtSQLSession {
             | yachtsql_ir::Expr::Default => {
                 yachtsql_parser::DataFusionConverter::convert_expr(expr)
                     .map_err(|e| Error::internal(e.to_string()))
+            }
+
+            yachtsql_ir::Expr::Variable { name } => {
+                let var_name = name.trim_start_matches('@').to_lowercase();
+                let variables = self.variables.read();
+                let value = variables
+                    .get(&var_name)
+                    .cloned()
+                    .unwrap_or(ScalarValue::Null);
+                Ok(DFExpr::Literal(value))
             }
         }
     }

@@ -3,7 +3,9 @@
 use sqlparser::ast;
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::DataType;
-use yachtsql_ir::{BinaryOp, Expr, Literal, LogicalPlan, PlanField, PlanSchema, WhenClause};
+use yachtsql_ir::{
+    BinaryOp, Expr, Literal, LogicalPlan, PlanField, PlanSchema, WhenClause, WindowSpec,
+};
 
 use super::super::object_name_to_raw_string;
 use super::Planner;
@@ -302,6 +304,208 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                 name,
             },
             other => other,
+        }
+    }
+
+    pub(super) fn extract_all_window_functions(expr: &Expr) -> Vec<Expr> {
+        let mut windows = Vec::new();
+        Self::collect_window_functions(expr, &mut windows);
+        windows
+    }
+
+    fn collect_window_functions(expr: &Expr, windows: &mut Vec<Expr>) {
+        match expr {
+            Expr::Window { .. } | Expr::AggregateWindow { .. } => {
+                if !windows.iter().any(|w| w == expr) {
+                    windows.push(expr.clone());
+                }
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                Self::collect_window_functions(left, windows);
+                Self::collect_window_functions(right, windows);
+            }
+            Expr::UnaryOp { expr, .. } => {
+                Self::collect_window_functions(expr, windows);
+            }
+            Expr::Case {
+                operand,
+                when_clauses,
+                else_result,
+            } => {
+                if let Some(op) = operand {
+                    Self::collect_window_functions(op, windows);
+                }
+                for clause in when_clauses {
+                    Self::collect_window_functions(&clause.condition, windows);
+                    Self::collect_window_functions(&clause.result, windows);
+                }
+                if let Some(e) = else_result {
+                    Self::collect_window_functions(e, windows);
+                }
+            }
+            Expr::Cast { expr, .. } => {
+                Self::collect_window_functions(expr, windows);
+            }
+            Expr::ScalarFunction { args, .. } => {
+                for arg in args {
+                    Self::collect_window_functions(arg, windows);
+                }
+            }
+            Expr::Alias { expr, .. } => {
+                Self::collect_window_functions(expr, windows);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn group_windows_by_spec(windows: &[Expr]) -> Vec<Vec<Expr>> {
+        let mut groups: Vec<(WindowSpec, Vec<Expr>)> = Vec::new();
+        for wf in windows {
+            let spec = Self::get_window_spec(wf);
+            if let Some((_, group)) = groups.iter_mut().find(|(s, _)| s == &spec) {
+                group.push(wf.clone());
+            } else {
+                groups.push((spec, vec![wf.clone()]));
+            }
+        }
+        groups.into_iter().map(|(_, g)| g).collect()
+    }
+
+    fn get_window_spec(expr: &Expr) -> WindowSpec {
+        match expr {
+            Expr::Window {
+                partition_by,
+                order_by,
+                frame,
+                ..
+            } => WindowSpec {
+                partition_by: partition_by.clone(),
+                order_by: order_by.clone(),
+                frame: frame.clone(),
+            },
+            Expr::AggregateWindow {
+                partition_by,
+                order_by,
+                frame,
+                ..
+            } => WindowSpec {
+                partition_by: partition_by.clone(),
+                order_by: order_by.clone(),
+                frame: frame.clone(),
+            },
+            _ => WindowSpec {
+                partition_by: vec![],
+                order_by: vec![],
+                frame: None,
+            },
+        }
+    }
+
+    pub(super) fn replace_windows_with_columns(
+        expr: Expr,
+        window_exprs: &[Expr],
+        base_col_idx: usize,
+    ) -> Expr {
+        match &expr {
+            Expr::Window { .. } | Expr::AggregateWindow { .. } => {
+                for (i, wf) in window_exprs.iter().enumerate() {
+                    if wf == &expr {
+                        return Expr::Column {
+                            table: None,
+                            name: format!("__qualify_window_{}", i),
+                            index: Some(base_col_idx + i),
+                        };
+                    }
+                }
+                expr
+            }
+            Expr::BinaryOp { left, op, right } => Expr::BinaryOp {
+                left: Box::new(Self::replace_windows_with_columns(
+                    *left.clone(),
+                    window_exprs,
+                    base_col_idx,
+                )),
+                op: *op,
+                right: Box::new(Self::replace_windows_with_columns(
+                    *right.clone(),
+                    window_exprs,
+                    base_col_idx,
+                )),
+            },
+            Expr::UnaryOp { op, expr: inner } => Expr::UnaryOp {
+                op: *op,
+                expr: Box::new(Self::replace_windows_with_columns(
+                    *inner.clone(),
+                    window_exprs,
+                    base_col_idx,
+                )),
+            },
+            Expr::Case {
+                operand,
+                when_clauses,
+                else_result,
+            } => Expr::Case {
+                operand: operand.clone().map(|e| {
+                    Box::new(Self::replace_windows_with_columns(
+                        *e,
+                        window_exprs,
+                        base_col_idx,
+                    ))
+                }),
+                when_clauses: when_clauses
+                    .iter()
+                    .map(|w| WhenClause {
+                        condition: Self::replace_windows_with_columns(
+                            w.condition.clone(),
+                            window_exprs,
+                            base_col_idx,
+                        ),
+                        result: Self::replace_windows_with_columns(
+                            w.result.clone(),
+                            window_exprs,
+                            base_col_idx,
+                        ),
+                    })
+                    .collect(),
+                else_result: else_result.clone().map(|e| {
+                    Box::new(Self::replace_windows_with_columns(
+                        *e,
+                        window_exprs,
+                        base_col_idx,
+                    ))
+                }),
+            },
+            Expr::Cast {
+                expr: inner,
+                data_type,
+                safe,
+            } => Expr::Cast {
+                expr: Box::new(Self::replace_windows_with_columns(
+                    *inner.clone(),
+                    window_exprs,
+                    base_col_idx,
+                )),
+                data_type: data_type.clone(),
+                safe: *safe,
+            },
+            Expr::ScalarFunction { name, args } => Expr::ScalarFunction {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|a| {
+                        Self::replace_windows_with_columns(a.clone(), window_exprs, base_col_idx)
+                    })
+                    .collect(),
+            },
+            Expr::Alias { expr: inner, name } => Expr::Alias {
+                expr: Box::new(Self::replace_windows_with_columns(
+                    *inner.clone(),
+                    window_exprs,
+                    base_col_idx,
+                )),
+                name: name.clone(),
+            },
+            _ => expr,
         }
     }
 

@@ -3,7 +3,7 @@
 use sqlparser::ast::{self, SetExpr};
 use yachtsql_common::error::{Error, Result};
 use yachtsql_common::types::DataType;
-use yachtsql_ir::{LogicalPlan, PlanField, PlanSchema, SetOperationType};
+use yachtsql_ir::{Expr, LogicalPlan, PlanField, PlanSchema, SetOperationType};
 
 use super::Planner;
 use crate::CatalogProvider;
@@ -172,10 +172,60 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
         } else {
             if let Some(ref qualify) = select.qualify {
                 let predicate = ExprPlanner::plan_expr(qualify, plan.schema())?;
-                plan = LogicalPlan::Qualify {
-                    input: Box::new(plan),
-                    predicate,
-                };
+
+                if Self::expr_has_window(&predicate) {
+                    let window_exprs = Self::extract_all_window_functions(&predicate);
+                    if !window_exprs.is_empty() {
+                        let window_groups = Self::group_windows_by_spec(&window_exprs);
+
+                        let mut all_window_exprs: Vec<Expr> = Vec::new();
+                        let mut current_plan = plan;
+
+                        for group in &window_groups {
+                            let _base_field_count = current_plan.schema().fields.len();
+                            let mut window_schema_fields = current_plan.schema().fields.clone();
+                            for (i, wf) in group.iter().enumerate() {
+                                let window_type = self.infer_expr_type(wf, current_plan.schema());
+                                window_schema_fields.push(PlanField::new(
+                                    format!("__qualify_window_{}", all_window_exprs.len() + i),
+                                    window_type,
+                                ));
+                            }
+                            let window_schema = PlanSchema::from_fields(window_schema_fields);
+
+                            current_plan = LogicalPlan::Window {
+                                input: Box::new(current_plan),
+                                window_exprs: group.clone(),
+                                schema: window_schema,
+                            };
+
+                            all_window_exprs.extend(group.iter().cloned());
+                        }
+
+                        let original_field_count =
+                            current_plan.schema().fields.len() - all_window_exprs.len();
+                        let replaced_predicate = Self::replace_windows_with_columns(
+                            predicate,
+                            &all_window_exprs,
+                            original_field_count,
+                        );
+
+                        plan = LogicalPlan::Qualify {
+                            input: Box::new(current_plan),
+                            predicate: replaced_predicate,
+                        };
+                    } else {
+                        plan = LogicalPlan::Qualify {
+                            input: Box::new(plan),
+                            predicate,
+                        };
+                    }
+                } else {
+                    plan = LogicalPlan::Qualify {
+                        input: Box::new(plan),
+                        predicate,
+                    };
+                }
             }
             plan = self.plan_projection(plan, &select.projection, &select.named_window)?;
         }

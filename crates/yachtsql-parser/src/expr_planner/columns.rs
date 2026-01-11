@@ -43,10 +43,6 @@ pub fn resolve_column(name: &str, table: Option<&str>, schema: &PlanSchema) -> R
                 fields: field_exprs,
             });
         }
-
-        return Ok(Expr::Variable {
-            name: name.to_string(),
-        });
     }
 
     Ok(Expr::Column {
