@@ -1216,7 +1216,11 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             let mut iter = args.into_iter();
             let s = iter.next().unwrap();
             let delimiter = iter.next().unwrap_or_else(|| lit(","));
-            Ok(string::split_part(s.clone(), delimiter.clone(), lit(0)))
+            Ok(datafusion::functions_nested::string::string_to_array(
+                s,
+                delimiter,
+                DFExpr::Literal(ScalarValue::Null),
+            ))
         }
 
         ScalarFunction::DateDiff => {
