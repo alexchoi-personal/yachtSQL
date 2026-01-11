@@ -1148,11 +1148,22 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
         ScalarFunction::Range => {
             let mut iter = args.into_iter();
             let start = iter.next().unwrap();
-            let stop = iter.next().unwrap();
-            let step = iter.next().unwrap_or_else(|| lit(1));
-            Ok(datafusion::functions_array::expr_fn::range(
-                start, stop, step,
-            ))
+            let end = iter.next().unwrap();
+            let start_str = coalesce(vec![
+                DFExpr::Cast(Cast::new(Box::new(start), ArrowDataType::Utf8)),
+                lit("UNBOUNDED"),
+            ]);
+            let end_str = coalesce(vec![
+                DFExpr::Cast(Cast::new(Box::new(end), ArrowDataType::Utf8)),
+                lit("UNBOUNDED"),
+            ]);
+            Ok(concat(vec![
+                lit("["),
+                start_str,
+                lit(", "),
+                end_str,
+                lit(")"),
+            ]))
         }
 
         ScalarFunction::GenerateArray => {
@@ -1725,9 +1736,69 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             Ok(datafusion::functions_nested::map_values::map_values(arg))
         }
 
-        ScalarFunction::Custom(func_name) => Err(datafusion::common::DataFusionError::Plan(
-            format!("Function not found: {}", func_name),
-        )),
+        ScalarFunction::Custom(func_name) => {
+            let upper_name = func_name.to_uppercase();
+            match upper_name.as_str() {
+                "RANGE_START" => {
+                    let arg = args.into_iter().next().unwrap();
+                    let content =
+                        substring(arg.clone(), lit(2i64), strpos(arg, lit(",")) - lit(2i64));
+                    Ok(trim(vec![content]))
+                }
+                "RANGE_END" => {
+                    let arg = args.into_iter().next().unwrap();
+                    let comma_pos = strpos(arg.clone(), lit(","));
+                    let len = character_length(arg.clone());
+                    let content = substring(
+                        arg,
+                        comma_pos.clone() + lit(2i64),
+                        len - comma_pos - lit(2i64),
+                    );
+                    Ok(trim(vec![content]))
+                }
+                "RANGE_CONTAINS" => {
+                    let mut iter = args.into_iter();
+                    let range_arg = iter.next().unwrap();
+                    let value_arg = iter.next().unwrap();
+                    let start_str = trim(vec![substring(
+                        range_arg.clone(),
+                        lit(2i64),
+                        strpos(range_arg.clone(), lit(",")) - lit(2i64),
+                    )]);
+                    let comma_pos = strpos(range_arg.clone(), lit(","));
+                    let len = character_length(range_arg.clone());
+                    let end_str = trim(vec![substring(
+                        range_arg,
+                        comma_pos.clone() + lit(2i64),
+                        len - comma_pos - lit(2i64),
+                    )]);
+                    let value_str =
+                        DFExpr::Cast(Cast::new(Box::new(value_arg), ArrowDataType::Utf8));
+                    let start_cond = DFExpr::BinaryExpr(BinaryExpr::new(
+                        Box::new(start_str.clone()),
+                        Operator::Eq,
+                        Box::new(lit("UNBOUNDED")),
+                    ))
+                    .or(value_str.clone().gt_eq(start_str));
+                    let end_cond = DFExpr::BinaryExpr(BinaryExpr::new(
+                        Box::new(end_str.clone()),
+                        Operator::Eq,
+                        Box::new(lit("UNBOUNDED")),
+                    ))
+                    .or(value_str.lt(end_str));
+                    Ok(start_cond.and(end_cond))
+                }
+                "RANGE_OVERLAPS" | "RANGE_INTERSECT" | "GENERATE_RANGE_ARRAY" => {
+                    Err(datafusion::common::DataFusionError::NotImplemented(
+                        format!("Function {} not yet implemented for DataFusion", func_name),
+                    ))
+                }
+                _ => Err(datafusion::common::DataFusionError::Plan(format!(
+                    "Function not found: {}",
+                    func_name
+                ))),
+            }
+        }
 
         _ => Err(datafusion::common::DataFusionError::NotImplemented(
             format!("Scalar function not implemented: {:?}", name),

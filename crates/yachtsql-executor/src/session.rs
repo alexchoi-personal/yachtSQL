@@ -4695,6 +4695,9 @@ impl YachtSQLSession {
                     b.append_value(arr.value(idx));
                 }
             }
+            ArrowDataType::Null => {
+                self.append_null_to_builder(builder)?;
+            }
             _ => {
                 return Err(Error::internal(format!(
                     "Unsupported data type for UPDATE: {:?}",
@@ -4703,6 +4706,52 @@ impl YachtSQLSession {
             }
         }
         Ok(())
+    }
+
+    fn append_null_to_builder(
+        &self,
+        builder: &mut Box<dyn datafusion::arrow::array::ArrayBuilder>,
+    ) -> Result<()> {
+        use datafusion::arrow::array::*;
+
+        macro_rules! try_append_null {
+            ($builder:expr, $($type:ty),+ $(,)?) => {
+                $(
+                    if let Some(b) = $builder.as_any_mut().downcast_mut::<$type>() {
+                        b.append_null();
+                        return Ok(());
+                    }
+                )+
+            };
+        }
+
+        try_append_null!(
+            builder,
+            Int64Builder,
+            Float64Builder,
+            StringBuilder,
+            BooleanBuilder,
+            Date32Builder,
+            TimestampMicrosecondBuilder,
+            TimestampNanosecondBuilder,
+            Time64MicrosecondBuilder,
+            Time64NanosecondBuilder,
+            BinaryBuilder,
+            LargeStringBuilder,
+            Decimal128Builder,
+            IntervalMonthDayNanoBuilder,
+            ListBuilder<Int64Builder>,
+            ListBuilder<StringBuilder>,
+            ListBuilder<BooleanBuilder>,
+            ListBuilder<Float64Builder>,
+            StructBuilder,
+            GenericListBuilder<i32, StringBuilder>,
+            GenericListBuilder<i32, Int64Builder>,
+        );
+
+        Err(Error::internal(
+            "Unable to append null to builder: unknown type",
+        ))
     }
 
     async fn execute_truncate(&self, table_name: &str) -> Result<Vec<RecordBatch>> {

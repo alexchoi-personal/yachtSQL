@@ -1732,18 +1732,21 @@ impl ScalarValue {
         macro_rules! build_array_primitive {
             ($ARRAY_TY:ident, $SCALAR_TY:ident) => {{
                 {
-                    let array = scalars.map(|sv| {
-                        if let ScalarValue::$SCALAR_TY(v) = sv {
-                            Ok(v)
-                        } else {
-                            _exec_err!(
-                                "Inconsistent types in ScalarValue::iter_to_array. \
+                    let array = scalars
+                        .map(|sv| {
+                            if let ScalarValue::$SCALAR_TY(v) = sv {
+                                Ok(v)
+                            } else if matches!(sv, ScalarValue::Null) {
+                                Ok(None)
+                            } else {
+                                _exec_err!(
+                                    "Inconsistent types in ScalarValue::iter_to_array. \
                                     Expected {:?}, got {:?}",
-                                data_type, sv
-                            )
-                        }
-                    })
-                    .collect::<Result<$ARRAY_TY>>()?;
+                                    data_type, sv
+                                )
+                            }
+                        })
+                        .collect::<Result<$ARRAY_TY>>()?;
                     Arc::new(array)
                 }
             }};
@@ -1752,18 +1755,21 @@ impl ScalarValue {
         macro_rules! build_array_primitive_tz {
             ($ARRAY_TY:ident, $SCALAR_TY:ident, $TZ:expr) => {{
                 {
-                    let array = scalars.map(|sv| {
-                        if let ScalarValue::$SCALAR_TY(v, _) = sv {
-                            Ok(v)
-                        } else {
-                            _exec_err!(
-                                "Inconsistent types in ScalarValue::iter_to_array. \
+                    let array = scalars
+                        .map(|sv| {
+                            if let ScalarValue::$SCALAR_TY(v, _) = sv {
+                                Ok(v)
+                            } else if matches!(sv, ScalarValue::Null) {
+                                Ok(None)
+                            } else {
+                                _exec_err!(
+                                    "Inconsistent types in ScalarValue::iter_to_array. \
                                     Expected {:?}, got {:?}",
-                                data_type, sv
-                            )
-                        }
-                    })
-                    .collect::<Result<$ARRAY_TY>>()?;
+                                    data_type, sv
+                                )
+                            }
+                        })
+                        .collect::<Result<$ARRAY_TY>>()?;
                     Arc::new(array.with_timezone_opt($TZ.clone()))
                 }
             }};
@@ -1774,18 +1780,21 @@ impl ScalarValue {
         macro_rules! build_array_string {
             ($ARRAY_TY:ident, $SCALAR_TY:ident) => {{
                 {
-                    let array = scalars.map(|sv| {
-                        if let ScalarValue::$SCALAR_TY(v) = sv {
-                            Ok(v)
-                        } else {
-                            _exec_err!(
-                                "Inconsistent types in ScalarValue::iter_to_array. \
+                    let array = scalars
+                        .map(|sv| {
+                            if let ScalarValue::$SCALAR_TY(v) = sv {
+                                Ok(v)
+                            } else if matches!(sv, ScalarValue::Null) {
+                                Ok(None)
+                            } else {
+                                _exec_err!(
+                                    "Inconsistent types in ScalarValue::iter_to_array. \
                                     Expected {:?}, got {:?}",
-                                data_type, sv
-                            )
-                        }
-                    })
-                    .collect::<Result<$ARRAY_TY>>()?;
+                                    data_type, sv
+                                )
+                            }
+                        })
+                        .collect::<Result<$ARRAY_TY>>()?;
                     Arc::new(array)
                 }
             }};
