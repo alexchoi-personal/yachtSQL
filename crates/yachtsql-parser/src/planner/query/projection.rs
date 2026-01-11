@@ -144,26 +144,46 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
             });
         }
 
-        let input_field_count = input.schema().fields.len();
-        let mut window_schema_fields = input.schema().fields.clone();
-        for (j, wf) in window_funcs.iter().enumerate() {
-            let window_type = Self::compute_expr_type(wf, input.schema());
-            window_schema_fields.push(PlanField::new(format!("__window_{}", j), window_type));
-        }
-        let window_schema = PlanSchema::from_fields(window_schema_fields);
+        let window_groups = Self::group_windows_by_spec(&window_funcs);
 
-        let window_plan = LogicalPlan::Window {
-            input: Box::new(input),
-            window_exprs: window_funcs,
-            schema: window_schema.clone(),
-        };
+        let mut current_plan = input;
+        let mut all_window_exprs: Vec<Expr> = Vec::new();
+
+        for group in &window_groups {
+            let _base_field_count = current_plan.schema().fields.len();
+            let mut window_schema_fields = current_plan.schema().fields.clone();
+            for (i, wf) in group.iter().enumerate() {
+                let window_type = Self::compute_expr_type(wf, current_plan.schema());
+                window_schema_fields.push(PlanField::new(
+                    format!("__window_{}", all_window_exprs.len() + i),
+                    window_type,
+                ));
+            }
+            let window_schema = PlanSchema::from_fields(window_schema_fields);
+
+            current_plan = LogicalPlan::Window {
+                input: Box::new(current_plan),
+                window_exprs: group.clone(),
+                schema: window_schema,
+            };
+
+            all_window_exprs.extend(group.iter().cloned());
+        }
+
+        let window_schema = current_plan.schema().clone();
+        let input_field_count = window_schema.fields.len() - all_window_exprs.len();
 
         let mut new_expressions = Vec::new();
         let mut window_offset = 0usize;
         for (i, expr) in expressions.iter().enumerate() {
             if window_expr_indices.contains(&i) {
-                let col_idx = input_field_count + window_offset;
-                let col_name = format!("__window_{}", window_offset);
+                let window_func = &window_funcs[window_offset];
+                let window_idx = all_window_exprs
+                    .iter()
+                    .position(|w| w == window_func)
+                    .unwrap_or(window_offset);
+                let col_idx = input_field_count + window_idx;
+                let col_name = format!("__window_{}", window_idx);
                 let replaced = Self::replace_window_with_column(expr.clone(), &col_name, col_idx);
                 new_expressions.push(Self::remap_column_indices(replaced, &window_schema));
                 window_offset += 1;
@@ -173,7 +193,7 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
         }
 
         Ok(LogicalPlan::Project {
-            input: Box::new(window_plan),
+            input: Box::new(current_plan),
             expressions: new_expressions,
             schema: PlanSchema::from_fields(fields),
         })

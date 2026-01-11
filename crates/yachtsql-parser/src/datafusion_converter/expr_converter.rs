@@ -90,7 +90,9 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
             args,
             distinct,
             filter,
-            ..
+            order_by,
+            limit,
+            ignore_nulls,
         } => {
             let df_args: Vec<DFExpr> = args.iter().map(convert_expr).collect::<DFResult<_>>()?;
             let df_filter = filter
@@ -98,7 +100,25 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
                 .map(|f| convert_expr(f))
                 .transpose()?
                 .map(Box::new);
-            convert_aggregate_function(func, df_args, *distinct, df_filter)
+            let df_order_by: Vec<datafusion::logical_expr::expr::Sort> = order_by
+                .iter()
+                .map(|se| {
+                    Ok(datafusion::logical_expr::expr::Sort {
+                        expr: convert_expr(&se.expr)?,
+                        asc: se.asc,
+                        nulls_first: se.nulls_first,
+                    })
+                })
+                .collect::<DFResult<_>>()?;
+            convert_aggregate_function(
+                func,
+                df_args,
+                *distinct,
+                df_filter,
+                df_order_by,
+                *limit,
+                *ignore_nulls,
+            )
         }
 
         Expr::Case {
@@ -1692,6 +1712,9 @@ fn convert_aggregate_function(
     args: Vec<DFExpr>,
     distinct: bool,
     filter: Option<Box<DFExpr>>,
+    order_by: Vec<datafusion::logical_expr::expr::Sort>,
+    _limit: Option<usize>,
+    ignore_nulls: bool,
 ) -> DFResult<DFExpr> {
     use datafusion::functions_aggregate::*;
 
@@ -1749,6 +1772,16 @@ fn convert_aggregate_function(
 
     if let Some(f) = filter {
         agg_expr = agg_expr.filter(*f).build()?;
+    }
+
+    if !order_by.is_empty() {
+        agg_expr = agg_expr.order_by(order_by).build()?;
+    }
+
+    if ignore_nulls {
+        agg_expr = agg_expr
+            .null_treatment(datafusion::logical_expr::sqlparser::ast::NullTreatment::IgnoreNulls)
+            .build()?;
     }
 
     Ok(agg_expr)

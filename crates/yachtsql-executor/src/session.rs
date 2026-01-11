@@ -1215,27 +1215,31 @@ impl YachtSQLSession {
                     let schema = builder.schema();
                     let mut proj_exprs: Vec<DFExpr> = Vec::new();
 
-                    for (col, info) in schema
-                        .columns()
-                        .iter()
-                        .take(unnest_infos.len())
-                        .zip(unnest_infos.iter())
-                    {
+                    for col in schema.columns().iter() {
+                        if col.name == offset_col_name {
+                            continue;
+                        }
                         let expr = DFExpr::Column(col.clone());
-                        if let Some(alias) = &info.output_alias {
-                            proj_exprs.push(expr.alias(alias));
+                        if let Some(info) =
+                            unnest_infos.iter().find(|i| i.internal_name == col.name)
+                        {
+                            if let Some(alias) = &info.output_alias {
+                                proj_exprs.push(expr.alias(alias));
+                            } else {
+                                proj_exprs.push(expr);
+                            }
+
+                            if info.with_offset {
+                                let offset_name = info.offset_alias.as_deref().unwrap_or("offset");
+                                let offset_col = DFExpr::Column(
+                                    datafusion::common::Column::new_unqualified(offset_col_name),
+                                );
+                                let offset_expr = (offset_col - datafusion::prelude::lit(1i64))
+                                    .alias(offset_name);
+                                proj_exprs.push(offset_expr);
+                            }
                         } else {
                             proj_exprs.push(expr);
-                        }
-
-                        if info.with_offset {
-                            let offset_name = info.offset_alias.as_deref().unwrap_or("offset");
-                            let offset_col = DFExpr::Column(
-                                datafusion::common::Column::new_unqualified(offset_col_name),
-                            );
-                            let offset_expr =
-                                (offset_col - datafusion::prelude::lit(1i64)).alias(offset_name);
-                            proj_exprs.push(offset_expr);
                         }
                     }
                     builder = builder
@@ -1245,10 +1249,16 @@ impl YachtSQLSession {
                     let schema = builder.schema();
                     let mut proj_exprs: Vec<DFExpr> = Vec::new();
 
-                    for (col, info) in schema.columns().iter().zip(unnest_infos.iter()) {
+                    for col in schema.columns().iter() {
                         let expr = DFExpr::Column(col.clone());
-                        if let Some(alias) = &info.output_alias {
-                            proj_exprs.push(expr.alias(alias));
+                        if let Some(info) =
+                            unnest_infos.iter().find(|i| i.internal_name == col.name)
+                        {
+                            if let Some(alias) = &info.output_alias {
+                                proj_exprs.push(expr.alias(alias));
+                            } else {
+                                proj_exprs.push(expr);
+                            }
                         } else {
                             proj_exprs.push(expr);
                         }
