@@ -31,21 +31,33 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
         let mut plan = self.plan_set_expr_with_order(&query.body, query.order_by.as_ref())?;
 
         if let Some(ref order_by) = query.order_by {
-            plan = match plan {
-                LogicalPlan::Project {
-                    input,
-                    expressions,
-                    schema,
-                } => {
-                    let sorted =
-                        self.plan_order_by_with_aliases(*input, order_by, &expressions, &schema)?;
+            plan = if let LogicalPlan::Project {
+                input,
+                expressions,
+                schema,
+            } = &plan
+            {
+                let input = input.as_ref();
+                let expressions = expressions.clone();
+                let schema = schema.clone();
+                let has_subquery = expressions.iter().any(contains_subquery);
+                if has_subquery {
+                    self.plan_order_by_with_aliases(plan, order_by, &expressions, &schema)?
+                } else {
+                    let sorted = self.plan_order_by_with_aliases(
+                        input.clone(),
+                        order_by,
+                        &expressions,
+                        &schema,
+                    )?;
                     LogicalPlan::Project {
                         input: Box::new(sorted),
                         expressions,
                         schema,
                     }
                 }
-                _ => self.plan_order_by(plan, order_by)?,
+            } else {
+                self.plan_order_by(plan, order_by)?
             };
         }
 
@@ -333,5 +345,43 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
             },
             _ => Err(Error::parse_error("OFFSET must be a literal number")),
         }
+    }
+}
+
+fn contains_subquery(expr: &Expr) -> bool {
+    match expr {
+        Expr::Subquery(_)
+        | Expr::ScalarSubquery(_)
+        | Expr::ArraySubquery(_)
+        | Expr::Exists { .. }
+        | Expr::InSubquery { .. } => true,
+        Expr::Alias { expr, .. } => contains_subquery(expr),
+        Expr::UnaryOp { expr, .. } => contains_subquery(expr),
+        Expr::BinaryOp { left, right, .. } => contains_subquery(left) || contains_subquery(right),
+        Expr::ScalarFunction { args, .. } => args.iter().any(contains_subquery),
+        Expr::Aggregate { args, filter, .. } => {
+            args.iter().any(contains_subquery)
+                || filter.as_ref().is_some_and(|f| contains_subquery(f))
+        }
+        Expr::Case {
+            operand,
+            when_clauses,
+            else_result,
+        } => {
+            operand.as_ref().is_some_and(|e| contains_subquery(e))
+                || when_clauses
+                    .iter()
+                    .any(|w| contains_subquery(&w.condition) || contains_subquery(&w.result))
+                || else_result.as_ref().is_some_and(|e| contains_subquery(e))
+        }
+        Expr::Cast { expr, .. } => contains_subquery(expr),
+        Expr::Between {
+            expr, low, high, ..
+        } => contains_subquery(expr) || contains_subquery(low) || contains_subquery(high),
+        Expr::InList { expr, list, .. } => {
+            contains_subquery(expr) || list.iter().any(contains_subquery)
+        }
+        Expr::IsNull { expr, .. } => contains_subquery(expr),
+        _ => false,
     }
 }
