@@ -36,12 +36,38 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
         Expr::BinaryOp { left, op, right } => {
             let left_expr = convert_expr(left)?;
             let right_expr = convert_expr(right)?;
-            let operator = convert_binary_op(op);
-            Ok(DFExpr::BinaryExpr(BinaryExpr::new(
-                Box::new(left_expr),
-                operator,
-                Box::new(right_expr),
-            )))
+            if *op == BinaryOp::Div {
+                let left_needs_cast = needs_float_cast_for_division(left);
+                let right_needs_cast = needs_float_cast_for_division(right);
+                let left_final = if left_needs_cast {
+                    DFExpr::Cast(datafusion::logical_expr::Cast::new(
+                        Box::new(left_expr),
+                        datafusion::arrow::datatypes::DataType::Float64,
+                    ))
+                } else {
+                    left_expr
+                };
+                let right_final = if right_needs_cast {
+                    DFExpr::Cast(datafusion::logical_expr::Cast::new(
+                        Box::new(right_expr),
+                        datafusion::arrow::datatypes::DataType::Float64,
+                    ))
+                } else {
+                    right_expr
+                };
+                Ok(DFExpr::BinaryExpr(BinaryExpr::new(
+                    Box::new(left_final),
+                    Operator::Divide,
+                    Box::new(right_final),
+                )))
+            } else {
+                let operator = convert_binary_op(op);
+                Ok(DFExpr::BinaryExpr(BinaryExpr::new(
+                    Box::new(left_expr),
+                    operator,
+                    Box::new(right_expr),
+                )))
+            }
         }
 
         Expr::UnaryOp { op, expr: inner } => {
@@ -626,6 +652,17 @@ fn convert_literal(lit: &Literal) -> DFResult<DFExpr> {
         Literal::Json(v) => ScalarValue::Utf8(Some(v.to_string())),
     };
     Ok(DFExpr::Literal(scalar))
+}
+
+fn needs_float_cast_for_division(expr: &Expr) -> bool {
+    match expr {
+        Expr::Literal(Literal::Int64(_)) => true,
+        Expr::BinaryOp { left, right, .. } => {
+            needs_float_cast_for_division(left) && needs_float_cast_for_division(right)
+        }
+        Expr::UnaryOp { expr: inner, .. } => needs_float_cast_for_division(inner),
+        _ => false,
+    }
 }
 
 fn convert_binary_op(op: &BinaryOp) -> Operator {

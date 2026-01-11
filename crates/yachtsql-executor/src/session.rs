@@ -1297,6 +1297,18 @@ impl YachtSQLSession {
         }
     }
 
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn expr_needs_float_cast(expr: &yachtsql_ir::Expr) -> bool {
+        match expr {
+            yachtsql_ir::Expr::Literal(yachtsql_ir::Literal::Int64(_)) => true,
+            yachtsql_ir::Expr::BinaryOp { left, right, .. } => {
+                Self::expr_needs_float_cast(left) && Self::expr_needs_float_cast(right)
+            }
+            yachtsql_ir::Expr::UnaryOp { expr: inner, .. } => Self::expr_needs_float_cast(inner),
+            _ => false,
+        }
+    }
+
     fn convert_expr(&self, expr: &yachtsql_ir::Expr) -> Result<DFExpr> {
         match expr {
             yachtsql_ir::Expr::UserDefinedAggregate {
@@ -1355,6 +1367,28 @@ impl YachtSQLSession {
                 } else {
                     (left_expr, right_expr)
                 };
+
+                if *op == yachtsql_ir::BinaryOp::Div {
+                    let left_needs_cast = Self::expr_needs_float_cast(left);
+                    let right_needs_cast = Self::expr_needs_float_cast(right);
+                    if left_needs_cast || right_needs_cast {
+                        let left_cast = DFExpr::Cast(datafusion::logical_expr::Cast::new(
+                            Box::new(left_expr),
+                            datafusion::arrow::datatypes::DataType::Float64,
+                        ));
+                        let right_cast = DFExpr::Cast(datafusion::logical_expr::Cast::new(
+                            Box::new(right_expr),
+                            datafusion::arrow::datatypes::DataType::Float64,
+                        ));
+                        return Ok(DFExpr::BinaryExpr(
+                            datafusion::logical_expr::BinaryExpr::new(
+                                Box::new(left_cast),
+                                datafusion::logical_expr::Operator::Divide,
+                                Box::new(right_cast),
+                            ),
+                        ));
+                    }
+                }
 
                 let operator = match op {
                     yachtsql_ir::BinaryOp::Add => datafusion::logical_expr::Operator::Plus,
@@ -1786,6 +1820,29 @@ impl YachtSQLSession {
             yachtsql_ir::Expr::BinaryOp { left, op, right } => {
                 let left_expr = self.convert_subquery_expr(left, subquery_tables)?;
                 let right_expr = self.convert_subquery_expr(right, subquery_tables)?;
+
+                if *op == yachtsql_ir::BinaryOp::Div {
+                    let left_needs_cast = Self::expr_needs_float_cast(left);
+                    let right_needs_cast = Self::expr_needs_float_cast(right);
+                    if left_needs_cast || right_needs_cast {
+                        let left_cast = DFExpr::Cast(datafusion::logical_expr::Cast::new(
+                            Box::new(left_expr),
+                            datafusion::arrow::datatypes::DataType::Float64,
+                        ));
+                        let right_cast = DFExpr::Cast(datafusion::logical_expr::Cast::new(
+                            Box::new(right_expr),
+                            datafusion::arrow::datatypes::DataType::Float64,
+                        ));
+                        return Ok(DFExpr::BinaryExpr(
+                            datafusion::logical_expr::BinaryExpr::new(
+                                Box::new(left_cast),
+                                datafusion::logical_expr::Operator::Divide,
+                                Box::new(right_cast),
+                            ),
+                        ));
+                    }
+                }
+
                 let operator = match op {
                     yachtsql_ir::BinaryOp::Add => datafusion::logical_expr::Operator::Plus,
                     yachtsql_ir::BinaryOp::Sub => datafusion::logical_expr::Operator::Minus,
