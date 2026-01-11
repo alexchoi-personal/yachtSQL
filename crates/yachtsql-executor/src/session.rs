@@ -803,14 +803,25 @@ impl YachtSQLSession {
                         .build()
                         .map_err(|e| Error::internal(e.to_string()))
                 } else {
+                    let mut name_occurrences: std::collections::HashMap<String, usize> =
+                        std::collections::HashMap::new();
+
                     let project_exprs: Vec<DFExpr> = expressions
                         .iter()
                         .zip(schema.fields.iter())
                         .map(|(e, field)| {
                             let df_expr = self.convert_expr(e)?;
+                            let base_name = field.name.clone();
+                            let occurrence = name_occurrences.entry(base_name.clone()).or_insert(0);
+                            let alias_name = if *occurrence == 0 {
+                                base_name
+                            } else {
+                                format!("{}_{}", field.name, occurrence)
+                            };
+                            *occurrence += 1;
                             let expr_name = df_expr.schema_name().to_string();
-                            if expr_name != field.name {
-                                Ok(df_expr.alias(&field.name))
+                            if expr_name != alias_name {
+                                Ok(df_expr.alias(&alias_name))
                             } else {
                                 Ok(df_expr)
                             }
@@ -885,9 +896,10 @@ impl YachtSQLSession {
             LogicalPlan::Sort { input, sort_exprs } => {
                 let input_plan = self.convert_plan_inner(input)?;
                 self.set_outer_aliases(input);
+                let input_schema = input_plan.schema();
                 let df_sort_exprs: Vec<DFSortExpr> = sort_exprs
                     .iter()
-                    .map(|se| self.convert_sort_expr(se))
+                    .map(|se| self.convert_sort_expr_with_schema(se, input_schema))
                     .collect::<Result<_>>()?;
                 LogicalPlanBuilder::from(input_plan)
                     .sort(df_sort_exprs)
@@ -1583,13 +1595,41 @@ impl YachtSQLSession {
         }
     }
 
-    fn convert_sort_expr(&self, se: &SortExpr) -> Result<DFSortExpr> {
-        let expr = self.convert_expr(&se.expr)?;
+    fn convert_sort_expr_with_schema(
+        &self,
+        se: &SortExpr,
+        input_schema: &datafusion::common::DFSchemaRef,
+    ) -> Result<DFSortExpr> {
+        let expr = self.convert_expr_with_schema(&se.expr, input_schema)?;
         Ok(DFSortExpr {
             expr,
             asc: se.asc,
             nulls_first: se.nulls_first,
         })
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn convert_expr_with_schema(
+        &self,
+        expr: &yachtsql_ir::Expr,
+        input_schema: &datafusion::common::DFSchemaRef,
+    ) -> Result<DFExpr> {
+        match expr {
+            yachtsql_ir::Expr::Column { table, name, .. } => {
+                if let Some(t) = table {
+                    let qualified = datafusion::common::Column::new(Some(t.clone()), name.clone());
+                    if input_schema.has_column(&qualified) {
+                        return Ok(DFExpr::Column(qualified));
+                    }
+                    let unqualified = datafusion::common::Column::new_unqualified(name.clone());
+                    if input_schema.has_column(&unqualified) {
+                        return Ok(DFExpr::Column(unqualified));
+                    }
+                }
+                self.convert_expr(expr)
+            }
+            _ => self.convert_expr(expr),
+        }
     }
 
     fn convert_subquery_plan(
