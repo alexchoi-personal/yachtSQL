@@ -403,17 +403,14 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
 
         Expr::Struct { fields } => {
             let mut df_fields: Vec<DFExpr> = Vec::with_capacity(fields.len() * 2);
-            for (name, value) in fields {
+            for (i, (name, value)) in fields.iter().enumerate() {
                 let df_value = convert_expr(value)?;
-                match name {
-                    Some(n) => {
-                        df_fields.push(lit(n.clone()));
-                        df_fields.push(df_value);
-                    }
-                    None => {
-                        df_fields.push(df_value);
-                    }
-                }
+                let field_name = match name {
+                    Some(n) => n.clone(),
+                    None => format!("f{}", i),
+                };
+                df_fields.push(lit(field_name));
+                df_fields.push(df_value);
             }
             Ok(datafusion::functions::core::named_struct().call(df_fields))
         }
