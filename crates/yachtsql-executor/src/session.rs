@@ -4223,6 +4223,36 @@ impl YachtSQLSession {
         }
     }
 
+    #[allow(clippy::wildcard_enum_match_arm, clippy::only_used_in_recursion)]
+    fn data_type_to_sql(&self, dt: &yachtsql_common::types::DataType) -> String {
+        use yachtsql_common::types::DataType;
+        match dt {
+            DataType::Bool => "BOOL".to_string(),
+            DataType::Int64 => "INT64".to_string(),
+            DataType::Float64 => "FLOAT64".to_string(),
+            DataType::String => "STRING".to_string(),
+            DataType::Bytes => "BYTES".to_string(),
+            DataType::Date => "DATE".to_string(),
+            DataType::DateTime => "DATETIME".to_string(),
+            DataType::Time => "TIME".to_string(),
+            DataType::Timestamp => "TIMESTAMP".to_string(),
+            DataType::Numeric(_) => "NUMERIC".to_string(),
+            DataType::BigNumeric => "BIGNUMERIC".to_string(),
+            DataType::Geography => "GEOGRAPHY".to_string(),
+            DataType::Json => "JSON".to_string(),
+            DataType::Interval => "INTERVAL".to_string(),
+            DataType::Array(inner) => format!("ARRAY<{}>", self.data_type_to_sql(inner)),
+            DataType::Struct(fields) => {
+                let field_strs: Vec<String> = fields
+                    .iter()
+                    .map(|f| format!("{} {}", f.name, self.data_type_to_sql(&f.data_type)))
+                    .collect();
+                format!("STRUCT<{}>", field_strs.join(", "))
+            }
+            _ => format!("{:?}", dt).to_uppercase(),
+        }
+    }
+
     #[allow(clippy::wildcard_enum_match_arm)]
     fn eval_const_expr(&self, expr: &yachtsql_ir::Expr) -> ScalarValue {
         use yachtsql_ir::Literal;
@@ -4533,6 +4563,52 @@ impl YachtSQLSession {
                     distinct_str,
                     arg_strs.join(", ")
                 ))
+            }
+            Expr::TypedString { data_type, value } => {
+                Ok(format!("{} '{}'", self.data_type_to_sql(data_type), value))
+            }
+            Expr::Cast {
+                expr, data_type, ..
+            } => {
+                let inner = self.expr_to_sql(expr)?;
+                Ok(format!(
+                    "CAST({} AS {})",
+                    inner,
+                    self.data_type_to_sql(data_type)
+                ))
+            }
+            Expr::UnaryOp { op, expr } => {
+                let inner = self.expr_to_sql(expr)?;
+                let op_str = match op {
+                    yachtsql_ir::UnaryOp::Not => "NOT",
+                    yachtsql_ir::UnaryOp::Minus => "-",
+                    yachtsql_ir::UnaryOp::Plus => "+",
+                    yachtsql_ir::UnaryOp::BitwiseNot => "~",
+                };
+                Ok(format!("({} {})", op_str, inner))
+            }
+            Expr::Case {
+                operand,
+                when_clauses,
+                else_result,
+            } => {
+                let mut sql = String::from("CASE ");
+                if let Some(op) = operand {
+                    sql.push_str(&self.expr_to_sql(op)?);
+                    sql.push(' ');
+                }
+                for wc in when_clauses {
+                    sql.push_str(&format!(
+                        "WHEN {} THEN {} ",
+                        self.expr_to_sql(&wc.condition)?,
+                        self.expr_to_sql(&wc.result)?
+                    ));
+                }
+                if let Some(el) = else_result {
+                    sql.push_str(&format!("ELSE {} ", self.expr_to_sql(el)?));
+                }
+                sql.push_str("END");
+                Ok(sql)
             }
             _ => Err(Error::internal(format!(
                 "Expression not supported in UPDATE/DELETE: {:?}",
