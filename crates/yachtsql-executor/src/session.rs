@@ -923,6 +923,7 @@ impl YachtSQLSession {
         }
 
         let processed_plan = Box::pin(self.preprocess_gap_fill(plan)).await?;
+        let processed_plan = Box::pin(self.preprocess_scalar_subqueries(&processed_plan)).await?;
         let df_plan = self.convert_plan(&processed_plan)?;
         let df = DataFrame::new(self.ctx.state(), df_plan);
         df.collect()
@@ -1120,6 +1121,365 @@ impl YachtSQLSession {
             }
 
             _ => Ok(plan.clone()),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::wildcard_enum_match_arm)]
+    async fn preprocess_scalar_subqueries(&self, plan: &LogicalPlan) -> Result<LogicalPlan> {
+        match plan {
+            LogicalPlan::Values { values, schema } => {
+                let mut new_values = Vec::with_capacity(values.len());
+                for row in values {
+                    let mut new_row = Vec::with_capacity(row.len());
+                    for expr in row {
+                        let new_expr = Box::pin(self.eval_subqueries_in_expr(expr)).await?;
+                        new_row.push(new_expr);
+                    }
+                    new_values.push(new_row);
+                }
+                Ok(LogicalPlan::Values {
+                    values: new_values,
+                    schema: schema.clone(),
+                })
+            }
+
+            LogicalPlan::Project {
+                input,
+                expressions,
+                schema,
+            } => {
+                let processed_input = Box::pin(self.preprocess_scalar_subqueries(input)).await?;
+                let mut new_exprs = Vec::with_capacity(expressions.len());
+                for expr in expressions {
+                    let new_expr = Box::pin(self.eval_subqueries_in_expr(expr)).await?;
+                    new_exprs.push(new_expr);
+                }
+                Ok(LogicalPlan::Project {
+                    input: Box::new(processed_input),
+                    expressions: new_exprs,
+                    schema: schema.clone(),
+                })
+            }
+
+            LogicalPlan::Filter { input, predicate } => {
+                let processed_input = Box::pin(self.preprocess_scalar_subqueries(input)).await?;
+                let new_predicate = Box::pin(self.eval_subqueries_in_expr(predicate)).await?;
+                Ok(LogicalPlan::Filter {
+                    input: Box::new(processed_input),
+                    predicate: new_predicate,
+                })
+            }
+
+            LogicalPlan::Aggregate {
+                input,
+                group_by,
+                aggregates,
+                schema,
+                grouping_sets,
+            } => {
+                let processed_input = Box::pin(self.preprocess_scalar_subqueries(input)).await?;
+                let mut new_group_by = Vec::with_capacity(group_by.len());
+                for expr in group_by {
+                    new_group_by.push(Box::pin(self.eval_subqueries_in_expr(expr)).await?);
+                }
+                let mut new_aggregates = Vec::with_capacity(aggregates.len());
+                for expr in aggregates {
+                    new_aggregates.push(Box::pin(self.eval_subqueries_in_expr(expr)).await?);
+                }
+                Ok(LogicalPlan::Aggregate {
+                    input: Box::new(processed_input),
+                    group_by: new_group_by,
+                    aggregates: new_aggregates,
+                    schema: schema.clone(),
+                    grouping_sets: grouping_sets.clone(),
+                })
+            }
+
+            LogicalPlan::Sort { input, sort_exprs } => {
+                let processed_input = Box::pin(self.preprocess_scalar_subqueries(input)).await?;
+                Ok(LogicalPlan::Sort {
+                    input: Box::new(processed_input),
+                    sort_exprs: sort_exprs.clone(),
+                })
+            }
+
+            LogicalPlan::Limit {
+                input,
+                limit,
+                offset,
+            } => {
+                let processed_input = Box::pin(self.preprocess_scalar_subqueries(input)).await?;
+                Ok(LogicalPlan::Limit {
+                    input: Box::new(processed_input),
+                    limit: *limit,
+                    offset: *offset,
+                })
+            }
+
+            LogicalPlan::Distinct { input } => {
+                let processed_input = Box::pin(self.preprocess_scalar_subqueries(input)).await?;
+                Ok(LogicalPlan::Distinct {
+                    input: Box::new(processed_input),
+                })
+            }
+
+            LogicalPlan::Join {
+                left,
+                right,
+                join_type,
+                condition,
+                schema,
+            } => {
+                let processed_left = Box::pin(self.preprocess_scalar_subqueries(left)).await?;
+                let processed_right = Box::pin(self.preprocess_scalar_subqueries(right)).await?;
+                let new_condition = if let Some(cond) = condition {
+                    Some(Box::pin(self.eval_subqueries_in_expr(cond)).await?)
+                } else {
+                    None
+                };
+                Ok(LogicalPlan::Join {
+                    left: Box::new(processed_left),
+                    right: Box::new(processed_right),
+                    join_type: *join_type,
+                    condition: new_condition,
+                    schema: schema.clone(),
+                })
+            }
+
+            LogicalPlan::Window {
+                input,
+                window_exprs,
+                schema,
+            } => {
+                let processed_input = Box::pin(self.preprocess_scalar_subqueries(input)).await?;
+                Ok(LogicalPlan::Window {
+                    input: Box::new(processed_input),
+                    window_exprs: window_exprs.clone(),
+                    schema: schema.clone(),
+                })
+            }
+
+            LogicalPlan::WithCte { ctes, body } => {
+                let processed_body = Box::pin(self.preprocess_scalar_subqueries(body)).await?;
+                Ok(LogicalPlan::WithCte {
+                    ctes: ctes.clone(),
+                    body: Box::new(processed_body),
+                })
+            }
+
+            _ => Ok(plan.clone()),
+        }
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    async fn eval_subqueries_in_expr(&self, expr: &yachtsql_ir::Expr) -> Result<yachtsql_ir::Expr> {
+        use yachtsql_ir::Expr;
+        match expr {
+            Expr::ScalarSubquery(subquery) | Expr::Subquery(subquery) => {
+                let batches = Box::pin(self.execute_query(subquery)).await?;
+                if batches.is_empty() || batches[0].num_rows() == 0 {
+                    Ok(Expr::Literal(yachtsql_ir::Literal::Null))
+                } else {
+                    let value = ScalarValue::try_from_array(batches[0].column(0), 0)
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                    Ok(scalar_to_literal(value))
+                }
+            }
+
+            Expr::ArraySubquery(subquery) => {
+                let batches = Box::pin(self.execute_query(subquery)).await?;
+                let mut elements = Vec::new();
+                for batch in &batches {
+                    for row_idx in 0..batch.num_rows() {
+                        let value = ScalarValue::try_from_array(batch.column(0), row_idx)
+                            .map_err(|e| Error::internal(e.to_string()))?;
+                        elements.push(scalar_to_literal(value));
+                    }
+                }
+                Ok(Expr::Array {
+                    elements,
+                    element_type: None,
+                })
+            }
+
+            Expr::Exists { subquery, negated } => {
+                let batches = Box::pin(self.execute_query(subquery)).await?;
+                let exists = !batches.is_empty() && batches.iter().any(|b| b.num_rows() > 0);
+                let result = if *negated { !exists } else { exists };
+                Ok(Expr::Literal(yachtsql_ir::Literal::Bool(result)))
+            }
+
+            Expr::InSubquery {
+                expr: in_expr,
+                subquery,
+                negated,
+            } => {
+                let processed_expr = Box::pin(self.eval_subqueries_in_expr(in_expr)).await?;
+                let batches = Box::pin(self.execute_query(subquery)).await?;
+                let mut list_elements = Vec::new();
+                for batch in &batches {
+                    for row_idx in 0..batch.num_rows() {
+                        let value = ScalarValue::try_from_array(batch.column(0), row_idx)
+                            .map_err(|e| Error::internal(e.to_string()))?;
+                        list_elements.push(scalar_to_literal(value));
+                    }
+                }
+                Ok(Expr::InList {
+                    expr: Box::new(processed_expr),
+                    list: list_elements,
+                    negated: *negated,
+                })
+            }
+
+            Expr::BinaryOp { left, op, right } => {
+                let new_left = Box::pin(self.eval_subqueries_in_expr(left)).await?;
+                let new_right = Box::pin(self.eval_subqueries_in_expr(right)).await?;
+                Ok(Expr::BinaryOp {
+                    left: Box::new(new_left),
+                    op: *op,
+                    right: Box::new(new_right),
+                })
+            }
+
+            Expr::UnaryOp { op, expr: inner } => {
+                let new_inner = Box::pin(self.eval_subqueries_in_expr(inner)).await?;
+                Ok(Expr::UnaryOp {
+                    op: *op,
+                    expr: Box::new(new_inner),
+                })
+            }
+
+            Expr::ScalarFunction { name, args } => {
+                let mut new_args = Vec::with_capacity(args.len());
+                for arg in args {
+                    new_args.push(Box::pin(self.eval_subqueries_in_expr(arg)).await?);
+                }
+                Ok(Expr::ScalarFunction {
+                    name: name.clone(),
+                    args: new_args,
+                })
+            }
+
+            Expr::Case {
+                operand,
+                when_clauses,
+                else_result,
+            } => {
+                let new_operand = if let Some(op) = operand {
+                    Some(Box::new(Box::pin(self.eval_subqueries_in_expr(op)).await?))
+                } else {
+                    None
+                };
+                let mut new_when_clauses = Vec::with_capacity(when_clauses.len());
+                for wc in when_clauses {
+                    new_when_clauses.push(yachtsql_ir::WhenClause {
+                        condition: Box::pin(self.eval_subqueries_in_expr(&wc.condition)).await?,
+                        result: Box::pin(self.eval_subqueries_in_expr(&wc.result)).await?,
+                    });
+                }
+                let new_else = if let Some(e) = else_result {
+                    Some(Box::new(Box::pin(self.eval_subqueries_in_expr(e)).await?))
+                } else {
+                    None
+                };
+                Ok(Expr::Case {
+                    operand: new_operand,
+                    when_clauses: new_when_clauses,
+                    else_result: new_else,
+                })
+            }
+
+            Expr::Cast {
+                expr: inner,
+                data_type,
+                safe,
+            } => {
+                let new_inner = Box::pin(self.eval_subqueries_in_expr(inner)).await?;
+                Ok(Expr::Cast {
+                    expr: Box::new(new_inner),
+                    data_type: data_type.clone(),
+                    safe: *safe,
+                })
+            }
+
+            Expr::Alias { expr: inner, name } => {
+                let new_inner = Box::pin(self.eval_subqueries_in_expr(inner)).await?;
+                Ok(Expr::Alias {
+                    expr: Box::new(new_inner),
+                    name: name.clone(),
+                })
+            }
+
+            Expr::IsNull {
+                expr: inner,
+                negated,
+            } => {
+                let new_inner = Box::pin(self.eval_subqueries_in_expr(inner)).await?;
+                Ok(Expr::IsNull {
+                    expr: Box::new(new_inner),
+                    negated: *negated,
+                })
+            }
+
+            Expr::Between {
+                expr: inner,
+                low,
+                high,
+                negated,
+            } => {
+                let new_inner = Box::pin(self.eval_subqueries_in_expr(inner)).await?;
+                let new_low = Box::pin(self.eval_subqueries_in_expr(low)).await?;
+                let new_high = Box::pin(self.eval_subqueries_in_expr(high)).await?;
+                Ok(Expr::Between {
+                    expr: Box::new(new_inner),
+                    low: Box::new(new_low),
+                    high: Box::new(new_high),
+                    negated: *negated,
+                })
+            }
+
+            Expr::InList {
+                expr: inner,
+                list,
+                negated,
+            } => {
+                let new_inner = Box::pin(self.eval_subqueries_in_expr(inner)).await?;
+                let mut new_list = Vec::with_capacity(list.len());
+                for item in list {
+                    new_list.push(Box::pin(self.eval_subqueries_in_expr(item)).await?);
+                }
+                Ok(Expr::InList {
+                    expr: Box::new(new_inner),
+                    list: new_list,
+                    negated: *negated,
+                })
+            }
+
+            Expr::Array {
+                elements,
+                element_type,
+            } => {
+                let mut new_elements = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    new_elements.push(Box::pin(self.eval_subqueries_in_expr(elem)).await?);
+                }
+                Ok(Expr::Array {
+                    elements: new_elements,
+                    element_type: element_type.clone(),
+                })
+            }
+
+            Expr::Struct { fields } => {
+                let mut new_fields = Vec::with_capacity(fields.len());
+                for (name, field_expr) in fields {
+                    let new_expr = Box::pin(self.eval_subqueries_in_expr(field_expr)).await?;
+                    new_fields.push((name.clone(), new_expr));
+                }
+                Ok(Expr::Struct { fields: new_fields })
+            }
+
+            _ => Ok(expr.clone()),
         }
     }
 
@@ -6053,6 +6413,74 @@ fn typed_null_for_data_type(data_type: &yachtsql_common::types::DataType) -> Sca
         DataType::Numeric { .. } => ScalarValue::Decimal128(None, 38, 9),
         DataType::Interval => ScalarValue::IntervalMonthDayNano(None),
         _ => ScalarValue::Null,
+    }
+}
+
+#[allow(clippy::wildcard_enum_match_arm)]
+fn scalar_to_literal(value: ScalarValue) -> yachtsql_ir::Expr {
+    use ordered_float::OrderedFloat;
+    use rust_decimal::Decimal;
+    use yachtsql_ir::{Expr, Literal};
+    match value {
+        ScalarValue::Null => Expr::Literal(Literal::Null),
+        ScalarValue::Boolean(v) => Expr::Literal(v.map_or(Literal::Null, Literal::Bool)),
+        ScalarValue::Int8(v) => {
+            Expr::Literal(v.map_or(Literal::Null, |x| Literal::Int64(x as i64)))
+        }
+        ScalarValue::Int16(v) => {
+            Expr::Literal(v.map_or(Literal::Null, |x| Literal::Int64(x as i64)))
+        }
+        ScalarValue::Int32(v) => {
+            Expr::Literal(v.map_or(Literal::Null, |x| Literal::Int64(x as i64)))
+        }
+        ScalarValue::Int64(v) => Expr::Literal(v.map_or(Literal::Null, Literal::Int64)),
+        ScalarValue::UInt8(v) => {
+            Expr::Literal(v.map_or(Literal::Null, |x| Literal::Int64(x as i64)))
+        }
+        ScalarValue::UInt16(v) => {
+            Expr::Literal(v.map_or(Literal::Null, |x| Literal::Int64(x as i64)))
+        }
+        ScalarValue::UInt32(v) => {
+            Expr::Literal(v.map_or(Literal::Null, |x| Literal::Int64(x as i64)))
+        }
+        ScalarValue::UInt64(v) => {
+            Expr::Literal(v.map_or(Literal::Null, |x| Literal::Int64(x as i64)))
+        }
+        ScalarValue::Float32(v) => {
+            Expr::Literal(v.map_or(Literal::Null, |x| Literal::Float64(OrderedFloat(x as f64))))
+        }
+        ScalarValue::Float64(v) => {
+            Expr::Literal(v.map_or(Literal::Null, |x| Literal::Float64(OrderedFloat(x))))
+        }
+        ScalarValue::Utf8(v) | ScalarValue::LargeUtf8(v) => {
+            Expr::Literal(v.map_or(Literal::Null, Literal::String))
+        }
+        ScalarValue::Binary(v) | ScalarValue::LargeBinary(v) => {
+            Expr::Literal(v.map_or(Literal::Null, Literal::Bytes))
+        }
+        ScalarValue::Date32(v) => Expr::Literal(v.map_or(Literal::Null, Literal::Date)),
+        ScalarValue::Date64(v) => {
+            Expr::Literal(v.map_or(Literal::Null, |ms| Literal::Date((ms / 86400000) as i32)))
+        }
+        ScalarValue::TimestampNanosecond(v, _) => {
+            Expr::Literal(v.map_or(Literal::Null, Literal::Timestamp))
+        }
+        ScalarValue::TimestampMicrosecond(v, _) => {
+            Expr::Literal(v.map_or(Literal::Null, |us| Literal::Timestamp(us * 1000)))
+        }
+        ScalarValue::TimestampMillisecond(v, _) => {
+            Expr::Literal(v.map_or(Literal::Null, |ms| Literal::Timestamp(ms * 1_000_000)))
+        }
+        ScalarValue::TimestampSecond(v, _) => {
+            Expr::Literal(v.map_or(Literal::Null, |s| Literal::Timestamp(s * 1_000_000_000)))
+        }
+        ScalarValue::Decimal128(v, _precision, scale) => {
+            Expr::Literal(v.map_or(Literal::Null, |n| {
+                let dec = Decimal::from_i128_with_scale(n, scale as u32);
+                Literal::Numeric(dec)
+            }))
+        }
+        _ => Expr::Literal(Literal::Null),
     }
 }
 
