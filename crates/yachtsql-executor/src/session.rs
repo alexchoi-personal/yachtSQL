@@ -473,6 +473,29 @@ impl YachtSQLSession {
             | LogicalPlan::WithCte { .. }
             | LogicalPlan::Sample { .. } => self.execute_query(plan).await,
 
+            LogicalPlan::GapFill {
+                input,
+                ts_column,
+                bucket_width,
+                value_columns,
+                partitioning_columns,
+                origin,
+                input_schema,
+                schema,
+            } => {
+                self.execute_gap_fill(
+                    input,
+                    ts_column,
+                    bucket_width,
+                    value_columns,
+                    partitioning_columns,
+                    origin.as_ref(),
+                    input_schema,
+                    schema,
+                )
+                .await
+            }
+
             LogicalPlan::CreateTable {
                 table_name,
                 columns,
@@ -875,7 +898,6 @@ impl YachtSQLSession {
             | LogicalPlan::Raise { .. }
             | LogicalPlan::Grant { .. }
             | LogicalPlan::Revoke { .. }
-            | LogicalPlan::GapFill { .. }
             | LogicalPlan::CreateSnapshot { .. }
             | LogicalPlan::DropSnapshot { .. }
             | LogicalPlan::ExecuteImmediate { .. }
@@ -900,11 +922,205 @@ impl YachtSQLSession {
             return Box::pin(self.execute_query(body)).await;
         }
 
-        let df_plan = self.convert_plan(plan)?;
+        let processed_plan = Box::pin(self.preprocess_gap_fill(plan)).await?;
+        let df_plan = self.convert_plan(&processed_plan)?;
         let df = DataFrame::new(self.ctx.state(), df_plan);
         df.collect()
             .await
             .map_err(|e| Error::internal(e.to_string()))
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    async fn preprocess_gap_fill(&self, plan: &LogicalPlan) -> Result<LogicalPlan> {
+        match plan {
+            LogicalPlan::GapFill {
+                input,
+                ts_column,
+                bucket_width,
+                value_columns,
+                partitioning_columns,
+                origin,
+                input_schema,
+                schema,
+            } => {
+                let batches = self
+                    .execute_gap_fill(
+                        input,
+                        ts_column,
+                        bucket_width,
+                        value_columns,
+                        partitioning_columns,
+                        origin.as_ref(),
+                        input_schema,
+                        schema,
+                    )
+                    .await?;
+
+                let temp_name = format!(
+                    "__gap_fill_{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                );
+
+                let arrow_schema = if !batches.is_empty() {
+                    batches[0].schema()
+                } else {
+                    convert_plan_schema(schema)
+                };
+
+                let mem_table = MemTable::try_new(arrow_schema, vec![batches])
+                    .map_err(|e| Error::internal(e.to_string()))?;
+                self.ctx
+                    .register_table(&temp_name, Arc::new(mem_table))
+                    .map_err(|e| Error::internal(e.to_string()))?;
+
+                Ok(LogicalPlan::Scan {
+                    table_name: temp_name,
+                    schema: schema.clone(),
+                    projection: None,
+                })
+            }
+
+            LogicalPlan::Filter { input, predicate } => {
+                let processed_input = Box::pin(self.preprocess_gap_fill(input)).await?;
+                Ok(LogicalPlan::Filter {
+                    input: Box::new(processed_input),
+                    predicate: predicate.clone(),
+                })
+            }
+
+            LogicalPlan::Project {
+                input,
+                expressions,
+                schema,
+            } => {
+                let processed_input = Box::pin(self.preprocess_gap_fill(input)).await?;
+                Ok(LogicalPlan::Project {
+                    input: Box::new(processed_input),
+                    expressions: expressions.clone(),
+                    schema: schema.clone(),
+                })
+            }
+
+            LogicalPlan::Sort { input, sort_exprs } => {
+                let processed_input = Box::pin(self.preprocess_gap_fill(input)).await?;
+                Ok(LogicalPlan::Sort {
+                    input: Box::new(processed_input),
+                    sort_exprs: sort_exprs.clone(),
+                })
+            }
+
+            LogicalPlan::Limit {
+                input,
+                limit,
+                offset,
+            } => {
+                let processed_input = Box::pin(self.preprocess_gap_fill(input)).await?;
+                Ok(LogicalPlan::Limit {
+                    input: Box::new(processed_input),
+                    limit: *limit,
+                    offset: *offset,
+                })
+            }
+
+            LogicalPlan::Distinct { input } => {
+                let processed_input = Box::pin(self.preprocess_gap_fill(input)).await?;
+                Ok(LogicalPlan::Distinct {
+                    input: Box::new(processed_input),
+                })
+            }
+
+            LogicalPlan::Aggregate {
+                input,
+                group_by,
+                aggregates,
+                schema,
+                grouping_sets,
+            } => {
+                let processed_input = Box::pin(self.preprocess_gap_fill(input)).await?;
+                Ok(LogicalPlan::Aggregate {
+                    input: Box::new(processed_input),
+                    group_by: group_by.clone(),
+                    aggregates: aggregates.clone(),
+                    schema: schema.clone(),
+                    grouping_sets: grouping_sets.clone(),
+                })
+            }
+
+            LogicalPlan::Window {
+                input,
+                window_exprs,
+                schema,
+            } => {
+                let processed_input = Box::pin(self.preprocess_gap_fill(input)).await?;
+                Ok(LogicalPlan::Window {
+                    input: Box::new(processed_input),
+                    window_exprs: window_exprs.clone(),
+                    schema: schema.clone(),
+                })
+            }
+
+            LogicalPlan::Qualify { input, predicate } => {
+                let processed_input = Box::pin(self.preprocess_gap_fill(input)).await?;
+                Ok(LogicalPlan::Qualify {
+                    input: Box::new(processed_input),
+                    predicate: predicate.clone(),
+                })
+            }
+
+            LogicalPlan::Join {
+                left,
+                right,
+                join_type,
+                condition,
+                schema,
+            } => {
+                let processed_left = Box::pin(self.preprocess_gap_fill(left)).await?;
+                let processed_right = Box::pin(self.preprocess_gap_fill(right)).await?;
+                Ok(LogicalPlan::Join {
+                    left: Box::new(processed_left),
+                    right: Box::new(processed_right),
+                    join_type: *join_type,
+                    condition: condition.clone(),
+                    schema: schema.clone(),
+                })
+            }
+
+            LogicalPlan::SetOperation {
+                left,
+                right,
+                op,
+                all,
+                schema,
+            } => {
+                let processed_left = Box::pin(self.preprocess_gap_fill(left)).await?;
+                let processed_right = Box::pin(self.preprocess_gap_fill(right)).await?;
+                Ok(LogicalPlan::SetOperation {
+                    left: Box::new(processed_left),
+                    right: Box::new(processed_right),
+                    op: *op,
+                    all: *all,
+                    schema: schema.clone(),
+                })
+            }
+
+            LogicalPlan::Sample {
+                input,
+                sample_type,
+                sample_value,
+            } => {
+                let processed_input = Box::pin(self.preprocess_gap_fill(input)).await?;
+                Ok(LogicalPlan::Sample {
+                    input: Box::new(processed_input),
+                    sample_type: *sample_type,
+                    sample_value: *sample_value,
+                })
+            }
+
+            _ => Ok(plan.clone()),
+        }
     }
 
     #[allow(clippy::wildcard_enum_match_arm)]
@@ -5424,6 +5640,316 @@ impl YachtSQLSession {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::wildcard_enum_match_arm)]
+    async fn execute_gap_fill(
+        &self,
+        input: &LogicalPlan,
+        ts_column: &str,
+        bucket_width: &yachtsql_ir::Expr,
+        value_columns: &[yachtsql_ir::GapFillColumn],
+        partitioning_columns: &[String],
+        origin: Option<&yachtsql_ir::Expr>,
+        input_schema: &yachtsql_ir::PlanSchema,
+        output_schema: &yachtsql_ir::PlanSchema,
+    ) -> Result<Vec<RecordBatch>> {
+        use std::collections::BTreeMap;
+
+        let input_batches = self.execute_query(input).await?;
+        if input_batches.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let ts_idx = input_schema
+            .fields
+            .iter()
+            .position(|f| f.name.to_uppercase() == ts_column.to_uppercase())
+            .ok_or_else(|| Error::invalid_query(format!("Column not found: {}", ts_column)))?;
+
+        let partition_indices: Vec<usize> = partitioning_columns
+            .iter()
+            .filter_map(|p| {
+                input_schema
+                    .fields
+                    .iter()
+                    .position(|f| f.name.to_uppercase() == p.to_uppercase())
+            })
+            .collect();
+
+        let value_col_indices: Vec<(usize, yachtsql_ir::GapFillStrategy)> = value_columns
+            .iter()
+            .filter_map(|vc| {
+                input_schema
+                    .fields
+                    .iter()
+                    .position(|f| f.name.to_uppercase() == vc.column_name.to_uppercase())
+                    .map(|idx| (idx, vc.strategy))
+            })
+            .collect();
+
+        let bucket_millis = self.evaluate_interval_expr(bucket_width)?;
+        let origin_offset = if let Some(origin_expr) = origin {
+            Self::evaluate_origin_expr(origin_expr, bucket_millis)?
+        } else {
+            0
+        };
+
+        #[derive(Clone)]
+        struct PartitionEntry {
+            partition_key: Vec<ScalarValue>,
+            entries: Vec<(i64, Vec<ScalarValue>)>,
+        }
+
+        let mut ts_timezone: Option<Arc<str>> = None;
+
+        let mut partitions: BTreeMap<String, PartitionEntry> = BTreeMap::new();
+
+        for batch in &input_batches {
+            for row_idx in 0..batch.num_rows() {
+                let ts_val = ScalarValue::try_from_array(batch.column(ts_idx), row_idx)
+                    .map_err(|e| Error::internal(e.to_string()))?;
+
+                let ts_millis = match &ts_val {
+                    ScalarValue::TimestampNanosecond(Some(ns), tz) => {
+                        if ts_timezone.is_none() {
+                            ts_timezone = tz.clone();
+                        }
+                        *ns / 1_000_000
+                    }
+                    ScalarValue::TimestampMicrosecond(Some(us), tz) => {
+                        if ts_timezone.is_none() {
+                            ts_timezone = tz.clone();
+                        }
+                        *us / 1_000
+                    }
+                    ScalarValue::TimestampMillisecond(Some(ms), tz) => {
+                        if ts_timezone.is_none() {
+                            ts_timezone = tz.clone();
+                        }
+                        *ms
+                    }
+                    ScalarValue::TimestampSecond(Some(s), tz) => {
+                        if ts_timezone.is_none() {
+                            ts_timezone = tz.clone();
+                        }
+                        *s * 1_000
+                    }
+                    ScalarValue::Date32(Some(d)) => *d as i64 * 24 * 60 * 60 * 1_000,
+                    ScalarValue::Date64(Some(ms)) => *ms,
+                    _ => continue,
+                };
+
+                let partition_key: Vec<ScalarValue> = partition_indices
+                    .iter()
+                    .map(|&idx| {
+                        ScalarValue::try_from_array(batch.column(idx), row_idx)
+                            .unwrap_or(ScalarValue::Null)
+                    })
+                    .collect();
+
+                let partition_key_str = partition_key
+                    .iter()
+                    .map(|v| format!("{:?}", v))
+                    .collect::<Vec<_>>()
+                    .join("|");
+
+                let values_for_row: Vec<ScalarValue> = value_col_indices
+                    .iter()
+                    .map(|(idx, _)| {
+                        ScalarValue::try_from_array(batch.column(*idx), row_idx)
+                            .unwrap_or(ScalarValue::Null)
+                    })
+                    .collect();
+
+                partitions
+                    .entry(partition_key_str)
+                    .or_insert_with(|| PartitionEntry {
+                        partition_key: partition_key.clone(),
+                        entries: Vec::new(),
+                    })
+                    .entries
+                    .push((ts_millis, values_for_row));
+            }
+        }
+
+        let output_arrow_schema = convert_plan_schema(output_schema);
+        let mut result_rows: Vec<Vec<ScalarValue>> = Vec::new();
+
+        for (_key, mut partition) in partitions {
+            partition.entries.sort_by_key(|(ts, _)| *ts);
+
+            if partition.entries.is_empty() {
+                continue;
+            }
+
+            let min_original_ts = partition.entries.first().map(|(ts, _)| *ts).unwrap();
+            let max_original_ts = partition.entries.last().map(|(ts, _)| *ts).unwrap();
+
+            let min_bucket = {
+                let floored = ((min_original_ts - origin_offset) / bucket_millis) * bucket_millis
+                    + origin_offset;
+                if floored < min_original_ts {
+                    floored + bucket_millis
+                } else {
+                    floored
+                }
+            };
+            let max_bucket =
+                ((max_original_ts - origin_offset) / bucket_millis) * bucket_millis + origin_offset;
+
+            let mut exact_match_map: BTreeMap<i64, Vec<ScalarValue>> = BTreeMap::new();
+            for (ts, values) in &partition.entries {
+                let bucket_ts =
+                    ((*ts - origin_offset) / bucket_millis) * bucket_millis + origin_offset;
+                if *ts == bucket_ts {
+                    exact_match_map.insert(bucket_ts, values.clone());
+                }
+            }
+
+            let mut last_values: Vec<Option<ScalarValue>> = vec![None; value_col_indices.len()];
+
+            let mut bucket = min_bucket;
+            while bucket <= max_bucket {
+                for (ts, values) in &partition.entries {
+                    if *ts <= bucket {
+                        for (i, val) in values.iter().enumerate() {
+                            if !val.is_null() {
+                                last_values[i] = Some(val.clone());
+                            }
+                        }
+                    }
+                }
+
+                let value_field_offset = 1 + partition_indices.len();
+                let row_values = if let Some(existing) = exact_match_map.get(&bucket) {
+                    existing.clone()
+                } else {
+                    value_col_indices
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, strategy))| {
+                            let typed_null = output_schema
+                                .fields
+                                .get(value_field_offset + i)
+                                .map(|f| typed_null_for_data_type(&f.data_type))
+                                .unwrap_or(ScalarValue::Null);
+                            match strategy {
+                                yachtsql_ir::GapFillStrategy::Null => typed_null,
+                                yachtsql_ir::GapFillStrategy::Locf => {
+                                    last_values[i].clone().unwrap_or(typed_null)
+                                }
+                                yachtsql_ir::GapFillStrategy::Linear => {
+                                    let prev_entry = partition
+                                        .entries
+                                        .iter()
+                                        .filter(|(ts, _)| *ts < bucket)
+                                        .next_back();
+                                    let next_entry =
+                                        partition.entries.iter().find(|(ts, _)| *ts > bucket);
+
+                                    match (prev_entry, next_entry) {
+                                        (
+                                            Some((prev_ts, prev_vals)),
+                                            Some((next_ts, next_vals)),
+                                        ) => interpolate_scalar_value(
+                                            &prev_vals[i],
+                                            &next_vals[i],
+                                            *prev_ts,
+                                            *next_ts,
+                                            bucket,
+                                        ),
+                                        _ => typed_null,
+                                    }
+                                }
+                            }
+                        })
+                        .collect()
+                };
+
+                let ts_value =
+                    ScalarValue::TimestampNanosecond(Some(bucket * 1_000_000), ts_timezone.clone());
+
+                let mut record_values = vec![ts_value];
+                record_values.extend(partition.partition_key.clone());
+                record_values.extend(row_values);
+
+                result_rows.push(record_values);
+
+                bucket += bucket_millis;
+            }
+        }
+
+        if result_rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let num_cols = result_rows[0].len();
+        let mut columns: Vec<ArrayRef> = Vec::with_capacity(num_cols);
+
+        for col_idx in 0..num_cols {
+            let col_values: Vec<ScalarValue> = result_rows
+                .iter()
+                .map(|row| row.get(col_idx).cloned().unwrap_or(ScalarValue::Null))
+                .collect();
+            let array = ScalarValue::iter_to_array(col_values)
+                .map_err(|e| Error::internal(e.to_string()))?;
+            columns.push(array);
+        }
+
+        let result_batch = RecordBatch::try_new(output_arrow_schema, columns)
+            .map_err(|e| Error::internal(e.to_string()))?;
+
+        Ok(vec![result_batch])
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn evaluate_interval_expr(&self, expr: &yachtsql_ir::Expr) -> Result<i64> {
+        match expr {
+            yachtsql_ir::Expr::Literal(yachtsql_ir::Literal::Interval {
+                months,
+                days,
+                nanos,
+            }) => {
+                let millis = (*months as i64 * 30 * 24 * 60 * 60 * 1000)
+                    + (*days as i64 * 24 * 60 * 60 * 1000)
+                    + (*nanos / 1_000_000);
+                Ok(millis)
+            }
+            _ => Err(Error::invalid_query("bucket_width must be an interval")),
+        }
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn evaluate_origin_expr(expr: &yachtsql_ir::Expr, bucket_millis: i64) -> Result<i64> {
+        match expr {
+            yachtsql_ir::Expr::Literal(yachtsql_ir::Literal::Datetime(dt_nanos)) => {
+                let dt_millis = *dt_nanos / 1_000_000;
+                Ok(dt_millis % bucket_millis)
+            }
+            yachtsql_ir::Expr::Literal(yachtsql_ir::Literal::Timestamp(ts_nanos)) => {
+                let ts_millis = *ts_nanos / 1_000_000;
+                Ok(ts_millis % bucket_millis)
+            }
+            yachtsql_ir::Expr::TypedString { value, .. } => {
+                if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+                    let dt_millis = dt.and_utc().timestamp_millis();
+                    Ok(dt_millis % bucket_millis)
+                } else if let Ok(dt) =
+                    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
+                {
+                    let dt_millis = dt.and_utc().timestamp_millis();
+                    Ok(dt_millis % bucket_millis)
+                } else {
+                    Ok(0)
+                }
+            }
+            yachtsql_ir::Expr::Cast { expr: inner, .. } => {
+                Self::evaluate_origin_expr(inner, bucket_millis)
+            }
+            _ => Ok(0),
+        }
+    }
+
     pub fn register_batches(&self, name: &str, batches: Vec<RecordBatch>) -> Result<()> {
         if batches.is_empty() {
             return Err(Error::internal(
@@ -5448,6 +5974,85 @@ impl YachtSQLSession {
 impl Default for YachtSQLSession {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[allow(clippy::wildcard_enum_match_arm)]
+fn interpolate_scalar_value(
+    prev: &ScalarValue,
+    next: &ScalarValue,
+    prev_ts: i64,
+    next_ts: i64,
+    current_ts: i64,
+) -> ScalarValue {
+    if next_ts == prev_ts {
+        return prev.clone();
+    }
+
+    let ratio = (current_ts - prev_ts) as f64 / (next_ts - prev_ts) as f64;
+
+    match (prev, next) {
+        (ScalarValue::Int8(Some(p)), ScalarValue::Int8(Some(n))) => {
+            let interpolated = *p as f64 + (*n as f64 - *p as f64) * ratio;
+            ScalarValue::Int8(Some(interpolated.round() as i8))
+        }
+        (ScalarValue::Int16(Some(p)), ScalarValue::Int16(Some(n))) => {
+            let interpolated = *p as f64 + (*n as f64 - *p as f64) * ratio;
+            ScalarValue::Int16(Some(interpolated.round() as i16))
+        }
+        (ScalarValue::Int32(Some(p)), ScalarValue::Int32(Some(n))) => {
+            let interpolated = *p as f64 + (*n as f64 - *p as f64) * ratio;
+            ScalarValue::Int32(Some(interpolated.round() as i32))
+        }
+        (ScalarValue::Int64(Some(p)), ScalarValue::Int64(Some(n))) => {
+            let interpolated = *p as f64 + (*n as f64 - *p as f64) * ratio;
+            ScalarValue::Int64(Some(interpolated.round() as i64))
+        }
+        (ScalarValue::Float32(Some(p)), ScalarValue::Float32(Some(n))) => {
+            ScalarValue::Float32(Some(*p + (*n - *p) * ratio as f32))
+        }
+        (ScalarValue::Float64(Some(p)), ScalarValue::Float64(Some(n))) => {
+            ScalarValue::Float64(Some(*p + (*n - *p) * ratio))
+        }
+        (ScalarValue::Int64(Some(p)), ScalarValue::Float64(Some(n))) => {
+            ScalarValue::Float64(Some(*p as f64 + (*n - *p as f64) * ratio))
+        }
+        (ScalarValue::Float64(Some(p)), ScalarValue::Int64(Some(n))) => {
+            ScalarValue::Float64(Some(*p + (*n as f64 - *p) * ratio))
+        }
+        _ => match prev {
+            ScalarValue::Utf8(_) => ScalarValue::Utf8(None),
+            ScalarValue::LargeUtf8(_) => ScalarValue::LargeUtf8(None),
+            ScalarValue::Binary(_) => ScalarValue::Binary(None),
+            ScalarValue::Boolean(_) => ScalarValue::Boolean(None),
+            ScalarValue::Int8(_) => ScalarValue::Int8(None),
+            ScalarValue::Int16(_) => ScalarValue::Int16(None),
+            ScalarValue::Int32(_) => ScalarValue::Int32(None),
+            ScalarValue::Int64(_) => ScalarValue::Int64(None),
+            ScalarValue::Float32(_) => ScalarValue::Float32(None),
+            ScalarValue::Float64(_) => ScalarValue::Float64(None),
+            ScalarValue::Decimal128(_, p, s) => ScalarValue::Decimal128(None, *p, *s),
+            _ => ScalarValue::Null,
+        },
+    }
+}
+
+#[allow(clippy::wildcard_enum_match_arm)]
+fn typed_null_for_data_type(data_type: &yachtsql_common::types::DataType) -> ScalarValue {
+    use yachtsql_common::types::DataType;
+    match data_type {
+        DataType::Bool => ScalarValue::Boolean(None),
+        DataType::Int64 => ScalarValue::Int64(None),
+        DataType::Float64 => ScalarValue::Float64(None),
+        DataType::String => ScalarValue::Utf8(None),
+        DataType::Bytes => ScalarValue::Binary(None),
+        DataType::Date => ScalarValue::Date32(None),
+        DataType::DateTime => ScalarValue::TimestampNanosecond(None, None),
+        DataType::Timestamp => ScalarValue::TimestampNanosecond(None, None),
+        DataType::Time => ScalarValue::Time64Nanosecond(None),
+        DataType::Numeric { .. } => ScalarValue::Decimal128(None, 38, 9),
+        DataType::Interval => ScalarValue::IntervalMonthDayNano(None),
+        _ => ScalarValue::Null,
     }
 }
 
