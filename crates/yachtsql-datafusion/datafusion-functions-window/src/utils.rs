@@ -63,3 +63,10 @@ pub(crate) fn get_unsigned_integer(value: ScalarValue) -> Result<u64> {
 
     value.cast_to(&DataType::UInt64)?.try_into()
 }
+
+pub(crate) fn get_default_expr(
+    args: &[Arc<dyn PhysicalExpr>],
+    index: usize,
+) -> Option<Arc<dyn PhysicalExpr>> {
+    args.get(index).cloned()
+}

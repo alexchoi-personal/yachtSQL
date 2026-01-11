@@ -24,7 +24,7 @@ use std::sync::Arc;
 use crate::utils::{
     get_scalar_value_from_args, get_signed_integer, get_unsigned_integer,
 };
-use datafusion_common::arrow::array::{ArrayRef, UInt64Array};
+use datafusion_common::arrow::array::{ArrayRef, Int64Array};
 use datafusion_common::arrow::datatypes::{DataType, Field};
 use datafusion_common::{exec_err, DataFusionError, Result};
 use datafusion_expr::{
@@ -130,7 +130,7 @@ impl WindowUDFImpl for Ntile {
     fn field(&self, field_args: WindowUDFFieldArgs) -> Result<Field> {
         let nullable = false;
 
-        Ok(Field::new(field_args.name(), DataType::UInt64, nullable))
+        Ok(Field::new(field_args.name(), DataType::Int64, nullable))
     }
 
     fn documentation(&self) -> Option<&Documentation> {
@@ -149,13 +149,13 @@ impl PartitionEvaluator for NtileEvaluator {
         _values: &[ArrayRef],
         num_rows: usize,
     ) -> Result<ArrayRef> {
-        let num_rows = num_rows as u64;
-        let mut vec: Vec<u64> = Vec::new();
-        let n = u64::min(self.n, num_rows);
+        let num_rows = num_rows as i64;
+        let mut vec: Vec<i64> = Vec::new();
+        let n = i64::min(self.n as i64, num_rows);
         for i in 0..num_rows {
             let res = i * n / num_rows;
             vec.push(res + 1)
         }
-        Ok(Arc::new(UInt64Array::from(vec)))
+        Ok(Arc::new(Int64Array::from(vec)))
     }
 }

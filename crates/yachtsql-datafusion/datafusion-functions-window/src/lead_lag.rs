@@ -17,10 +17,10 @@
 
 //! `lead` and `lag` window function implementations
 
-use crate::utils::{get_scalar_value_from_args, get_signed_integer};
+use crate::utils::{get_default_expr, get_scalar_value_from_args, get_signed_integer};
 use datafusion_common::arrow::array::ArrayRef;
-use datafusion_common::arrow::datatypes::DataType;
-use datafusion_common::arrow::datatypes::Field;
+use datafusion_common::arrow::datatypes::{DataType, Field, Schema};
+use datafusion_common::arrow::record_batch::RecordBatch;
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result, ScalarValue};
 use datafusion_expr::window_doc_sections::DOC_SECTION_ANALYTICAL;
 use datafusion_expr::{
@@ -222,14 +222,24 @@ impl WindowUDFImpl for WindowShift {
                         offset
                     }
                 })?;
-        let default_value = parse_default_value(
+
+        let (default_value, default_expr) = match parse_default_value(
             partition_evaluator_args.input_exprs(),
             partition_evaluator_args.input_types(),
-        )?;
+        ) {
+            Ok(val) => (val, None),
+            Err(_) => {
+                let expr_type = parse_expr_type(partition_evaluator_args.input_types())?;
+                let default_val = ScalarValue::try_from(expr_type)?;
+                let expr = get_default_expr(partition_evaluator_args.input_exprs(), 2);
+                (default_val, expr)
+            }
+        };
 
         Ok(Box::new(WindowShiftEvaluator {
             shift_offset,
             default_value,
+            default_expr,
             ignore_nulls: partition_evaluator_args.ignore_nulls(),
             non_null_offsets: VecDeque::new(),
         }))
@@ -324,19 +334,54 @@ fn parse_default_value(
         .unwrap_or(ScalarValue::try_from(expr_type))
 }
 
-#[derive(Debug)]
 struct WindowShiftEvaluator {
     shift_offset: i64,
     default_value: ScalarValue,
+    default_expr: Option<Arc<dyn PhysicalExpr>>,
     ignore_nulls: bool,
-    // VecDeque contains offset values that between non-null entries
     non_null_offsets: VecDeque<usize>,
+}
+
+impl std::fmt::Debug for WindowShiftEvaluator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowShiftEvaluator")
+            .field("shift_offset", &self.shift_offset)
+            .field("default_value", &self.default_value)
+            .field("default_expr", &self.default_expr.is_some())
+            .field("ignore_nulls", &self.ignore_nulls)
+            .field("non_null_offsets", &self.non_null_offsets)
+            .finish()
+    }
 }
 
 impl WindowShiftEvaluator {
     fn is_lag(&self) -> bool {
-        // Mode is LAG, when shift_offset is positive
         self.shift_offset > 0
+    }
+
+    fn get_default_at_row(&self, values: &[ArrayRef], row_idx: usize) -> Result<ScalarValue> {
+        match &self.default_expr {
+            Some(expr) => {
+                let fields: Vec<Field> = values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, arr)| Field::new(format!("c{}", i), arr.data_type().clone(), true))
+                    .collect();
+                let schema = Schema::new(fields);
+                let batch = RecordBatch::try_new(Arc::new(schema), values.to_vec())
+                    .map_err(|e| arrow_datafusion_err!(e))?;
+                match expr.evaluate(&batch) {
+                    Ok(result) => match result {
+                        datafusion_expr::ColumnarValue::Array(arr) => {
+                            ScalarValue::try_from_array(&arr, row_idx)
+                        }
+                        datafusion_expr::ColumnarValue::Scalar(val) => Ok(val),
+                    },
+                    Err(_) => Ok(self.default_value.clone()),
+                }
+            }
+            None => Ok(self.default_value.clone()),
+        }
     }
 }
 
@@ -563,7 +608,12 @@ impl PartitionEvaluator for WindowShiftEvaluator {
         if !(idx.is_none() || (self.ignore_nulls && array.is_null(idx.unwrap()))) {
             ScalarValue::try_from_array(array, idx.unwrap())
         } else {
-            Ok(self.default_value.clone())
+            let current_row = if self.is_lag() {
+                range.end.saturating_sub(1)
+            } else {
+                range.start
+            };
+            self.get_default_at_row(values, current_row)
         }
     }
 
@@ -621,6 +671,7 @@ mod tests {
         let lag_fn = WindowShiftEvaluator {
             shift_offset: 2,
             default_value: ScalarValue::Null,
+            default_expr: None,
             ignore_nulls: false,
             non_null_offsets: Default::default(),
         };
@@ -631,9 +682,9 @@ mod tests {
         let lag_fn = WindowShiftEvaluator {
             shift_offset: 2,
             default_value: ScalarValue::Null,
+            default_expr: None,
             ignore_nulls: true,
-            // models data received [<Some>, <Some>, <Some>, NULL, <Some>, NULL, <current row>, ...]
-            non_null_offsets: vec![2, 2].into(), // [1, 1, 2, 2] actually, just last 2 is used
+            non_null_offsets: vec![2, 2].into(),
         };
         assert_eq!(lag_fn.get_range(6, 10)?, Range { start: 2, end: 7 });
 
@@ -641,6 +692,7 @@ mod tests {
         let lead_fn = WindowShiftEvaluator {
             shift_offset: -2,
             default_value: ScalarValue::Null,
+            default_expr: None,
             ignore_nulls: false,
             non_null_offsets: Default::default(),
         };
@@ -651,8 +703,8 @@ mod tests {
         let lead_fn = WindowShiftEvaluator {
             shift_offset: -2,
             default_value: ScalarValue::Null,
+            default_expr: None,
             ignore_nulls: true,
-            // models data received [..., <current row>, NULL, <Some>, NULL, <Some>, ..]
             non_null_offsets: vec![2, 2].into(),
         };
         assert_eq!(lead_fn.get_range(4, 10)?, Range { start: 4, end: 9 });

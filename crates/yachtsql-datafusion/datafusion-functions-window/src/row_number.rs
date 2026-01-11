@@ -18,7 +18,7 @@
 //! `row_number` window function implementation
 
 use datafusion_common::arrow::array::ArrayRef;
-use datafusion_common::arrow::array::UInt64Array;
+use datafusion_common::arrow::array::Int64Array;
 use datafusion_common::arrow::compute::SortOptions;
 use datafusion_common::arrow::datatypes::DataType;
 use datafusion_common::arrow::datatypes::Field;
@@ -87,7 +87,7 @@ impl WindowUDFImpl for RowNumber {
     }
 
     fn field(&self, field_args: WindowUDFFieldArgs) -> Result<Field> {
-        Ok(Field::new(field_args.name(), DataType::UInt64, false))
+        Ok(Field::new(field_args.name(), DataType::Int64, false))
     }
 
     fn sort_options(&self) -> Option<SortOptions> {
@@ -119,8 +119,8 @@ impl PartitionEvaluator for NumRowsEvaluator {
         _values: &[ArrayRef],
         num_rows: usize,
     ) -> Result<ArrayRef> {
-        Ok(std::sync::Arc::new(UInt64Array::from_iter_values(
-            1..(num_rows as u64) + 1,
+        Ok(std::sync::Arc::new(Int64Array::from_iter_values(
+            1..(num_rows as i64) + 1,
         )))
     }
 
@@ -130,7 +130,7 @@ impl PartitionEvaluator for NumRowsEvaluator {
         _range: &Range<usize>,
     ) -> Result<ScalarValue> {
         self.n_rows += 1;
-        Ok(ScalarValue::UInt64(Some(self.n_rows as u64)))
+        Ok(ScalarValue::Int64(Some(self.n_rows as i64)))
     }
 
     fn supports_bounded_execution(&self) -> bool {
@@ -143,7 +143,7 @@ mod tests {
     use std::sync::Arc;
 
     use datafusion_common::arrow::array::{Array, BooleanArray};
-    use datafusion_common::cast::as_uint64_array;
+    use datafusion_common::cast::as_int64_array;
 
     use super::*;
 
@@ -157,7 +157,7 @@ mod tests {
         let actual = RowNumber::default()
             .partition_evaluator(PartitionEvaluatorArgs::default())?
             .evaluate_all(&[values], num_rows)?;
-        let actual = as_uint64_array(&actual)?;
+        let actual = as_int64_array(&actual)?;
 
         assert_eq!(vec![1, 2, 3, 4, 5, 6, 7, 8], *actual.values());
         Ok(())
@@ -173,7 +173,7 @@ mod tests {
         let actual = RowNumber::default()
             .partition_evaluator(PartitionEvaluatorArgs::default())?
             .evaluate_all(&[values], num_rows)?;
-        let actual = as_uint64_array(&actual)?;
+        let actual = as_int64_array(&actual)?;
 
         assert_eq!(vec![1, 2, 3, 4, 5, 6, 7, 8], *actual.values());
         Ok(())

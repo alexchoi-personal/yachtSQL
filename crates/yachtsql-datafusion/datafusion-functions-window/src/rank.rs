@@ -26,7 +26,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::define_udwf_and_expr;
 use datafusion_common::arrow::array::ArrayRef;
-use datafusion_common::arrow::array::{Float64Array, UInt64Array};
+use datafusion_common::arrow::array::{Float64Array, Int64Array};
 use datafusion_common::arrow::compute::SortOptions;
 use datafusion_common::arrow::datatypes::DataType;
 use datafusion_common::arrow::datatypes::Field;
@@ -163,7 +163,7 @@ impl WindowUDFImpl for Rank {
 
     fn field(&self, field_args: WindowUDFFieldArgs) -> Result<Field> {
         let return_type = match self.rank_type {
-            RankType::Basic | RankType::Dense => DataType::UInt64,
+            RankType::Basic | RankType::Dense => DataType::Int64,
             RankType::Percent => DataType::Float64,
         };
 
@@ -240,10 +240,10 @@ impl PartitionEvaluator for RankEvaluator {
         }
 
         match self.rank_type {
-            RankType::Basic => Ok(ScalarValue::UInt64(Some(
-                self.state.last_rank_boundary as u64 + 1,
+            RankType::Basic => Ok(ScalarValue::Int64(Some(
+                self.state.last_rank_boundary as i64 + 1,
             ))),
-            RankType::Dense => Ok(ScalarValue::UInt64(Some(self.state.n_rank as u64))),
+            RankType::Dense => Ok(ScalarValue::Int64(Some(self.state.n_rank as i64))),
             RankType::Percent => {
                 exec_err!("Can not execute PERCENT_RANK in a streaming fashion")
             }
@@ -256,22 +256,22 @@ impl PartitionEvaluator for RankEvaluator {
         ranks_in_partition: &[Range<usize>],
     ) -> Result<ArrayRef> {
         let result: ArrayRef = match self.rank_type {
-            RankType::Basic => Arc::new(UInt64Array::from_iter_values(
+            RankType::Basic => Arc::new(Int64Array::from_iter_values(
                 ranks_in_partition
                     .iter()
-                    .scan(1_u64, |acc, range| {
+                    .scan(1_i64, |acc, range| {
                         let len = range.end - range.start;
                         let result = iter::repeat(*acc).take(len);
-                        *acc += len as u64;
+                        *acc += len as i64;
                         Some(result)
                     })
                     .flatten(),
             )),
 
-            RankType::Dense => Arc::new(UInt64Array::from_iter_values(
+            RankType::Dense => Arc::new(Int64Array::from_iter_values(
                 ranks_in_partition
                     .iter()
-                    .zip(1u64..)
+                    .zip(1i64..)
                     .flat_map(|(range, rank)| {
                         let len = range.end - range.start;
                         iter::repeat(rank).take(len)
@@ -284,11 +284,11 @@ impl PartitionEvaluator for RankEvaluator {
                 Arc::new(Float64Array::from_iter_values(
                     ranks_in_partition
                         .iter()
-                        .scan(0_u64, |acc, range| {
+                        .scan(0_i64, |acc, range| {
                             let len = range.end - range.start;
                             let value = (*acc as f64) / (denominator - 1.0).max(1.0);
                             let result = iter::repeat(value).take(len);
-                            *acc += len as u64;
+                            *acc += len as i64;
                             Some(result)
                         })
                         .flatten(),
@@ -311,27 +311,27 @@ impl PartitionEvaluator for RankEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion_common::cast::{as_float64_array, as_uint64_array};
+    use datafusion_common::cast::{as_float64_array, as_int64_array};
 
-    fn test_with_rank(expr: &Rank, expected: Vec<u64>) -> Result<()> {
+    fn test_with_rank(expr: &Rank, expected: Vec<i64>) -> Result<()> {
         test_i32_result(expr, vec![0..2, 2..3, 3..6, 6..7, 7..8], expected)
     }
 
     #[allow(clippy::single_range_in_vec_init)]
-    fn test_without_rank(expr: &Rank, expected: Vec<u64>) -> Result<()> {
+    fn test_without_rank(expr: &Rank, expected: Vec<i64>) -> Result<()> {
         test_i32_result(expr, vec![0..8], expected)
     }
 
     fn test_i32_result(
         expr: &Rank,
         ranks: Vec<Range<usize>>,
-        expected: Vec<u64>,
+        expected: Vec<i64>,
     ) -> Result<()> {
         let args = PartitionEvaluatorArgs::default();
         let result = expr
             .partition_evaluator(args)?
             .evaluate_all_with_rank(8, &ranks)?;
-        let result = as_uint64_array(&result)?;
+        let result = as_int64_array(&result)?;
         let result = result.values();
         assert_eq!(expected, *result);
         Ok(())
