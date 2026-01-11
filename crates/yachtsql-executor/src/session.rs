@@ -324,6 +324,7 @@ pub struct YachtSQLSession {
     search_path: RwLock<Vec<String>>,
     column_defaults: RwLock<HashMap<String, HashMap<String, yachtsql_ir::Expr>>>,
     variables: RwLock<HashMap<String, ScalarValue>>,
+    outer_aliases: RwLock<HashMap<String, String>>,
 }
 
 struct SessionCatalog<'a> {
@@ -399,6 +400,7 @@ impl YachtSQLSession {
             search_path: RwLock::new(Vec::new()),
             column_defaults: RwLock::new(HashMap::new()),
             variables: RwLock::new(HashMap::new()),
+            outer_aliases: RwLock::new(HashMap::new()),
         }
     }
 
@@ -414,6 +416,7 @@ impl YachtSQLSession {
             search_path: RwLock::new(Vec::new()),
             column_defaults: RwLock::new(HashMap::new()),
             variables: RwLock::new(HashMap::new()),
+            outer_aliases: RwLock::new(HashMap::new()),
         }
     }
 
@@ -693,8 +696,18 @@ impl YachtSQLSession {
             .map_err(|e| Error::internal(e.to_string()))
     }
 
+    fn set_outer_aliases(&self, plan: &LogicalPlan) {
+        let mut aliases = self.outer_aliases.write();
+        extract_alias_mapping(plan, &mut aliases);
+    }
+
     #[allow(clippy::wildcard_enum_match_arm)]
     fn convert_plan(&self, plan: &LogicalPlan) -> Result<DFLogicalPlan> {
+        self.outer_aliases.write().clear();
+        self.convert_plan_inner(plan)
+    }
+
+    fn convert_plan_inner(&self, plan: &LogicalPlan) -> Result<DFLogicalPlan> {
         match plan {
             LogicalPlan::Scan {
                 table_name,
@@ -731,7 +744,7 @@ impl YachtSQLSession {
                 sample_value,
                 ..
             } => {
-                let input_plan = self.convert_plan(input)?;
+                let input_plan = self.convert_plan_inner(input)?;
                 LogicalPlanBuilder::from(input_plan)
                     .limit(0, Some(*sample_value as usize))
                     .map_err(|e| Error::internal(e.to_string()))?
@@ -740,7 +753,8 @@ impl YachtSQLSession {
             }
 
             LogicalPlan::Filter { input, predicate } => {
-                let input_plan = self.convert_plan(input)?;
+                let input_plan = self.convert_plan_inner(input)?;
+                self.set_outer_aliases(input);
                 let predicate_expr = self.convert_expr(predicate)?;
                 LogicalPlanBuilder::from(input_plan)
                     .filter(predicate_expr)
@@ -754,7 +768,8 @@ impl YachtSQLSession {
                 expressions,
                 schema,
             } => {
-                let input_plan = self.convert_plan(input)?;
+                let input_plan = self.convert_plan_inner(input)?;
+                self.set_outer_aliases(input);
                 let project_exprs: Vec<DFExpr> = expressions
                     .iter()
                     .zip(schema.fields.iter())
@@ -782,7 +797,8 @@ impl YachtSQLSession {
                 schema,
                 ..
             } => {
-                let input_plan = self.convert_plan(input)?;
+                let input_plan = self.convert_plan_inner(input)?;
+                self.set_outer_aliases(input);
                 let group_exprs: Vec<DFExpr> = group_by
                     .iter()
                     .map(|e| self.convert_expr(e))
@@ -809,9 +825,11 @@ impl YachtSQLSession {
                 condition,
                 ..
             } => {
-                let left_plan = self.convert_plan(left)?;
-                let right_plan = self.convert_plan(right)?;
+                let left_plan = self.convert_plan_inner(left)?;
+                let right_plan = self.convert_plan_inner(right)?;
                 let df_join_type = convert_join_type(join_type);
+                self.set_outer_aliases(left);
+                self.set_outer_aliases(right);
 
                 let mut builder = LogicalPlanBuilder::from(left_plan);
                 match condition {
@@ -831,7 +849,8 @@ impl YachtSQLSession {
             }
 
             LogicalPlan::Sort { input, sort_exprs } => {
-                let input_plan = self.convert_plan(input)?;
+                let input_plan = self.convert_plan_inner(input)?;
+                self.set_outer_aliases(input);
                 let df_sort_exprs: Vec<DFSortExpr> = sort_exprs
                     .iter()
                     .map(|se| self.convert_sort_expr(se))
@@ -848,7 +867,7 @@ impl YachtSQLSession {
                 limit,
                 offset,
             } => {
-                let input_plan = self.convert_plan(input)?;
+                let input_plan = self.convert_plan_inner(input)?;
                 let skip = offset.unwrap_or(0);
                 let fetch = *limit;
                 LogicalPlanBuilder::from(input_plan)
@@ -859,7 +878,7 @@ impl YachtSQLSession {
             }
 
             LogicalPlan::Distinct { input } => {
-                let input_plan = self.convert_plan(input)?;
+                let input_plan = self.convert_plan_inner(input)?;
                 LogicalPlanBuilder::from(input_plan)
                     .distinct()
                     .map_err(|e| Error::internal(e.to_string()))?
@@ -899,8 +918,8 @@ impl YachtSQLSession {
                 all,
                 ..
             } => {
-                let left_plan = self.convert_plan(left)?;
-                let right_plan = self.convert_plan(right)?;
+                let left_plan = self.convert_plan_inner(left)?;
+                let right_plan = self.convert_plan_inner(right)?;
 
                 match op {
                     SetOperationType::Union => {
@@ -935,7 +954,8 @@ impl YachtSQLSession {
                 schema,
                 ..
             } => {
-                let input_plan = self.convert_plan(input)?;
+                let input_plan = self.convert_plan_inner(input)?;
+                self.set_outer_aliases(input);
                 let input_schema = input.schema();
                 let df_window_exprs: Vec<DFExpr> = window_exprs
                     .iter()
@@ -959,7 +979,8 @@ impl YachtSQLSession {
             }
 
             LogicalPlan::Qualify { input, predicate } => {
-                let input_plan = self.convert_plan(input)?;
+                let input_plan = self.convert_plan_inner(input)?;
+                self.set_outer_aliases(input);
                 let predicate_expr = self.convert_expr(predicate)?;
                 LogicalPlanBuilder::from(input_plan)
                     .filter(predicate_expr)
@@ -968,21 +989,60 @@ impl YachtSQLSession {
                     .map_err(|e| Error::internal(e.to_string()))
             }
 
-            LogicalPlan::WithCte { body, .. } => self.convert_plan(body),
+            LogicalPlan::WithCte { body, .. } => self.convert_plan_inner(body),
 
             LogicalPlan::Unnest {
                 input,
                 columns,
                 schema: _,
             } => {
-                let input_plan = self.convert_plan(input)?;
+                let input_plan = self.convert_plan_inner(input)?;
                 let mut builder = LogicalPlanBuilder::from(input_plan);
 
                 for col in columns {
                     let col_name = match &col.expr {
                         yachtsql_ir::Expr::Column { name, .. } => name.clone(),
                         yachtsql_ir::Expr::Alias { name, .. } => name.clone(),
-                        _ => {
+                        yachtsql_ir::Expr::Literal(_)
+                        | yachtsql_ir::Expr::BinaryOp { .. }
+                        | yachtsql_ir::Expr::UnaryOp { .. }
+                        | yachtsql_ir::Expr::ScalarFunction { .. }
+                        | yachtsql_ir::Expr::Aggregate { .. }
+                        | yachtsql_ir::Expr::UserDefinedAggregate { .. }
+                        | yachtsql_ir::Expr::Window { .. }
+                        | yachtsql_ir::Expr::AggregateWindow { .. }
+                        | yachtsql_ir::Expr::Case { .. }
+                        | yachtsql_ir::Expr::Cast { .. }
+                        | yachtsql_ir::Expr::IsNull { .. }
+                        | yachtsql_ir::Expr::IsDistinctFrom { .. }
+                        | yachtsql_ir::Expr::InList { .. }
+                        | yachtsql_ir::Expr::InSubquery { .. }
+                        | yachtsql_ir::Expr::InUnnest { .. }
+                        | yachtsql_ir::Expr::Exists { .. }
+                        | yachtsql_ir::Expr::Between { .. }
+                        | yachtsql_ir::Expr::Like { .. }
+                        | yachtsql_ir::Expr::Extract { .. }
+                        | yachtsql_ir::Expr::Substring { .. }
+                        | yachtsql_ir::Expr::Trim { .. }
+                        | yachtsql_ir::Expr::Position { .. }
+                        | yachtsql_ir::Expr::Overlay { .. }
+                        | yachtsql_ir::Expr::Array { .. }
+                        | yachtsql_ir::Expr::ArrayAccess { .. }
+                        | yachtsql_ir::Expr::Struct { .. }
+                        | yachtsql_ir::Expr::StructAccess { .. }
+                        | yachtsql_ir::Expr::TypedString { .. }
+                        | yachtsql_ir::Expr::Interval { .. }
+                        | yachtsql_ir::Expr::Wildcard { .. }
+                        | yachtsql_ir::Expr::Subquery(_)
+                        | yachtsql_ir::Expr::ScalarSubquery(_)
+                        | yachtsql_ir::Expr::ArraySubquery(_)
+                        | yachtsql_ir::Expr::Parameter { .. }
+                        | yachtsql_ir::Expr::Variable { .. }
+                        | yachtsql_ir::Expr::Placeholder { .. }
+                        | yachtsql_ir::Expr::Lambda { .. }
+                        | yachtsql_ir::Expr::AtTimeZone { .. }
+                        | yachtsql_ir::Expr::JsonAccess { .. }
+                        | yachtsql_ir::Expr::Default => {
                             return Err(Error::internal(format!(
                                 "Unnest column must be a column reference, got: {:?}",
                                 col.expr
@@ -998,7 +1058,52 @@ impl YachtSQLSession {
                 builder.build().map_err(|e| Error::internal(e.to_string()))
             }
 
-            _ => Err(Error::internal(format!(
+            LogicalPlan::Insert { .. }
+            | LogicalPlan::Update { .. }
+            | LogicalPlan::Delete { .. }
+            | LogicalPlan::Merge { .. }
+            | LogicalPlan::CreateTable { .. }
+            | LogicalPlan::DropTable { .. }
+            | LogicalPlan::AlterTable { .. }
+            | LogicalPlan::Truncate { .. }
+            | LogicalPlan::CreateView { .. }
+            | LogicalPlan::DropView { .. }
+            | LogicalPlan::CreateSchema { .. }
+            | LogicalPlan::DropSchema { .. }
+            | LogicalPlan::UndropSchema { .. }
+            | LogicalPlan::AlterSchema { .. }
+            | LogicalPlan::CreateFunction { .. }
+            | LogicalPlan::DropFunction { .. }
+            | LogicalPlan::CreateProcedure { .. }
+            | LogicalPlan::DropProcedure { .. }
+            | LogicalPlan::Call { .. }
+            | LogicalPlan::ExportData { .. }
+            | LogicalPlan::LoadData { .. }
+            | LogicalPlan::Declare { .. }
+            | LogicalPlan::SetVariable { .. }
+            | LogicalPlan::SetMultipleVariables { .. }
+            | LogicalPlan::If { .. }
+            | LogicalPlan::While { .. }
+            | LogicalPlan::Loop { .. }
+            | LogicalPlan::Block { .. }
+            | LogicalPlan::Repeat { .. }
+            | LogicalPlan::For { .. }
+            | LogicalPlan::Return { .. }
+            | LogicalPlan::Raise { .. }
+            | LogicalPlan::ExecuteImmediate { .. }
+            | LogicalPlan::Break { .. }
+            | LogicalPlan::Continue { .. }
+            | LogicalPlan::CreateSnapshot { .. }
+            | LogicalPlan::DropSnapshot { .. }
+            | LogicalPlan::Assert { .. }
+            | LogicalPlan::Grant { .. }
+            | LogicalPlan::Revoke { .. }
+            | LogicalPlan::BeginTransaction
+            | LogicalPlan::Commit
+            | LogicalPlan::Rollback
+            | LogicalPlan::TryCatch { .. }
+            | LogicalPlan::GapFill { .. }
+            | LogicalPlan::Explain { .. } => Err(Error::internal(format!(
                 "Query conversion not implemented: {:?}",
                 std::mem::discriminant(plan)
             ))),
@@ -1429,7 +1534,7 @@ impl YachtSQLSession {
             | LogicalPlan::Rollback
             | LogicalPlan::TryCatch { .. }
             | LogicalPlan::GapFill { .. }
-            | LogicalPlan::Explain { .. } => self.convert_plan(plan),
+            | LogicalPlan::Explain { .. } => self.convert_plan_inner(plan),
         }
     }
 
@@ -4233,7 +4338,14 @@ impl YachtSQLSession {
     }
 
     fn lookup_column_type(&self, table_name: &str, column_name: &str) -> ArrowDataType {
-        let (schema_name, table) = self.resolve_table_name(table_name);
+        let actual_table = {
+            let aliases = self.outer_aliases.read();
+            aliases
+                .get(&table_name.to_lowercase())
+                .cloned()
+                .unwrap_or_else(|| table_name.to_string())
+        };
+        let (schema_name, table) = self.resolve_table_name(&actual_table);
         let table_ref = Self::table_reference(schema_name.as_deref(), &table);
         if let Some(Ok(provider)) = self.ctx.table_provider(table_ref).now_or_never() {
             let schema = provider.schema();
@@ -4566,6 +4678,85 @@ fn extract_tables_from_plan(plan: &LogicalPlan) -> HashSet<String> {
         | LogicalPlan::TryCatch { .. }
         | LogicalPlan::GapFill { .. }
         | LogicalPlan::Explain { .. } => HashSet::new(),
+    }
+}
+
+fn extract_alias_mapping(plan: &LogicalPlan, mapping: &mut HashMap<String, String>) {
+    match plan {
+        LogicalPlan::Scan {
+            table_name, schema, ..
+        } => {
+            if let Some(alias) = schema.fields.first().and_then(|f| f.table.as_ref()) {
+                mapping.insert(alias.to_lowercase(), table_name.clone());
+            }
+        }
+        LogicalPlan::Filter { input, .. } => extract_alias_mapping(input, mapping),
+        LogicalPlan::Project { input, .. } => extract_alias_mapping(input, mapping),
+        LogicalPlan::Aggregate { input, .. } => extract_alias_mapping(input, mapping),
+        LogicalPlan::Join { left, right, .. } => {
+            extract_alias_mapping(left, mapping);
+            extract_alias_mapping(right, mapping);
+        }
+        LogicalPlan::Sort { input, .. } => extract_alias_mapping(input, mapping),
+        LogicalPlan::Limit { input, .. } => extract_alias_mapping(input, mapping),
+        LogicalPlan::Distinct { input } => extract_alias_mapping(input, mapping),
+        LogicalPlan::SetOperation { left, right, .. } => {
+            extract_alias_mapping(left, mapping);
+            extract_alias_mapping(right, mapping);
+        }
+        LogicalPlan::WithCte { body, .. } => extract_alias_mapping(body, mapping),
+        LogicalPlan::Window { input, .. } => extract_alias_mapping(input, mapping),
+        LogicalPlan::Qualify { input, .. } => extract_alias_mapping(input, mapping),
+        LogicalPlan::Sample { input, .. } => extract_alias_mapping(input, mapping),
+        LogicalPlan::Values { .. }
+        | LogicalPlan::Empty { .. }
+        | LogicalPlan::Unnest { .. }
+        | LogicalPlan::Insert { .. }
+        | LogicalPlan::Update { .. }
+        | LogicalPlan::Delete { .. }
+        | LogicalPlan::Merge { .. }
+        | LogicalPlan::CreateTable { .. }
+        | LogicalPlan::DropTable { .. }
+        | LogicalPlan::AlterTable { .. }
+        | LogicalPlan::Truncate { .. }
+        | LogicalPlan::CreateView { .. }
+        | LogicalPlan::DropView { .. }
+        | LogicalPlan::CreateSchema { .. }
+        | LogicalPlan::DropSchema { .. }
+        | LogicalPlan::UndropSchema { .. }
+        | LogicalPlan::AlterSchema { .. }
+        | LogicalPlan::CreateFunction { .. }
+        | LogicalPlan::DropFunction { .. }
+        | LogicalPlan::CreateProcedure { .. }
+        | LogicalPlan::DropProcedure { .. }
+        | LogicalPlan::Call { .. }
+        | LogicalPlan::ExportData { .. }
+        | LogicalPlan::LoadData { .. }
+        | LogicalPlan::Declare { .. }
+        | LogicalPlan::SetVariable { .. }
+        | LogicalPlan::SetMultipleVariables { .. }
+        | LogicalPlan::If { .. }
+        | LogicalPlan::While { .. }
+        | LogicalPlan::Loop { .. }
+        | LogicalPlan::Block { .. }
+        | LogicalPlan::Repeat { .. }
+        | LogicalPlan::For { .. }
+        | LogicalPlan::Return { .. }
+        | LogicalPlan::Raise { .. }
+        | LogicalPlan::ExecuteImmediate { .. }
+        | LogicalPlan::Break { .. }
+        | LogicalPlan::Continue { .. }
+        | LogicalPlan::CreateSnapshot { .. }
+        | LogicalPlan::DropSnapshot { .. }
+        | LogicalPlan::Assert { .. }
+        | LogicalPlan::Grant { .. }
+        | LogicalPlan::Revoke { .. }
+        | LogicalPlan::BeginTransaction
+        | LogicalPlan::Commit
+        | LogicalPlan::Rollback
+        | LogicalPlan::TryCatch { .. }
+        | LogicalPlan::GapFill { .. }
+        | LogicalPlan::Explain { .. } => {}
     }
 }
 

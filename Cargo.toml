@@ -147,3 +147,27 @@ members = [
 ]
 resolver = "2"
 
+[patch.crates-io]
+datafusion = { path = "crates/yachtsql-datafusion/datafusion" }
+datafusion-catalog = { path = "crates/yachtsql-datafusion/datafusion-catalog" }
+datafusion-common = { path = "crates/yachtsql-datafusion/datafusion-common" }
+datafusion-common-runtime = { path = "crates/yachtsql-datafusion/datafusion-common-runtime" }
+datafusion-execution = { path = "crates/yachtsql-datafusion/datafusion-execution" }
+datafusion-expr = { path = "crates/yachtsql-datafusion/datafusion-expr" }
+datafusion-expr-common = { path = "crates/yachtsql-datafusion/datafusion-expr-common" }
+datafusion-functions = { path = "crates/yachtsql-datafusion/datafusion-functions" }
+datafusion-functions-aggregate = { path = "crates/yachtsql-datafusion/datafusion-functions-aggregate" }
+datafusion-functions-aggregate-common = { path = "crates/yachtsql-datafusion/datafusion-functions-aggregate-common" }
+datafusion-functions-nested = { path = "crates/yachtsql-datafusion/datafusion-functions-nested" }
+datafusion-functions-table = { path = "crates/yachtsql-datafusion/datafusion-functions-table" }
+datafusion-functions-window = { path = "crates/yachtsql-datafusion/datafusion-functions-window" }
+datafusion-functions-window-common = { path = "crates/yachtsql-datafusion/datafusion-functions-window-common" }
+datafusion-optimizer = { path = "crates/yachtsql-datafusion/datafusion-optimizer" }
+datafusion-physical-expr = { path = "crates/yachtsql-datafusion/datafusion-physical-expr" }
+datafusion-physical-expr-common = { path = "crates/yachtsql-datafusion/datafusion-physical-expr-common" }
+datafusion-physical-optimizer = { path = "crates/yachtsql-datafusion/datafusion-physical-optimizer" }
+datafusion-physical-plan = { path = "crates/yachtsql-datafusion/datafusion-physical-plan" }
+datafusion-sql = { path = "crates/yachtsql-datafusion/datafusion-sql" }
+datafusion-macros = { path = "crates/yachtsql-datafusion/datafusion-macros" }
+datafusion-doc = { path = "crates/yachtsql-datafusion/datafusion-doc" }
+
