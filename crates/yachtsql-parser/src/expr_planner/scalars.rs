@@ -192,6 +192,9 @@ pub fn try_scalar_function(name: &str) -> Result<ScalarFunction> {
         "ORDINAL" => Ok(ScalarFunction::ArrayOrdinal),
         "SAFE_OFFSET" => Ok(ScalarFunction::SafeOffset),
         "SAFE_ORDINAL" => Ok(ScalarFunction::SafeOrdinal),
+        "MAP" => Ok(ScalarFunction::Map),
+        "MAP_KEYS" => Ok(ScalarFunction::MapKeys),
+        "MAP_VALUES" => Ok(ScalarFunction::MapValues),
         _ => Ok(ScalarFunction::Custom(name.to_string())),
     }
 }

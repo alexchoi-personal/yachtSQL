@@ -1635,6 +1635,48 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             Ok(lax_string_udf().call(vec![arg]))
         }
 
+        ScalarFunction::SafeAdd => {
+            let mut iter = args.into_iter();
+            let left = iter.next().unwrap();
+            let right = iter.next().unwrap();
+            Ok(left + right)
+        }
+
+        ScalarFunction::SafeSubtract => {
+            let mut iter = args.into_iter();
+            let left = iter.next().unwrap();
+            let right = iter.next().unwrap();
+            Ok(left - right)
+        }
+
+        ScalarFunction::SafeMultiply => {
+            let mut iter = args.into_iter();
+            let left = iter.next().unwrap();
+            let right = iter.next().unwrap();
+            Ok(left * right)
+        }
+
+        ScalarFunction::SafeNegate => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(DFExpr::Negative(Box::new(arg)))
+        }
+
+        ScalarFunction::Map => {
+            let keys: Vec<DFExpr> = args.iter().step_by(2).cloned().collect();
+            let values: Vec<DFExpr> = args.iter().skip(1).step_by(2).cloned().collect();
+            Ok(datafusion::functions_nested::map::map(keys, values))
+        }
+
+        ScalarFunction::MapKeys => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(datafusion::functions_nested::map_keys::map_keys(arg))
+        }
+
+        ScalarFunction::MapValues => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(datafusion::functions_nested::map_values::map_values(arg))
+        }
+
         ScalarFunction::Custom(func_name) => Err(datafusion::common::DataFusionError::Plan(
             format!("Function not found: {}", func_name),
         )),

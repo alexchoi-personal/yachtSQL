@@ -271,5 +271,8 @@ pub enum ScalarFunction {
     ToBase32,
     FromBase32,
     CodePointsToBytes,
+    Map,
+    MapKeys,
+    MapValues,
     Custom(String),
 }
