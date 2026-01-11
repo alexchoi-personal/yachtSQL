@@ -382,7 +382,20 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
 
         Expr::ArrayAccess { array, index } => {
             let array_expr = convert_expr(array)?;
-            let index_expr = convert_expr(index)?;
+            let index_expr = match index.as_ref() {
+                Expr::ScalarFunction {
+                    name: ScalarFunction::ArrayOffset | ScalarFunction::SafeOffset,
+                    args,
+                } if args.len() == 1 => {
+                    let idx = convert_expr(&args[0])?;
+                    idx + lit(1)
+                }
+                Expr::ScalarFunction {
+                    name: ScalarFunction::ArrayOrdinal | ScalarFunction::SafeOrdinal,
+                    args,
+                } if args.len() == 1 => convert_expr(&args[0])?,
+                _ => convert_expr(index)?,
+            };
             Ok(datafusion::functions_array::extract::array_element(
                 array_expr, index_expr,
             ))
