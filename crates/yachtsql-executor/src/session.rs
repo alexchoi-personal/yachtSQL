@@ -624,7 +624,18 @@ impl YachtSQLSession {
                 Ok(vec![])
             }
 
-            LogicalPlan::AlterSchema { .. } | LogicalPlan::UndropSchema { .. } => Ok(vec![]),
+            LogicalPlan::AlterSchema { name, .. } => {
+                let schemas = self.schemas.read();
+                if !schemas.contains(&name.to_lowercase()) {
+                    return Err(Error::invalid_query(format!(
+                        "Schema '{}' does not exist",
+                        name
+                    )));
+                }
+                Ok(vec![])
+            }
+
+            LogicalPlan::UndropSchema { .. } => Ok(vec![]),
 
             LogicalPlan::Declare {
                 name,

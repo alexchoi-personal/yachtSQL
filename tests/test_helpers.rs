@@ -278,6 +278,7 @@ pub mod common {
                     .collect();
                 Value::Struct(values)
             }
+            ArrowDataType::Null => Value::Null,
             _ => Value::String(format!("<unsupported: {:?}>", array.data_type())),
         }
     }

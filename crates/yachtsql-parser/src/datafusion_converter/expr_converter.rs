@@ -1554,7 +1554,9 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             Ok(arg)
         }
 
-        ScalarFunction::Custom(_) => Ok(lit(ScalarValue::Null)),
+        ScalarFunction::Custom(func_name) => Err(datafusion::common::DataFusionError::Plan(
+            format!("Function not found: {}", func_name),
+        )),
 
         _ => Err(datafusion::common::DataFusionError::NotImplemented(
             format!("Scalar function not implemented: {:?}", name),

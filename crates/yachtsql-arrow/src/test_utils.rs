@@ -165,7 +165,7 @@ pub fn convert_to_test_value<T: IntoTestValue>(val: T) -> TestValue {
 }
 
 pub fn extract_value(array: &ArrayRef, row: usize) -> TestValue {
-    if array.is_null(row) {
+    if array.is_null(row) || matches!(array.data_type(), DataType::Null) {
         return TestValue::Null;
     }
 
@@ -278,6 +278,7 @@ pub fn extract_value(array: &ArrayRef, row: usize) -> TestValue {
                 .collect();
             TestValue::Struct(entries)
         }
+        DataType::Null => TestValue::Null,
         _ => TestValue::String(format!("<unsupported: {:?}>", array.data_type())),
     }
 }
