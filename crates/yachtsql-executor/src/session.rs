@@ -1103,6 +1103,68 @@ impl YachtSQLSession {
                 let has_offset = unnest_infos.iter().any(|info| info.with_offset);
                 let has_alias = unnest_infos.iter().any(|info| info.output_alias.is_some());
 
+                let schema = builder.schema();
+                let all_columns: Vec<_> = schema.columns().into_iter().collect();
+
+                if unnest_infos.len() == 1 {
+                    let info = &unnest_infos[0];
+                    if let Some(unnest_col) =
+                        all_columns.iter().find(|c| c.name == info.internal_name)
+                        && let Ok(field) = schema.field_from_column(unnest_col)
+                        && let ArrowDataType::Struct(struct_fields) = field.data_type()
+                    {
+                        let other_cols: Vec<_> = all_columns
+                            .iter()
+                            .filter(|c| c.name != info.internal_name)
+                            .collect();
+
+                        let mut proj_exprs: Vec<DFExpr> = other_cols
+                            .iter()
+                            .map(|c| DFExpr::Column((*c).clone()))
+                            .collect();
+
+                        let table_alias = info.output_alias.as_ref();
+
+                        for struct_field in struct_fields.iter() {
+                            let field_name = struct_field.name();
+                            let field_expr = datafusion::functions::core::expr_fn::get_field(
+                                DFExpr::Column(unnest_col.clone()),
+                                field_name.as_str(),
+                            );
+
+                            if let Some(alias) = table_alias {
+                                let table_ref: Option<TableReference> =
+                                    Some(TableReference::bare(alias.clone()));
+                                proj_exprs.push(field_expr.alias_qualified(table_ref, field_name));
+                            } else {
+                                proj_exprs.push(field_expr.alias(field_name));
+                            }
+                        }
+
+                        if info.with_offset {
+                            let row_num_expr = datafusion::functions_window::expr_fn::row_number();
+                            let offset_col_name = "__unnest_offset__";
+                            builder = builder
+                                .window(vec![row_num_expr.alias(offset_col_name)])
+                                .map_err(|e| Error::internal(e.to_string()))?;
+
+                            let offset_name = info.offset_alias.as_deref().unwrap_or("offset");
+                            let offset_col = DFExpr::Column(
+                                datafusion::common::Column::new_unqualified(offset_col_name),
+                            );
+                            proj_exprs.push(
+                                (offset_col - datafusion::prelude::lit(1i64)).alias(offset_name),
+                            );
+                        }
+
+                        builder = builder
+                            .project(proj_exprs)
+                            .map_err(|e| Error::internal(e.to_string()))?;
+
+                        return builder.build().map_err(|e| Error::internal(e.to_string()));
+                    }
+                }
+
                 if has_offset {
                     let row_num_expr = datafusion::functions_window::expr_fn::row_number();
                     let offset_col_name = "__unnest_offset__";
