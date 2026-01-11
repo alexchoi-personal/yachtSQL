@@ -36,6 +36,9 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                     | BinaryOp::And
                     | BinaryOp::Or => DataType::Bool,
                     BinaryOp::Concat => DataType::String,
+                    BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
+                        DataType::Int64
+                    }
                     _ => {
                         let left_type = Self::compute_expr_type(left, schema);
                         let right_type = Self::compute_expr_type(right, schema);
@@ -53,6 +56,7 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                 use yachtsql_ir::UnaryOp;
                 match op {
                     UnaryOp::Not => DataType::Bool,
+                    UnaryOp::BitwiseNot => DataType::Int64,
                     _ => Self::compute_expr_type(expr, schema),
                 }
             }
@@ -90,7 +94,13 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                         DataType::Array(Box::new(DataType::Unknown))
                     }
                     AggregateFunction::StringAgg | AggregateFunction::XmlAgg => DataType::String,
-                    AggregateFunction::AnyValue => DataType::Unknown,
+                    AggregateFunction::AnyValue => {
+                        if let Some(first_arg) = args.first() {
+                            Self::compute_expr_type(first_arg, schema)
+                        } else {
+                            DataType::Unknown
+                        }
+                    }
                     AggregateFunction::LogicalAnd | AggregateFunction::LogicalOr => DataType::Bool,
                     AggregateFunction::BitAnd
                     | AggregateFunction::BitOr

@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::{DataType as ArrowDataType, Field as ArrowField, TimeUnit};
 use datafusion::common::scalar::ScalarStructBuilder;
-use datafusion::common::{Column, Result as DFResult, ScalarValue, TableReference};
+use datafusion::common::{
+    Column, DataFusionError, Result as DFResult, ScalarValue, TableReference,
+};
 use datafusion::logical_expr::expr::{Exists, InList, InSubquery};
 use datafusion::logical_expr::{
     BinaryExpr, Case, Cast, Expr as DFExpr, ExprFunctionExt, Like, Operator, Subquery, WindowFrame,
@@ -1148,8 +1150,12 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
 
         ScalarFunction::ArrayOffset | ScalarFunction::SafeOffset => {
             let mut iter = args.into_iter();
-            let array = iter.next().unwrap();
-            let idx = iter.next().unwrap();
+            let array = iter
+                .next()
+                .ok_or_else(|| DataFusionError::Plan("OFFSET requires an array argument".into()))?;
+            let idx = iter
+                .next()
+                .ok_or_else(|| DataFusionError::Plan("OFFSET requires an index argument".into()))?;
             Ok(datafusion::functions_array::expr_fn::array_element(
                 array, idx,
             ))

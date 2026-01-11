@@ -781,24 +781,47 @@ impl YachtSQLSession {
             } => {
                 let input_plan = self.convert_plan_inner(input)?;
                 self.set_outer_aliases(input);
-                let project_exprs: Vec<DFExpr> = expressions
-                    .iter()
-                    .zip(schema.fields.iter())
-                    .map(|(e, field)| {
-                        let df_expr = self.convert_expr(e)?;
-                        let expr_name = df_expr.schema_name().to_string();
-                        if expr_name != field.name {
-                            Ok(df_expr.alias(&field.name))
-                        } else {
-                            Ok(df_expr)
-                        }
-                    })
-                    .collect::<Result<_>>()?;
-                LogicalPlanBuilder::from(input_plan)
-                    .project(project_exprs)
-                    .map_err(|e| Error::internal(e.to_string()))?
-                    .build()
-                    .map_err(|e| Error::internal(e.to_string()))
+
+                let is_subquery_alias = {
+                    let all_columns = expressions
+                        .iter()
+                        .all(|e| matches!(e, yachtsql_ir::Expr::Column { .. }));
+                    let first_table = schema.fields.first().and_then(|f| f.table.as_ref());
+                    let same_table = first_table.is_some()
+                        && schema
+                            .fields
+                            .iter()
+                            .all(|f| f.table.as_ref() == first_table);
+                    all_columns && same_table
+                };
+
+                if is_subquery_alias {
+                    let alias = schema.fields.first().unwrap().table.as_ref().unwrap();
+                    LogicalPlanBuilder::from(input_plan)
+                        .alias(alias.as_str())
+                        .map_err(|e| Error::internal(e.to_string()))?
+                        .build()
+                        .map_err(|e| Error::internal(e.to_string()))
+                } else {
+                    let project_exprs: Vec<DFExpr> = expressions
+                        .iter()
+                        .zip(schema.fields.iter())
+                        .map(|(e, field)| {
+                            let df_expr = self.convert_expr(e)?;
+                            let expr_name = df_expr.schema_name().to_string();
+                            if expr_name != field.name {
+                                Ok(df_expr.alias(&field.name))
+                            } else {
+                                Ok(df_expr)
+                            }
+                        })
+                        .collect::<Result<_>>()?;
+                    LogicalPlanBuilder::from(input_plan)
+                        .project(project_exprs)
+                        .map_err(|e| Error::internal(e.to_string()))?
+                        .build()
+                        .map_err(|e| Error::internal(e.to_string()))
+                }
             }
 
             LogicalPlan::Aggregate {
@@ -1505,7 +1528,6 @@ impl YachtSQLSession {
             | yachtsql_ir::Expr::Alias { .. }
             | yachtsql_ir::Expr::Wildcard { .. }
             | yachtsql_ir::Expr::Parameter { .. }
-            | yachtsql_ir::Expr::Variable { .. }
             | yachtsql_ir::Expr::Placeholder { .. }
             | yachtsql_ir::Expr::Lambda { .. }
             | yachtsql_ir::Expr::AtTimeZone { .. }
@@ -1513,6 +1535,16 @@ impl YachtSQLSession {
             | yachtsql_ir::Expr::Default => {
                 yachtsql_parser::DataFusionConverter::convert_expr(expr)
                     .map_err(|e| Error::internal(e.to_string()))
+            }
+
+            yachtsql_ir::Expr::Variable { name } => {
+                let var_name = name.trim_start_matches('@').to_lowercase();
+                let variables = self.variables.read();
+                let value = variables
+                    .get(&var_name)
+                    .cloned()
+                    .unwrap_or(ScalarValue::Null);
+                Ok(DFExpr::Literal(value))
             }
         }
     }
@@ -3158,9 +3190,116 @@ impl YachtSQLSession {
                 Literal::Int64(i) => ScalarValue::Int64(Some(*i)),
                 Literal::Float64(f) => ScalarValue::Float64(Some(**f)),
                 Literal::String(s) => ScalarValue::Utf8(Some(s.clone())),
+                Literal::Date(d) => ScalarValue::Date32(Some(*d)),
+                Literal::Timestamp(ts) => ScalarValue::TimestampMicrosecond(Some(*ts), None),
+                _ => ScalarValue::Null,
+            },
+            yachtsql_ir::Expr::Variable { name } => {
+                let var_name = name.trim_start_matches('@').to_lowercase();
+                let variables = self.variables.read();
+                variables
+                    .get(&var_name)
+                    .cloned()
+                    .unwrap_or(ScalarValue::Null)
+            }
+            yachtsql_ir::Expr::BinaryOp { left, op, right } => {
+                let left_val = self.eval_const_expr(left);
+                let right_val = self.eval_const_expr(right);
+                self.eval_binary_op(&left_val, op, &right_val)
+            }
+            yachtsql_ir::Expr::Array { elements, .. } => {
+                let values: Vec<ScalarValue> =
+                    elements.iter().map(|e| self.eval_const_expr(e)).collect();
+                if values.is_empty() {
+                    ScalarValue::List(ScalarValue::new_list_nullable(&[], &ArrowDataType::Null))
+                } else {
+                    let data_type = values[0].data_type();
+                    ScalarValue::List(ScalarValue::new_list_nullable(&values, &data_type))
+                }
+            }
+            yachtsql_ir::Expr::Cast {
+                expr, data_type, ..
+            } => {
+                let val = self.eval_const_expr(expr);
+                self.cast_scalar_value(val, data_type)
+            }
+            yachtsql_ir::Expr::ScalarFunction {
+                name: yachtsql_ir::ScalarFunction::Date,
+                args,
+                ..
+            } => {
+                if let Some(arg) = args.first() {
+                    let val = self.eval_const_expr(arg);
+                    match val {
+                        ScalarValue::Utf8(Some(s)) => {
+                            if let Ok(date) = chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
+                                use chrono::Datelike;
+                                let days = date.num_days_from_ce();
+                                ScalarValue::Date32(Some(days))
+                            } else {
+                                ScalarValue::Null
+                            }
+                        }
+                        _ => ScalarValue::Null,
+                    }
+                } else {
+                    ScalarValue::Null
+                }
+            }
+            yachtsql_ir::Expr::ScalarFunction { .. } => ScalarValue::Null,
+            _ => ScalarValue::Null,
+        }
+    }
+
+    #[allow(clippy::wildcard_enum_match_arm)]
+    fn eval_binary_op(
+        &self,
+        left: &ScalarValue,
+        op: &yachtsql_ir::BinaryOp,
+        right: &ScalarValue,
+    ) -> ScalarValue {
+        use yachtsql_ir::BinaryOp;
+        match (left, right) {
+            (ScalarValue::Int64(Some(l)), ScalarValue::Int64(Some(r))) => match op {
+                BinaryOp::Add => ScalarValue::Int64(Some(l + r)),
+                BinaryOp::Sub => ScalarValue::Int64(Some(l - r)),
+                BinaryOp::Mul => ScalarValue::Int64(Some(l * r)),
+                BinaryOp::Div => ScalarValue::Int64(Some(l / r)),
+                BinaryOp::Mod => ScalarValue::Int64(Some(l % r)),
+                _ => ScalarValue::Null,
+            },
+            (ScalarValue::Float64(Some(l)), ScalarValue::Float64(Some(r))) => match op {
+                BinaryOp::Add => ScalarValue::Float64(Some(l + r)),
+                BinaryOp::Sub => ScalarValue::Float64(Some(l - r)),
+                BinaryOp::Mul => ScalarValue::Float64(Some(l * r)),
+                BinaryOp::Div => ScalarValue::Float64(Some(l / r)),
+                _ => ScalarValue::Null,
+            },
+            (ScalarValue::Utf8(Some(l)), ScalarValue::Utf8(Some(r))) => match op {
+                BinaryOp::Concat => ScalarValue::Utf8(Some(format!("{}{}", l, r))),
                 _ => ScalarValue::Null,
             },
             _ => ScalarValue::Null,
+        }
+    }
+
+    fn cast_scalar_value(
+        &self,
+        val: ScalarValue,
+        target: &yachtsql_common::types::DataType,
+    ) -> ScalarValue {
+        use chrono::Datelike;
+        use yachtsql_common::types::DataType;
+        match (val, target) {
+            (ScalarValue::Utf8(Some(s)), DataType::Date) => {
+                if let Ok(date) = chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
+                    let days = date.num_days_from_ce();
+                    ScalarValue::Date32(Some(days))
+                } else {
+                    ScalarValue::Null
+                }
+            }
+            (v, _) => v,
         }
     }
 
@@ -4509,6 +4648,8 @@ impl YachtSQLSession {
             return Ok(vec![]);
         }
 
+        let scalar = self.eval_const_expr(value);
+        self.variables.write().insert(lower_name, scalar);
         Ok(vec![])
     }
 
