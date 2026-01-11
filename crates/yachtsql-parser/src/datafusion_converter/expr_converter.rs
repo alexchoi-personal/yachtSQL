@@ -1071,7 +1071,11 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             let mut iter = args.into_iter();
             let date = iter.next().unwrap();
             let part = iter.next().unwrap_or_else(|| lit("day"));
-            Ok(datetime::date_trunc(part, date))
+            let truncated = datetime::date_trunc(part, date);
+            Ok(DFExpr::Cast(Cast::new(
+                Box::new(truncated),
+                ArrowDataType::Date32,
+            )))
         }
         ScalarFunction::DatetimeTrunc | ScalarFunction::TimestampTrunc => {
             let mut iter = args.into_iter();
