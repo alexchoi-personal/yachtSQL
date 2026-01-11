@@ -316,10 +316,24 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
             } else {
                 Some(true)
             };
+            let needs_full_partition = matches!(
+                func,
+                WindowFunction::FirstValue | WindowFunction::LastValue | WindowFunction::NthValue
+            );
             let df_frame = frame
                 .as_ref()
                 .map(convert_window_frame)
-                .unwrap_or_else(|| Ok(WindowFrame::new(has_order_by)))?;
+                .unwrap_or_else(|| {
+                    if needs_full_partition && has_order_by.is_some() {
+                        Ok(WindowFrame::new_bounds(
+                            WindowFrameUnits::Rows,
+                            WindowFrameBound::Preceding(ScalarValue::Null),
+                            WindowFrameBound::Following(ScalarValue::Null),
+                        ))
+                    } else {
+                        Ok(WindowFrame::new(has_order_by))
+                    }
+                })?;
 
             let result = window_expr
                 .partition_by(df_partition_by)
@@ -1759,6 +1773,13 @@ fn convert_aggregate_function(
         AggregateFunction::BitXor => bit_and_or_xor::bit_xor(args.into_iter().next().unwrap()),
         AggregateFunction::LogicalAnd => bool_and_or::bool_and(args.into_iter().next().unwrap()),
         AggregateFunction::LogicalOr => bool_and_or::bool_or(args.into_iter().next().unwrap()),
+        AggregateFunction::CountIf => {
+            let condition = args.into_iter().next().unwrap_or(lit(true));
+            return count::count(lit(1)).filter(condition).build();
+        }
+        AggregateFunction::AnyValue => {
+            first_last::first_value(args.into_iter().next().unwrap(), None)
+        }
         _ => {
             return Err(datafusion::common::DataFusionError::NotImplemented(
                 format!("Aggregate function not implemented: {:?}", func),
