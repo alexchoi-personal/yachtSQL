@@ -1235,6 +1235,31 @@ impl YachtSQLSession {
             yachtsql_ir::Expr::BinaryOp { left, op, right } => {
                 let left_expr = self.convert_expr(left)?;
                 let right_expr = self.convert_expr(right)?;
+
+                let is_arithmetic = matches!(
+                    op,
+                    yachtsql_ir::BinaryOp::Add
+                        | yachtsql_ir::BinaryOp::Sub
+                        | yachtsql_ir::BinaryOp::Mul
+                        | yachtsql_ir::BinaryOp::Div
+                        | yachtsql_ir::BinaryOp::Mod
+                );
+                let left_is_null = matches!(&left_expr, DFExpr::Literal(ScalarValue::Null));
+                let right_is_null = matches!(&right_expr, DFExpr::Literal(ScalarValue::Null));
+
+                let (left_expr, right_expr) = if is_arithmetic && left_is_null && right_is_null {
+                    (
+                        DFExpr::Literal(ScalarValue::Int64(None)),
+                        DFExpr::Literal(ScalarValue::Int64(None)),
+                    )
+                } else if is_arithmetic && left_is_null {
+                    (DFExpr::Literal(ScalarValue::Int64(None)), right_expr)
+                } else if is_arithmetic && right_is_null {
+                    (left_expr, DFExpr::Literal(ScalarValue::Int64(None)))
+                } else {
+                    (left_expr, right_expr)
+                };
+
                 let operator = match op {
                     yachtsql_ir::BinaryOp::Add => datafusion::logical_expr::Operator::Plus,
                     yachtsql_ir::BinaryOp::Sub => datafusion::logical_expr::Operator::Minus,
