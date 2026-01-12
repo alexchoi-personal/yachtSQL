@@ -1008,6 +1008,10 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             let arg = args.into_iter().next().unwrap();
             Ok(code_points_to_string_udf().call(vec![arg]))
         }
+        ScalarFunction::CodePointsToBytes => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(code_points_to_bytes_udf().call(vec![arg]))
+        }
         ScalarFunction::Soundex => {
             let arg = args.into_iter().next().unwrap();
             Ok(soundex_udf().call(vec![arg]))
@@ -4220,6 +4224,99 @@ fn code_points_to_string_udf() -> datafusion::logical_expr::ScalarUDF {
     }
 
     ScalarUDF::from(CodePointsToStringUdf::new())
+}
+
+fn code_points_to_bytes_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, BinaryBuilder, Int64Array, ListArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct CodePointsToBytesUdf {
+        signature: Signature,
+    }
+
+    impl CodePointsToBytesUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::new(
+                    TypeSignature::Exact(vec![ArrowDataType::List(Arc::new(ArrowField::new(
+                        "item",
+                        ArrowDataType::Int64,
+                        true,
+                    )))]),
+                    Volatility::Immutable,
+                ),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for CodePointsToBytesUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "code_points_to_bytes"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Binary)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let list_arr = arr.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected list array".to_string())
+            })?;
+
+            let mut builder = BinaryBuilder::new();
+            for i in 0..list_arr.len() {
+                if list_arr.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let inner = list_arr.value(i);
+                let int_arr = inner.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected Int64Array inside list".to_string(),
+                    )
+                })?;
+                let mut bytes = Vec::with_capacity(int_arr.len());
+                let mut has_invalid = false;
+                for j in 0..int_arr.len() {
+                    if int_arr.is_null(j) {
+                        has_invalid = true;
+                        break;
+                    }
+                    let val = int_arr.value(j);
+                    if val < 0 || val > 255 {
+                        has_invalid = true;
+                        break;
+                    }
+                    bytes.push(val as u8);
+                }
+                if has_invalid {
+                    builder.append_null();
+                } else {
+                    builder.append_value(&bytes);
+                }
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(CodePointsToBytesUdf::new())
 }
 
 fn soundex_udf() -> datafusion::logical_expr::ScalarUDF {
