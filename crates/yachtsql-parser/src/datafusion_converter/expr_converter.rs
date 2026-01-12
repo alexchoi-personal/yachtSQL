@@ -21,6 +21,56 @@ use yachtsql_ir::{
 
 use super::plan_converter::convert_plan;
 
+fn arg1(args: Vec<DFExpr>, func: &str) -> DFResult<DFExpr> {
+    let mut iter = args.into_iter();
+    iter.next()
+        .ok_or_else(|| DataFusionError::Plan(format!("{} requires at least 1 argument", func)))
+}
+
+fn arg2(args: Vec<DFExpr>, func: &str) -> DFResult<(DFExpr, DFExpr)> {
+    let mut iter = args.into_iter();
+    let a = iter
+        .next()
+        .ok_or_else(|| DataFusionError::Plan(format!("{} requires at least 2 arguments", func)))?;
+    let b = iter
+        .next()
+        .ok_or_else(|| DataFusionError::Plan(format!("{} requires at least 2 arguments", func)))?;
+    Ok((a, b))
+}
+
+fn arg3(args: Vec<DFExpr>, func: &str) -> DFResult<(DFExpr, DFExpr, DFExpr)> {
+    let mut iter = args.into_iter();
+    let a = iter
+        .next()
+        .ok_or_else(|| DataFusionError::Plan(format!("{} requires at least 3 arguments", func)))?;
+    let b = iter
+        .next()
+        .ok_or_else(|| DataFusionError::Plan(format!("{} requires at least 3 arguments", func)))?;
+    let c = iter
+        .next()
+        .ok_or_else(|| DataFusionError::Plan(format!("{} requires at least 3 arguments", func)))?;
+    Ok((a, b, c))
+}
+
+fn arg2_opt3(args: Vec<DFExpr>, func: &str) -> DFResult<(DFExpr, DFExpr, Option<DFExpr>)> {
+    let mut iter = args.into_iter();
+    let a = iter
+        .next()
+        .ok_or_else(|| DataFusionError::Plan(format!("{} requires at least 2 arguments", func)))?;
+    let b = iter
+        .next()
+        .ok_or_else(|| DataFusionError::Plan(format!("{} requires at least 2 arguments", func)))?;
+    Ok((a, b, iter.next()))
+}
+
+fn arg1_opt2(args: Vec<DFExpr>, func: &str) -> DFResult<(DFExpr, Option<DFExpr>)> {
+    let mut iter = args.into_iter();
+    let a = iter
+        .next()
+        .ok_or_else(|| DataFusionError::Plan(format!("{} requires at least 1 argument", func)))?;
+    Ok((a, iter.next()))
+}
+
 pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
     match expr {
         Expr::Literal(lit) => convert_literal(lit),
@@ -765,199 +815,172 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
     use datafusion::functions::unicode::expr_fn as unicode;
 
     match name {
-        ScalarFunction::Upper => Ok(string::upper(args.into_iter().next().unwrap())),
-        ScalarFunction::Lower => Ok(string::lower(args.into_iter().next().unwrap())),
+        ScalarFunction::Upper => Ok(string::upper(arg1(args, "UPPER")?)),
+        ScalarFunction::Lower => Ok(string::lower(arg1(args, "LOWER")?)),
         ScalarFunction::Length | ScalarFunction::CharLength => {
-            Ok(unicode::character_length(args.into_iter().next().unwrap()))
+            Ok(unicode::character_length(arg1(args, "LENGTH")?))
         }
-        ScalarFunction::ByteLength => Ok(string::octet_length(args.into_iter().next().unwrap())),
+        ScalarFunction::ByteLength => Ok(string::octet_length(arg1(args, "BYTE_LENGTH")?)),
         ScalarFunction::Concat => Ok(datafusion::functions::string::concat().call(args)),
         ScalarFunction::Trim => Ok(string::btrim(args)),
         ScalarFunction::LTrim => Ok(string::ltrim(args)),
         ScalarFunction::RTrim => Ok(string::rtrim(args)),
         ScalarFunction::Substr => {
-            let mut iter = args.into_iter();
-            let s = iter.next().unwrap();
-            let pos = iter.next().unwrap();
-            match iter.next() {
-                Some(len) => Ok(datafusion::functions::unicode::substr().call(vec![s, pos, len])),
+            let (s, pos, len) = arg2_opt3(args, "SUBSTR")?;
+            match len {
+                Some(l) => Ok(datafusion::functions::unicode::substr().call(vec![s, pos, l])),
                 None => Ok(unicode::substr(s, pos)),
             }
         }
         ScalarFunction::Replace => {
-            let mut iter = args.into_iter();
-            Ok(string::replace(
-                iter.next().unwrap(),
-                iter.next().unwrap(),
-                iter.next().unwrap(),
-            ))
+            let (a, b, c) = arg3(args, "REPLACE")?;
+            Ok(string::replace(a, b, c))
         }
-        ScalarFunction::Reverse => Ok(unicode::reverse(args.into_iter().next().unwrap())),
+        ScalarFunction::Reverse => Ok(unicode::reverse(arg1(args, "REVERSE")?)),
         ScalarFunction::Left => {
-            let mut iter = args.into_iter();
-            Ok(unicode::left(iter.next().unwrap(), iter.next().unwrap()))
+            let (a, b) = arg2(args, "LEFT")?;
+            Ok(unicode::left(a, b))
         }
         ScalarFunction::Right => {
-            let mut iter = args.into_iter();
-            Ok(unicode::right(iter.next().unwrap(), iter.next().unwrap()))
+            let (a, b) = arg2(args, "RIGHT")?;
+            Ok(unicode::right(a, b))
         }
         ScalarFunction::Repeat => {
-            let mut iter = args.into_iter();
-            Ok(string::repeat(iter.next().unwrap(), iter.next().unwrap()))
+            let (a, b) = arg2(args, "REPEAT")?;
+            Ok(string::repeat(a, b))
         }
         ScalarFunction::StartsWith => {
-            let mut iter = args.into_iter();
-            Ok(string::starts_with(
-                iter.next().unwrap(),
-                iter.next().unwrap(),
-            ))
+            let (a, b) = arg2(args, "STARTS_WITH")?;
+            Ok(string::starts_with(a, b))
         }
         ScalarFunction::EndsWith => {
-            let mut iter = args.into_iter();
-            Ok(string::ends_with(
-                iter.next().unwrap(),
-                iter.next().unwrap(),
-            ))
+            let (a, b) = arg2(args, "ENDS_WITH")?;
+            Ok(string::ends_with(a, b))
         }
         ScalarFunction::Strpos | ScalarFunction::Instr => {
-            let mut iter = args.into_iter();
-            Ok(unicode::strpos(iter.next().unwrap(), iter.next().unwrap()))
+            let (a, b) = arg2(args, "STRPOS")?;
+            Ok(unicode::strpos(a, b))
         }
-        ScalarFunction::Initcap => Ok(unicode::initcap(args.into_iter().next().unwrap())),
+        ScalarFunction::Initcap => Ok(unicode::initcap(arg1(args, "INITCAP")?)),
         ScalarFunction::Lpad => {
-            let mut iter = args.into_iter();
-            let s = iter.next().unwrap();
-            let len = iter.next().unwrap();
-            let fill = iter.next().unwrap_or_else(|| lit(" "));
+            let (s, len, fill) = arg2_opt3(args, "LPAD")?;
+            let fill = fill.unwrap_or_else(|| lit(" "));
             Ok(unicode::lpad(vec![s, len, fill]))
         }
         ScalarFunction::Rpad => {
-            let mut iter = args.into_iter();
-            let s = iter.next().unwrap();
-            let len = iter.next().unwrap();
-            let fill = iter.next().unwrap_or_else(|| lit(" "));
+            let (s, len, fill) = arg2_opt3(args, "RPAD")?;
+            let fill = fill.unwrap_or_else(|| lit(" "));
             Ok(unicode::rpad(vec![s, len, fill]))
         }
-        ScalarFunction::Ascii => Ok(string::ascii(args.into_iter().next().unwrap())),
-        ScalarFunction::Chr => Ok(string::chr(args.into_iter().next().unwrap())),
+        ScalarFunction::Ascii => Ok(string::ascii(arg1(args, "ASCII")?)),
+        ScalarFunction::Chr => Ok(string::chr(arg1(args, "CHR")?)),
 
-        ScalarFunction::Abs => Ok(math::abs(args.into_iter().next().unwrap())),
-        ScalarFunction::Ceil => Ok(math::ceil(args.into_iter().next().unwrap())),
-        ScalarFunction::Floor => Ok(math::floor(args.into_iter().next().unwrap())),
+        ScalarFunction::Abs => Ok(math::abs(arg1(args, "ABS")?)),
+        ScalarFunction::Ceil => Ok(math::ceil(arg1(args, "CEIL")?)),
+        ScalarFunction::Floor => Ok(math::floor(arg1(args, "FLOOR")?)),
         ScalarFunction::Round => {
-            let mut iter = args.into_iter();
-            let value = iter.next().unwrap();
-            match iter.next() {
-                Some(places) => Ok(math::round(vec![value, places])),
+            let (value, places) = arg1_opt2(args, "ROUND")?;
+            match places {
+                Some(p) => Ok(math::round(vec![value, p])),
                 None => Ok(math::round(vec![value, lit(0)])),
             }
         }
         ScalarFunction::Trunc => {
-            let mut iter = args.into_iter();
-            let value = iter.next().unwrap();
-            match iter.next() {
-                Some(places) => Ok(math::trunc(vec![value, places])),
+            let (value, places) = arg1_opt2(args, "TRUNC")?;
+            match places {
+                Some(p) => Ok(math::trunc(vec![value, p])),
                 None => Ok(math::trunc(vec![value, lit(0)])),
             }
         }
-        ScalarFunction::Sqrt => Ok(math::sqrt(args.into_iter().next().unwrap())),
-        ScalarFunction::Cbrt => Ok(math::cbrt(args.into_iter().next().unwrap())),
+        ScalarFunction::Sqrt => Ok(math::sqrt(arg1(args, "SQRT")?)),
+        ScalarFunction::Cbrt => Ok(math::cbrt(arg1(args, "CBRT")?)),
         ScalarFunction::Power | ScalarFunction::Pow => {
-            let mut iter = args.into_iter();
-            Ok(math::power(iter.next().unwrap(), iter.next().unwrap()))
+            let (a, b) = arg2(args, "POWER")?;
+            Ok(math::power(a, b))
         }
         ScalarFunction::Mod => {
-            let mut iter = args.into_iter();
-            Ok(iter.next().unwrap() % iter.next().unwrap())
+            let (a, b) = arg2(args, "MOD")?;
+            Ok(a % b)
         }
-        ScalarFunction::Sign => Ok(math::signum(args.into_iter().next().unwrap())),
-        ScalarFunction::Exp => Ok(math::exp(args.into_iter().next().unwrap())),
-        ScalarFunction::Ln => Ok(math::ln(args.into_iter().next().unwrap())),
+        ScalarFunction::Sign => Ok(math::signum(arg1(args, "SIGN")?)),
+        ScalarFunction::Exp => Ok(math::exp(arg1(args, "EXP")?)),
+        ScalarFunction::Ln => Ok(math::ln(arg1(args, "LN")?)),
         ScalarFunction::Log => {
-            let mut iter = args.into_iter();
-            let arg1 = iter.next().unwrap();
-            match iter.next() {
-                Some(arg2) => Ok(math::log(arg1, arg2)),
-                None => Ok(math::ln(arg1)),
+            let (a, b) = arg1_opt2(args, "LOG")?;
+            match b {
+                Some(base) => Ok(math::log(a, base)),
+                None => Ok(math::ln(a)),
             }
         }
-        ScalarFunction::Log10 => Ok(math::log10(args.into_iter().next().unwrap())),
-        ScalarFunction::Sin => Ok(math::sin(args.into_iter().next().unwrap())),
-        ScalarFunction::Cos => Ok(math::cos(args.into_iter().next().unwrap())),
-        ScalarFunction::Tan => Ok(math::tan(args.into_iter().next().unwrap())),
-        ScalarFunction::Asin => Ok(math::asin(args.into_iter().next().unwrap())),
-        ScalarFunction::Acos => Ok(math::acos(args.into_iter().next().unwrap())),
-        ScalarFunction::Atan => Ok(math::atan(args.into_iter().next().unwrap())),
+        ScalarFunction::Log10 => Ok(math::log10(arg1(args, "LOG10")?)),
+        ScalarFunction::Sin => Ok(math::sin(arg1(args, "SIN")?)),
+        ScalarFunction::Cos => Ok(math::cos(arg1(args, "COS")?)),
+        ScalarFunction::Tan => Ok(math::tan(arg1(args, "TAN")?)),
+        ScalarFunction::Asin => Ok(math::asin(arg1(args, "ASIN")?)),
+        ScalarFunction::Acos => Ok(math::acos(arg1(args, "ACOS")?)),
+        ScalarFunction::Atan => Ok(math::atan(arg1(args, "ATAN")?)),
         ScalarFunction::Atan2 => {
-            let mut iter = args.into_iter();
-            Ok(math::atan2(iter.next().unwrap(), iter.next().unwrap()))
+            let (a, b) = arg2(args, "ATAN2")?;
+            Ok(math::atan2(a, b))
         }
-        ScalarFunction::Sinh => Ok(math::sinh(args.into_iter().next().unwrap())),
-        ScalarFunction::Cosh => Ok(math::cosh(args.into_iter().next().unwrap())),
-        ScalarFunction::Tanh => Ok(math::tanh(args.into_iter().next().unwrap())),
-        ScalarFunction::Asinh => Ok(math::asinh(args.into_iter().next().unwrap())),
-        ScalarFunction::Acosh => Ok(math::acosh(args.into_iter().next().unwrap())),
-        ScalarFunction::Atanh => Ok(math::atanh(args.into_iter().next().unwrap())),
-        ScalarFunction::Cot => Ok(math::cot(args.into_iter().next().unwrap())),
+        ScalarFunction::Sinh => Ok(math::sinh(arg1(args, "SINH")?)),
+        ScalarFunction::Cosh => Ok(math::cosh(arg1(args, "COSH")?)),
+        ScalarFunction::Tanh => Ok(math::tanh(arg1(args, "TANH")?)),
+        ScalarFunction::Asinh => Ok(math::asinh(arg1(args, "ASINH")?)),
+        ScalarFunction::Acosh => Ok(math::acosh(arg1(args, "ACOSH")?)),
+        ScalarFunction::Atanh => Ok(math::atanh(arg1(args, "ATANH")?)),
+        ScalarFunction::Cot => Ok(math::cot(arg1(args, "COT")?)),
         ScalarFunction::Csc => {
-            let arg = args.into_iter().next().unwrap();
-            Ok(lit(1.0) / math::sin(arg))
+            let a = arg1(args, "CSC")?;
+            Ok(lit(1.0) / math::sin(a))
         }
         ScalarFunction::Sec => {
-            let arg = args.into_iter().next().unwrap();
-            Ok(lit(1.0) / math::cos(arg))
+            let a = arg1(args, "SEC")?;
+            Ok(lit(1.0) / math::cos(a))
         }
         ScalarFunction::Coth => {
-            let arg = args.into_iter().next().unwrap();
-            Ok(lit(1.0) / math::tanh(arg))
+            let a = arg1(args, "COTH")?;
+            Ok(lit(1.0) / math::tanh(a))
         }
         ScalarFunction::Csch => {
-            let arg = args.into_iter().next().unwrap();
-            Ok(lit(1.0) / math::sinh(arg))
+            let a = arg1(args, "CSCH")?;
+            Ok(lit(1.0) / math::sinh(a))
         }
         ScalarFunction::Sech => {
-            let arg = args.into_iter().next().unwrap();
-            Ok(lit(1.0) / math::cosh(arg))
+            let a = arg1(args, "SECH")?;
+            Ok(lit(1.0) / math::cosh(a))
         }
         ScalarFunction::Pi => Ok(math::pi()),
-        ScalarFunction::IsNan => Ok(math::isnan(args.into_iter().next().unwrap())),
-        ScalarFunction::IsInf => Ok(math::iszero(args.into_iter().next().unwrap()).not()),
+        ScalarFunction::IsNan => Ok(math::isnan(arg1(args, "IS_NAN")?)),
+        ScalarFunction::IsInf => Ok(math::iszero(arg1(args, "IS_INF")?).not()),
         ScalarFunction::Rand | ScalarFunction::RandCanonical => Ok(math::random()),
         ScalarFunction::Div => {
-            let mut iter = args.into_iter();
-            let a = iter.next().unwrap();
-            let b = iter.next().unwrap();
+            let (a, b) = arg2(args, "DIV")?;
             Ok(math::trunc(vec![a / b, lit(0)]))
         }
         ScalarFunction::SafeDivide => {
-            let mut iter = args.into_iter();
-            let a = iter.next().unwrap();
-            let b = iter.next().unwrap();
+            let (a, b) = arg2(args, "SAFE_DIVIDE")?;
             Ok(when(b.clone().eq(lit(0)), lit(ScalarValue::Null)).otherwise(a / b)?)
         }
         ScalarFunction::IeeeDivide => {
-            let mut iter = args.into_iter();
-            Ok(iter.next().unwrap() / iter.next().unwrap())
+            let (a, b) = arg2(args, "IEEE_DIVIDE")?;
+            Ok(a / b)
         }
 
         ScalarFunction::Coalesce => Ok(core::coalesce(args)),
         ScalarFunction::NullIf => {
-            let mut iter = args.into_iter();
-            Ok(core::nullif(iter.next().unwrap(), iter.next().unwrap()))
+            let (a, b) = arg2(args, "NULLIF")?;
+            Ok(core::nullif(a, b))
         }
         ScalarFunction::Greatest => Ok(core::greatest(args)),
         ScalarFunction::Least => Ok(core::least(args)),
         ScalarFunction::IfNull | ScalarFunction::Ifnull | ScalarFunction::Nvl => {
-            let mut iter = args.into_iter();
-            let expr = iter.next().unwrap();
-            let default = iter.next().unwrap();
+            let (expr, default) = arg2(args, "IFNULL")?;
             Ok(core::coalesce(vec![expr, default]))
         }
         ScalarFunction::If => {
-            let mut iter = args.into_iter();
-            let condition = iter.next().unwrap();
-            let then_val = iter.next().unwrap();
-            let else_val = iter.next().unwrap_or_else(|| lit(ScalarValue::Null));
+            let (condition, then_val, else_val) = arg2_opt3(args, "IF")?;
+            let else_val = else_val.unwrap_or_else(|| lit(ScalarValue::Null));
             Ok(when(condition, then_val).otherwise(else_val)?)
         }
         ScalarFunction::Nvl2 => {
@@ -4317,7 +4340,7 @@ fn code_points_to_bytes_udf() -> datafusion::logical_expr::ScalarUDF {
                         break;
                     }
                     let val = int_arr.value(j);
-                    if val < 0 || val > 255 {
+                    if !(0..=255).contains(&val) {
                         has_invalid = true;
                         break;
                     }
@@ -5703,8 +5726,6 @@ fn scalar_function_return_type(func: &ScalarFunction, args: &[Expr]) -> String {
         | ScalarFunction::SafeCast
         | ScalarFunction::SafeConvert
         | ScalarFunction::Custom(_) => "UNKNOWN".to_string(),
-
-        _ => "UNKNOWN".to_string(),
     }
 }
 

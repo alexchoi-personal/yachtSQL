@@ -253,15 +253,15 @@ pub fn fn_aead_encrypt(args: &[Value]) -> Result<Value> {
         _ => Vec::new(),
     };
 
-    let key_bytes: [u8; 32] = if keyset.len() >= 32 {
-        keyset[..32]
-            .try_into()
-            .map_err(|_| Error::Internal("Failed to convert keyset to 32-byte array".into()))?
-    } else {
-        let mut padded = [0u8; 32];
-        padded[..keyset.len()].copy_from_slice(keyset);
-        padded
-    };
+    if keyset.len() < 32 {
+        return Err(Error::InvalidQuery(format!(
+            "AEAD encryption requires a key of at least 32 bytes, got {} bytes",
+            keyset.len()
+        )));
+    }
+    let key_bytes: [u8; 32] = keyset[..32]
+        .try_into()
+        .map_err(|_| Error::Internal("Failed to convert keyset to 32-byte array".into()))?;
 
     let cipher = Aes256Gcm::new_from_slice(&key_bytes)
         .map_err(|e| Error::Internal(format!("Failed to create cipher: {}", e)))?;
@@ -323,15 +323,15 @@ pub fn fn_aead_decrypt_bytes(args: &[Value]) -> Result<Value> {
         return Err(Error::InvalidQuery("Ciphertext too short".into()));
     }
 
-    let key_bytes: [u8; 32] = if keyset.len() >= 32 {
-        keyset[..32]
-            .try_into()
-            .map_err(|_| Error::Internal("Failed to convert keyset to 32-byte array".into()))?
-    } else {
-        let mut padded = [0u8; 32];
-        padded[..keyset.len()].copy_from_slice(keyset);
-        padded
-    };
+    if keyset.len() < 32 {
+        return Err(Error::InvalidQuery(format!(
+            "AEAD encryption requires a key of at least 32 bytes, got {} bytes",
+            keyset.len()
+        )));
+    }
+    let key_bytes: [u8; 32] = keyset[..32]
+        .try_into()
+        .map_err(|_| Error::Internal("Failed to convert keyset to 32-byte array".into()))?;
 
     let cipher = Aes256Gcm::new_from_slice(&key_bytes)
         .map_err(|e| Error::Internal(format!("Failed to create cipher: {}", e)))?;

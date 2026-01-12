@@ -444,6 +444,26 @@ impl YachtSQLSession {
         }
     }
 
+    fn get_table_provider(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
+        let catalog = self
+            .ctx
+            .catalog("datafusion")
+            .ok_or_else(|| Error::Internal("Catalog 'datafusion' not found".to_string()))?;
+        let schema_provider = catalog
+            .schema(schema)
+            .ok_or_else(|| Error::Internal(format!("Schema '{}' not found", schema)))?;
+        schema_provider
+            .table(table)
+            .now_or_never()
+            .ok_or_else(|| Error::Internal("Table lookup timed out".to_string()))?
+            .map_err(|e| Error::Internal(format!("Table lookup failed: {}", e)))?
+            .ok_or_else(|| Error::TableNotFound(table.to_string()))
+    }
+
     pub async fn execute_sql(&self, sql: &str) -> Result<Vec<RecordBatch>> {
         let catalog = SessionCatalog { session: self };
         let plan = yachtsql_parser::parse_and_plan(sql, &catalog)?;
@@ -3120,14 +3140,7 @@ impl YachtSQLSession {
         };
 
         let existing_batches = if let Some(ref schema) = schema_name {
-            let catalog = self.ctx.catalog("datafusion").unwrap();
-            let schema_provider = catalog.schema(schema).unwrap();
-            let table_provider = schema_provider
-                .table(&table)
-                .now_or_never()
-                .unwrap()
-                .unwrap()
-                .unwrap();
+            let table_provider = self.get_table_provider(schema, &table)?;
             let scan = table_provider
                 .scan(&self.ctx.state(), None, &[], None)
                 .now_or_never()
@@ -3160,8 +3173,13 @@ impl YachtSQLSession {
         all_batches.extend(casted_batches);
 
         if let Some(ref schema) = schema_name {
-            let catalog = self.ctx.catalog("datafusion").unwrap();
-            let schema_provider = catalog.schema(schema).unwrap();
+            let catalog = self
+                .ctx
+                .catalog("datafusion")
+                .ok_or_else(|| Error::Internal("Catalog 'datafusion' not found".to_string()))?;
+            let schema_provider = catalog
+                .schema(schema)
+                .ok_or_else(|| Error::Internal(format!("Schema '{}' not found", schema)))?;
             let _ = schema_provider.deregister_table(&table);
 
             let partitions = if all_batches.is_empty() {
@@ -3447,7 +3465,7 @@ impl YachtSQLSession {
                     Some(source_indices) => {
                         let source_idx = source_indices[0];
                         let (source_batch, source_row) =
-                            self.get_source_row(&source_batches, source_idx);
+                            self.get_source_row(&source_batches, source_idx)?;
 
                         let mut handled = false;
                         for clause in clauses {
@@ -3579,7 +3597,7 @@ impl YachtSQLSession {
                 continue;
             }
 
-            let (source_batch, source_row) = self.get_source_row(&source_batches, source_idx);
+            let (source_batch, source_row) = self.get_source_row(&source_batches, source_idx)?;
 
             for clause in clauses {
                 if let MergeClause::NotMatched {
@@ -3814,15 +3832,19 @@ impl YachtSQLSession {
         &self,
         source_batches: &'a [RecordBatch],
         global_idx: usize,
-    ) -> (&'a RecordBatch, usize) {
+    ) -> Result<(&'a RecordBatch, usize)> {
         let mut remaining = global_idx;
         for batch in source_batches {
             if remaining < batch.num_rows() {
-                return (batch, remaining);
+                return Ok((batch, remaining));
             }
             remaining -= batch.num_rows();
         }
-        panic!("Source row index out of bounds");
+        let total_rows: usize = source_batches.iter().map(|b| b.num_rows()).sum();
+        Err(Error::Internal(format!(
+            "Source row index {} out of bounds (total rows: {})",
+            global_idx, total_rows
+        )))
     }
 
     async fn evaluate_merge_clause_condition(
@@ -5005,8 +5027,12 @@ impl YachtSQLSession {
                     .collect::<Result<_>>()?;
 
                 if let Some(ref schema) = schema_name {
-                    let catalog = self.ctx.catalog("datafusion").unwrap();
-                    let schema_provider = catalog.schema(schema).unwrap();
+                    let catalog = self.ctx.catalog("datafusion").ok_or_else(|| {
+                        Error::Internal("Catalog 'datafusion' not found".to_string())
+                    })?;
+                    let schema_provider = catalog
+                        .schema(schema)
+                        .ok_or_else(|| Error::Internal(format!("Schema '{}' not found", schema)))?;
                     let _ = schema_provider.deregister_table(&table);
                     let partitions = if new_batches.is_empty() {
                         vec![vec![]]
@@ -5121,8 +5147,12 @@ impl YachtSQLSession {
                     .collect::<Result<_>>()?;
 
                 if let Some(ref schema) = schema_name {
-                    let catalog = self.ctx.catalog("datafusion").unwrap();
-                    let schema_provider = catalog.schema(schema).unwrap();
+                    let catalog = self.ctx.catalog("datafusion").ok_or_else(|| {
+                        Error::Internal("Catalog 'datafusion' not found".to_string())
+                    })?;
+                    let schema_provider = catalog
+                        .schema(schema)
+                        .ok_or_else(|| Error::Internal(format!("Schema '{}' not found", schema)))?;
                     let _ = schema_provider.deregister_table(&table);
                     let partitions = if new_batches.is_empty() {
                         vec![vec![]]
@@ -5237,8 +5267,12 @@ impl YachtSQLSession {
                     .collect::<Result<_>>()?;
 
                 if let Some(ref schema) = schema_name {
-                    let catalog = self.ctx.catalog("datafusion").unwrap();
-                    let schema_provider = catalog.schema(schema).unwrap();
+                    let catalog = self.ctx.catalog("datafusion").ok_or_else(|| {
+                        Error::Internal("Catalog 'datafusion' not found".to_string())
+                    })?;
+                    let schema_provider = catalog
+                        .schema(schema)
+                        .ok_or_else(|| Error::Internal(format!("Schema '{}' not found", schema)))?;
                     let _ = schema_provider.deregister_table(&table);
                     let partitions = if new_batches.is_empty() {
                         vec![vec![]]
@@ -5361,8 +5395,12 @@ impl YachtSQLSession {
                             .collect::<Result<_>>()?;
 
                         if let Some(ref schema) = schema_name {
-                            let catalog = self.ctx.catalog("datafusion").unwrap();
-                            let schema_provider = catalog.schema(schema).unwrap();
+                            let catalog = self.ctx.catalog("datafusion").ok_or_else(|| {
+                                Error::Internal("Catalog 'datafusion' not found".to_string())
+                            })?;
+                            let schema_provider = catalog.schema(schema).ok_or_else(|| {
+                                Error::Internal(format!("Schema '{}' not found", schema))
+                            })?;
                             let _ = schema_provider.deregister_table(&table);
                             let partitions = if new_batches.is_empty() {
                                 vec![vec![]]
@@ -5424,8 +5462,12 @@ impl YachtSQLSession {
                             .collect::<Result<_>>()?;
 
                         if let Some(ref schema) = schema_name {
-                            let catalog = self.ctx.catalog("datafusion").unwrap();
-                            let schema_provider = catalog.schema(schema).unwrap();
+                            let catalog = self.ctx.catalog("datafusion").ok_or_else(|| {
+                                Error::Internal("Catalog 'datafusion' not found".to_string())
+                            })?;
+                            let schema_provider = catalog.schema(schema).ok_or_else(|| {
+                                Error::Internal(format!("Schema '{}' not found", schema))
+                            })?;
                             let _ = schema_provider.deregister_table(&table);
                             let partitions = if new_batches.is_empty() {
                                 vec![vec![]]
@@ -5519,8 +5561,12 @@ impl YachtSQLSession {
                             .collect::<Result<_>>()?;
 
                         if let Some(ref schema) = schema_name {
-                            let catalog = self.ctx.catalog("datafusion").unwrap();
-                            let schema_provider = catalog.schema(schema).unwrap();
+                            let catalog = self.ctx.catalog("datafusion").ok_or_else(|| {
+                                Error::Internal("Catalog 'datafusion' not found".to_string())
+                            })?;
+                            let schema_provider = catalog.schema(schema).ok_or_else(|| {
+                                Error::Internal(format!("Schema '{}' not found", schema))
+                            })?;
                             let _ = schema_provider.deregister_table(&table);
                             let partitions = if new_batches.is_empty() {
                                 vec![vec![]]

@@ -554,10 +554,16 @@ impl ConcurrentPlanExecutor {
                 continue;
             }
 
+            let validated_path = if is_cloud_uri {
+                path.clone()
+            } else {
+                validate_file_path(&path)?
+            };
+
             let rows = match options.format {
-                LoadFormat::Parquet => self.load_parquet(&path, &schema)?,
-                LoadFormat::Json => self.load_json(&path, &schema)?,
-                LoadFormat::Csv => self.load_csv(&path, &schema, options)?,
+                LoadFormat::Parquet => self.load_parquet(&validated_path, &schema)?,
+                LoadFormat::Json => self.load_json(&validated_path, &schema)?,
+                LoadFormat::Csv => self.load_csv(&validated_path, &schema, options)?,
                 LoadFormat::Avro => {
                     return Err(Error::UnsupportedFeature(
                         "AVRO load not yet supported".into(),

@@ -112,10 +112,13 @@ pub fn evaluate_py_function(
             let _ = handle.join();
             result
         }
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(format!(
-            "Python execution timed out after {}ms",
-            PY_EXECUTION_TIMEOUT_MS
-        )),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            drop(handle);
+            Err(format!(
+                "Python execution timed out after {}ms",
+                PY_EXECUTION_TIMEOUT_MS
+            ))
+        }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             Err("Python execution thread panicked".to_string())
         }
