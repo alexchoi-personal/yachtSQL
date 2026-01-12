@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 use crate::strings::{make_and_append_view, StringArrayType};
 use crate::utils::{make_scalar_function, utf8_to_str_type};
 use arrow::array::{
-    Array, ArrayIter, ArrayRef, AsArray, GenericStringBuilder, Int64Array,
+    Array, ArrayIter, ArrayRef, AsArray, GenericBinaryBuilder, GenericStringBuilder, Int64Array,
     OffsetSizeTrait, StringViewArray,
 };
 use arrow::datatypes::DataType;
@@ -68,10 +68,11 @@ impl ScalarUDFImpl for SubstrFunc {
     }
 
     fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
-        if arg_types[0] == DataType::Utf8View {
-            Ok(DataType::Utf8View)
-        } else {
-            utf8_to_str_type(&arg_types[0], "substr")
+        match &arg_types[0] {
+            DataType::Utf8View => Ok(DataType::Utf8View),
+            DataType::Binary => Ok(DataType::Binary),
+            DataType::LargeBinary => Ok(DataType::LargeBinary),
+            _ => utf8_to_str_type(&arg_types[0], "substr"),
         }
     }
 
@@ -98,27 +99,28 @@ impl ScalarUDFImpl for SubstrFunc {
         let first_data_type = match &arg_types[0] {
             DataType::Null => Ok(DataType::Utf8),
             DataType::LargeUtf8 | DataType::Utf8View | DataType::Utf8 => Ok(arg_types[0].clone()),
+            DataType::Binary | DataType::LargeBinary => Ok(arg_types[0].clone()),
             DataType::Dictionary(key_type, value_type) => {
                 if key_type.is_integer() {
                     match value_type.as_ref() {
                         DataType::Null => Ok(DataType::Utf8),
                         DataType::LargeUtf8 | DataType::Utf8View | DataType::Utf8 => Ok(*value_type.clone()),
                         _ => plan_err!(
-                                "The first argument of the {} function can only be a string, but got {:?}.",
+                                "The first argument of the {} function can only be a string or binary, but got {:?}.",
                                 self.name(),
                                 arg_types[0]
                         ),
                     }
                 } else {
                     plan_err!(
-                        "The first argument of the {} function can only be a string, but got {:?}.",
+                        "The first argument of the {} function can only be a string or binary, but got {:?}.",
                         self.name(),
                         arg_types[0]
                     )
                 }
             }
             _ => plan_err!(
-                "The first argument of the {} function can only be a string, but got {:?}.",
+                "The first argument of the {} function can only be a string or binary, but got {:?}.",
                 self.name(),
                 arg_types[0]
             )
@@ -200,9 +202,17 @@ pub fn substr(args: &[ArrayRef]) -> Result<ArrayRef> {
             let string_array = args[0].as_string_view();
             string_view_substr(string_array, &args[1..])
         }
+        DataType::Binary => {
+            let binary_array = args[0].as_binary::<i32>();
+            binary_substr::<i32>(binary_array, &args[1..])
+        }
+        DataType::LargeBinary => {
+            let binary_array = args[0].as_binary::<i64>();
+            binary_substr::<i64>(binary_array, &args[1..])
+        }
         other => exec_err!(
             "Unsupported data type {other:?} for function substr,\
-            expected Utf8View, Utf8 or LargeUtf8."
+            expected Utf8View, Utf8, LargeUtf8, Binary or LargeBinary."
         ),
     }
 }
@@ -495,6 +505,94 @@ where
                                 enable_ascii_fast_path,
                             ); // start, end is byte-based
                             let substr = &string[start..end];
+                            result_builder.append_value(substr);
+                        }
+                    }
+                    _ => {
+                        result_builder.append_null();
+                    }
+                }
+            }
+            Ok(Arc::new(result_builder.finish()) as ArrayRef)
+        }
+        other => {
+            exec_err!("substr was called with {other} arguments. It requires 2 or 3.")
+        }
+    }
+}
+
+
+fn get_binary_start_end(
+    input: &[u8],
+    start: i64,
+    count: Option<u64>,
+) -> (usize, usize) {
+    let start = start.checked_sub(1).unwrap_or(start);
+
+    let end = match count {
+        Some(count) => start + count as i64,
+        None => input.len() as i64,
+    };
+
+    let start = start.clamp(0, input.len() as i64) as usize;
+    let end = end.clamp(0, input.len() as i64) as usize;
+
+    (start, end)
+}
+
+fn binary_substr<T>(
+    binary_array: &arrow::array::GenericBinaryArray<T>,
+    args: &[ArrayRef],
+) -> Result<ArrayRef>
+where
+    T: OffsetSizeTrait,
+{
+    let start_array = as_int64_array(&args[0])?;
+    let count_array_opt = if args.len() == 2 {
+        Some(as_int64_array(&args[1])?)
+    } else {
+        None
+    };
+
+    match args.len() {
+        1 => {
+            let mut result_builder = GenericBinaryBuilder::<T>::new();
+            for (binary, start) in binary_array.iter().zip(start_array.iter()) {
+                match (binary, start) {
+                    (Some(binary), Some(start)) => {
+                        let (start, end) = get_binary_start_end(binary, start, None);
+                        let substr = &binary[start..end];
+                        result_builder.append_value(substr);
+                    }
+                    _ => {
+                        result_builder.append_null();
+                    }
+                }
+            }
+            Ok(Arc::new(result_builder.finish()) as ArrayRef)
+        }
+        2 => {
+            let count_array = count_array_opt.unwrap();
+            let mut result_builder = GenericBinaryBuilder::<T>::new();
+
+            for ((binary, start), count) in
+                binary_array.iter().zip(start_array.iter()).zip(count_array.iter())
+            {
+                match (binary, start, count) {
+                    (Some(binary), Some(start), Some(count)) => {
+                        if count < 0 {
+                            return exec_err!(
+                                "negative substring length not allowed: substr(<bytes>, {start}, {count})"
+                            );
+                        } else {
+                            if start == i64::MIN {
+                                return exec_err!(
+                                    "negative overflow when calculating skip value"
+                                );
+                            }
+                            let (start, end) =
+                                get_binary_start_end(binary, start, Some(count as u64));
+                            let substr = &binary[start..end];
                             result_builder.append_value(substr);
                         }
                     }
