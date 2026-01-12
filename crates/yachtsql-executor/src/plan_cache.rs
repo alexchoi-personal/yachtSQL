@@ -1,6 +1,7 @@
 #![coverage(off)]
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use lru::LruCache;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -14,7 +15,7 @@ fn hash_sql(sql: &str) -> SqlHash {
 }
 
 pub struct PlanCache {
-    plans: LruCache<SqlHash, LogicalPlan>,
+    plans: LruCache<SqlHash, Arc<LogicalPlan>>,
     object_to_hashes: FxHashMap<String, FxHashSet<SqlHash>>,
 }
 
@@ -26,7 +27,7 @@ impl PlanCache {
         }
     }
 
-    pub fn get(&mut self, sql: &str) -> Option<LogicalPlan> {
+    pub fn get(&mut self, sql: &str) -> Option<Arc<LogicalPlan>> {
         self.plans.get(&hash_sql(sql)).cloned()
     }
 
@@ -36,7 +37,7 @@ impl PlanCache {
         for obj in objects {
             self.object_to_hashes.entry(obj).or_default().insert(hash);
         }
-        self.plans.put(hash, plan);
+        self.plans.put(hash, Arc::new(plan));
     }
 
     pub fn invalidate_objects(&mut self, objects: &[String]) {

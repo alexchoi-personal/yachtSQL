@@ -168,7 +168,7 @@ impl AsyncQueryExecutor {
                     if is_cacheable_plan(&plan) {
                         cache.insert(&sql, plan.clone());
                     }
-                    plan
+                    Arc::new(plan)
                 }
             }
         };
