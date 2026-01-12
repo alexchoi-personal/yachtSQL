@@ -1026,6 +1026,10 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             let arr2 = iter.next().unwrap();
             Ok(cosine_distance_udf().call(vec![arr1, arr2]))
         }
+        ScalarFunction::FarmFingerprint => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(farm_fingerprint_udf().call(vec![arg]))
+        }
 
         ScalarFunction::ToBase64 => Ok(datafusion::functions::encoding::expr_fn::encode(
             args.into_iter().next().unwrap(),
@@ -4659,4 +4663,90 @@ fn cosine_distance_udf() -> datafusion::logical_expr::ScalarUDF {
     }
 
     ScalarUDF::from(CosineDistanceUdf::new())
+}
+
+fn farm_fingerprint_udf() -> datafusion::logical_expr::ScalarUDF {
+    use std::hash::{Hash, Hasher};
+
+    use datafusion::arrow::array::{Array, ArrayRef, BinaryArray, Int64Builder, StringArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct FarmFingerprintUdf {
+        signature: Signature,
+    }
+
+    impl FarmFingerprintUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::any(1, Volatility::Immutable),
+            }
+        }
+
+        fn hash_bytes(data: &[u8]) -> i64 {
+            use std::collections::hash_map::DefaultHasher;
+            let mut hasher = DefaultHasher::new();
+            data.hash(&mut hasher);
+            hasher.finish() as i64
+        }
+    }
+
+    impl ScalarUDFImpl for FarmFingerprintUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "farm_fingerprint"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Int64)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let mut builder = Int64Builder::new();
+
+            if let Some(str_arr) = arr.as_any().downcast_ref::<StringArray>() {
+                for i in 0..str_arr.len() {
+                    if str_arr.is_null(i) {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(Self::hash_bytes(str_arr.value(i).as_bytes()));
+                    }
+                }
+            } else if let Some(bin_arr) = arr.as_any().downcast_ref::<BinaryArray>() {
+                for i in 0..bin_arr.len() {
+                    if bin_arr.is_null(i) {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(Self::hash_bytes(bin_arr.value(i)));
+                    }
+                }
+            } else if arr.data_type() == &ArrowDataType::Null {
+                for _ in 0..arr.len() {
+                    builder.append_null();
+                }
+            } else {
+                return Err(datafusion::common::DataFusionError::Internal(
+                    "farm_fingerprint: expected STRING or BYTES".to_string(),
+                ));
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(FarmFingerprintUdf::new())
 }
