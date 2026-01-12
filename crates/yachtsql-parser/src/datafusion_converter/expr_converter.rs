@@ -1014,6 +1014,18 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             let arg = args.into_iter().next().unwrap();
             Ok(bit_count_udf().call(vec![arg]))
         }
+        ScalarFunction::EuclideanDistance => {
+            let mut iter = args.into_iter();
+            let arr1 = iter.next().unwrap();
+            let arr2 = iter.next().unwrap();
+            Ok(euclidean_distance_udf().call(vec![arr1, arr2]))
+        }
+        ScalarFunction::CosineDistance => {
+            let mut iter = args.into_iter();
+            let arr1 = iter.next().unwrap();
+            let arr2 = iter.next().unwrap();
+            Ok(cosine_distance_udf().call(vec![arr1, arr2]))
+        }
 
         ScalarFunction::ToBase64 => Ok(datafusion::functions::encoding::expr_fn::encode(
             args.into_iter().next().unwrap(),
@@ -4382,4 +4394,269 @@ fn bit_count_udf() -> datafusion::logical_expr::ScalarUDF {
     }
 
     ScalarUDF::from(BitCountUdf::new())
+}
+
+fn extract_float_values(arr: &dyn datafusion::arrow::array::Array) -> Option<Vec<Option<f64>>> {
+    use datafusion::arrow::array::{Array, Float64Array, Int64Array};
+
+    arr.as_any()
+        .downcast_ref::<Float64Array>()
+        .map(|float_arr| {
+            (0..float_arr.len())
+                .map(|i| {
+                    if float_arr.is_null(i) {
+                        None
+                    } else {
+                        Some(float_arr.value(i))
+                    }
+                })
+                .collect()
+        })
+        .or_else(|| {
+            arr.as_any().downcast_ref::<Int64Array>().map(|int_arr| {
+                (0..int_arr.len())
+                    .map(|i| {
+                        if int_arr.is_null(i) {
+                            None
+                        } else {
+                            Some(int_arr.value(i) as f64)
+                        }
+                    })
+                    .collect()
+            })
+        })
+}
+
+fn euclidean_distance_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, Float64Builder, ListArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct EuclideanDistanceUdf {
+        signature: Signature,
+    }
+
+    impl EuclideanDistanceUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::any(2, Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for EuclideanDistanceUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "euclidean_distance"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Float64)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr1 = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let arr2 = match &args[1] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            if arr1.data_type() == &ArrowDataType::Null || arr2.data_type() == &ArrowDataType::Null
+            {
+                let mut builder = Float64Builder::new();
+                for _ in 0..arr1.len().max(arr2.len()).max(num_rows) {
+                    builder.append_null();
+                }
+                return Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef));
+            }
+
+            let list1 = arr1.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected list array".to_string())
+            })?;
+            let list2 = arr2.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected list array".to_string())
+            })?;
+
+            let mut builder = Float64Builder::new();
+
+            for i in 0..list1.len() {
+                if list1.is_null(i) || list2.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+
+                let inner1 = list1.value(i);
+                let inner2 = list2.value(i);
+
+                let vals1 = extract_float_values(inner1.as_ref()).ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected numeric array".to_string(),
+                    )
+                })?;
+                let vals2 = extract_float_values(inner2.as_ref()).ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected numeric array".to_string(),
+                    )
+                })?;
+
+                if vals1.len() != vals2.len() {
+                    return Err(datafusion::common::DataFusionError::Internal(
+                        "Arrays must have same length".to_string(),
+                    ));
+                }
+
+                let has_null =
+                    vals1.iter().any(|v| v.is_none()) || vals2.iter().any(|v| v.is_none());
+                if has_null {
+                    builder.append_null();
+                    continue;
+                }
+
+                let mut sum_sq = 0.0;
+                for (v1, v2) in vals1.iter().zip(vals2.iter()) {
+                    let d = v1.unwrap() - v2.unwrap();
+                    sum_sq += d * d;
+                }
+
+                builder.append_value(sum_sq.sqrt());
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(EuclideanDistanceUdf::new())
+}
+
+fn cosine_distance_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, Float64Builder, ListArray};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct CosineDistanceUdf {
+        signature: Signature,
+    }
+
+    impl CosineDistanceUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::any(2, Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for CosineDistanceUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "cosine_distance"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Float64)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr1 = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let arr2 = match &args[1] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            if arr1.data_type() == &ArrowDataType::Null || arr2.data_type() == &ArrowDataType::Null
+            {
+                let mut builder = Float64Builder::new();
+                for _ in 0..arr1.len().max(arr2.len()).max(num_rows) {
+                    builder.append_null();
+                }
+                return Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef));
+            }
+
+            let list1 = arr1.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected list array".to_string())
+            })?;
+            let list2 = arr2.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected list array".to_string())
+            })?;
+
+            let mut builder = Float64Builder::new();
+
+            for i in 0..list1.len() {
+                if list1.is_null(i) || list2.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+
+                let inner1 = list1.value(i);
+                let inner2 = list2.value(i);
+
+                let vals1 = extract_float_values(inner1.as_ref()).ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected numeric array".to_string(),
+                    )
+                })?;
+                let vals2 = extract_float_values(inner2.as_ref()).ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "Expected numeric array".to_string(),
+                    )
+                })?;
+
+                if vals1.len() != vals2.len() {
+                    return Err(datafusion::common::DataFusionError::Internal(
+                        "Arrays must have same length".to_string(),
+                    ));
+                }
+
+                let has_null =
+                    vals1.iter().any(|v| v.is_none()) || vals2.iter().any(|v| v.is_none());
+                if has_null {
+                    builder.append_null();
+                    continue;
+                }
+
+                let mut dot = 0.0;
+                let mut norm1 = 0.0;
+                let mut norm2 = 0.0;
+
+                for (v1, v2) in vals1.iter().zip(vals2.iter()) {
+                    let f1 = v1.unwrap();
+                    let f2 = v2.unwrap();
+                    dot += f1 * f2;
+                    norm1 += f1 * f1;
+                    norm2 += f2 * f2;
+                }
+
+                let denom = norm1.sqrt() * norm2.sqrt();
+                let cos_sim = if denom == 0.0 { 0.0 } else { dot / denom };
+                builder.append_value(1.0 - cos_sim);
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(CosineDistanceUdf::new())
 }
