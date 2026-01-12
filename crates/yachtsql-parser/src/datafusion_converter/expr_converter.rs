@@ -1923,6 +1923,10 @@ fn convert_aggregate_function(
             let separator = iter.next().unwrap_or_else(|| lit(","));
             string_agg::string_agg(expr, separator)
         }
+        AggregateFunction::XmlAgg => {
+            let expr = args.into_iter().next().unwrap();
+            string_agg::string_agg(expr, lit(""))
+        }
         AggregateFunction::Variance | AggregateFunction::VarSamp => {
             variance::var_sample(args.into_iter().next().unwrap())
         }
@@ -2025,6 +2029,7 @@ fn get_aggregate_udaf(
         AggregateFunction::Max => Ok(min_max::max_udaf()),
         AggregateFunction::ArrayAgg => Ok(array_agg::array_agg_udaf()),
         AggregateFunction::StringAgg => Ok(string_agg::string_agg_udaf()),
+        AggregateFunction::XmlAgg => Ok(string_agg::string_agg_udaf()),
         AggregateFunction::Variance => Ok(variance::var_samp_udaf()),
         AggregateFunction::VarPop => Ok(variance::var_pop_udaf()),
         AggregateFunction::VarSamp => Ok(variance::var_samp_udaf()),
