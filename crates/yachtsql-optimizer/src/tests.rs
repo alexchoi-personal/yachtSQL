@@ -18,8 +18,20 @@ mod benchmark_query_analysis {
         ])
     }
 
+    fn orders_schema() -> Schema {
+        Schema::from_fields(vec![
+            Field::nullable("id", DataType::Int64),
+            Field::nullable("user_id", DataType::Int64),
+            Field::nullable("amount", DataType::Int64),
+            Field::nullable("status", DataType::String),
+            Field::nullable("region", DataType::String),
+        ])
+    }
+
     fn test_catalog() -> MockCatalog {
-        MockCatalog::new().with_table("users", users_schema())
+        MockCatalog::new()
+            .with_table("users", users_schema())
+            .with_table("orders", orders_schema())
     }
 
     fn plan_variant_name(plan: &PhysicalPlan) -> &'static str {
@@ -84,8 +96,38 @@ mod benchmark_query_analysis {
                 println!();
                 print_plan_tree(body, indent + 1);
             }
+            PhysicalPlan::HashJoin { left, right, .. } => {
+                println!();
+                print_plan_tree(left, indent + 1);
+                print_plan_tree(right, indent + 1);
+            }
+            PhysicalPlan::NestedLoopJoin { left, right, .. } => {
+                println!();
+                print_plan_tree(left, indent + 1);
+                print_plan_tree(right, indent + 1);
+            }
+            PhysicalPlan::CrossJoin { left, right, .. } => {
+                println!();
+                print_plan_tree(left, indent + 1);
+                print_plan_tree(right, indent + 1);
+            }
             _ => println!(),
         }
+    }
+
+    fn optimize_with_rules(sql: &str, rule_flag: fn(&mut RuleFlags)) -> PhysicalPlan {
+        let catalog = test_catalog();
+        let logical = yachtsql_parser::parse_and_plan(sql, &catalog).expect("failed to parse SQL");
+
+        let mut flags = RuleFlags::all_disabled();
+        rule_flag(&mut flags);
+
+        let settings = OptimizerSettings {
+            rules: flags,
+            ..Default::default()
+        };
+
+        optimize_with_settings(&logical, &settings).expect("failed to optimize")
     }
 
     fn optimize_with_rule(sql: &str, rule_flag: fn(&mut RuleFlags)) -> PhysicalPlan {
@@ -193,6 +235,29 @@ mod benchmark_query_analysis {
         println!("\nWith filter_pushdown_aggregate:");
         let plan_on = optimize_with_rule(sql, |f| f.filter_pushdown_aggregate = Some(true));
         print_plan_tree(&plan_on, 0);
+    }
+
+    #[test]
+    fn analyze_filter_pushdown_join() {
+        let sql = "SELECT * FROM (SELECT u.name as user_name, u.country, u.score, o.amount, o.status as order_status FROM users u JOIN orders o ON u.id = o.user_id) sub WHERE sub.country = 'US' AND sub.order_status = 'active' AND sub.score < 10";
+
+        println!("\n=== FILTER_PUSHDOWN_JOIN ===");
+        println!("Query: {}", sql);
+
+        println!("\nWithout optimization:");
+        let plan_off = optimize_without_rules(sql);
+        print_plan_tree(&plan_off, 0);
+
+        println!("\nWith filter_pushdown_project only:");
+        let plan_proj = optimize_with_rules(sql, |f| f.filter_pushdown_project = Some(true));
+        print_plan_tree(&plan_proj, 0);
+
+        println!("\nWith filter_pushdown_project + filter_pushdown_join:");
+        let plan_both = optimize_with_rules(sql, |f| {
+            f.filter_pushdown_project = Some(true);
+            f.filter_pushdown_join = Some(true);
+        });
+        print_plan_tree(&plan_both, 0);
     }
 }
 
