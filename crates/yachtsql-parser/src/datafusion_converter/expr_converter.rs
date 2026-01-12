@@ -80,10 +80,20 @@ pub fn convert_expr(expr: &Expr) -> DFResult<DFExpr> {
             }
         }
 
-        Expr::ScalarFunction { name, args } => {
-            let df_args: Vec<DFExpr> = args.iter().map(convert_expr).collect::<DFResult<_>>()?;
-            convert_scalar_function(name, df_args)
-        }
+        Expr::ScalarFunction { name, args } => match name {
+            ScalarFunction::TypeOf => {
+                let arg = args
+                    .first()
+                    .ok_or_else(|| DataFusionError::Plan("TYPEOF requires 1 argument".into()))?;
+                let type_str = compute_typeof_result(arg);
+                Ok(lit(type_str))
+            }
+            _ => {
+                let df_args: Vec<DFExpr> =
+                    args.iter().map(convert_expr).collect::<DFResult<_>>()?;
+                convert_scalar_function(name, df_args)
+            }
+        },
 
         Expr::Aggregate {
             func,
@@ -1210,8 +1220,6 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             let _part = iter.next().unwrap_or_else(|| lit("second"));
             Ok(time)
         }
-
-        ScalarFunction::TypeOf => Ok(datafusion::functions::core::arrow_typeof().call(args)),
 
         ScalarFunction::SafeConvertBytesToString => {
             let arg = args.into_iter().next().unwrap();
@@ -5216,4 +5224,557 @@ fn normalize_and_casefold_udf() -> datafusion::logical_expr::ScalarUDF {
     }
 
     ScalarUDF::from(NormalizeAndCasefoldUdf::new())
+}
+fn compute_typeof_result(expr: &Expr) -> String {
+    match expr {
+        Expr::Literal(lit) => match lit {
+            Literal::Null => "NULL".to_string(),
+            Literal::Bool(_) => "BOOL".to_string(),
+            Literal::Int64(_) => "INT64".to_string(),
+            Literal::Float64(_) => "FLOAT64".to_string(),
+            Literal::Numeric(_) => "NUMERIC".to_string(),
+            Literal::BigNumeric(_) => "BIGNUMERIC".to_string(),
+            Literal::String(_) => "STRING".to_string(),
+            Literal::Bytes(_) => "BYTES".to_string(),
+            Literal::Date(_) => "DATE".to_string(),
+            Literal::Time(_) => "TIME".to_string(),
+            Literal::Timestamp(_) => "TIMESTAMP".to_string(),
+            Literal::Datetime(_) => "DATETIME".to_string(),
+            Literal::Interval { .. } => "INTERVAL".to_string(),
+            Literal::Array(_) => "ARRAY".to_string(),
+            Literal::Struct(_) => "STRUCT".to_string(),
+            Literal::Json(_) => "JSON".to_string(),
+        },
+        Expr::Column { .. } => "UNKNOWN".to_string(),
+        Expr::BinaryOp {
+            op, left, right, ..
+        } => match op {
+            BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Lt
+            | BinaryOp::LtEq
+            | BinaryOp::Gt
+            | BinaryOp::GtEq
+            | BinaryOp::And
+            | BinaryOp::Or => "BOOL".to_string(),
+            BinaryOp::Concat => "STRING".to_string(),
+            BinaryOp::BitwiseAnd
+            | BinaryOp::BitwiseOr
+            | BinaryOp::BitwiseXor
+            | BinaryOp::ShiftLeft
+            | BinaryOp::ShiftRight => "INT64".to_string(),
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Mod => {
+                let left_type = compute_typeof_result(left);
+                let right_type = compute_typeof_result(right);
+                if left_type == "FLOAT64" || right_type == "FLOAT64" {
+                    "FLOAT64".to_string()
+                } else if left_type == "NUMERIC" || right_type == "NUMERIC" {
+                    "NUMERIC".to_string()
+                } else {
+                    "INT64".to_string()
+                }
+            }
+            BinaryOp::Div => "FLOAT64".to_string(),
+        },
+        Expr::UnaryOp { op, expr, .. } => match op {
+            UnaryOp::Not => "BOOL".to_string(),
+            UnaryOp::BitwiseNot => "INT64".to_string(),
+            UnaryOp::Plus | UnaryOp::Minus => compute_typeof_result(expr),
+        },
+        Expr::IsNull { .. } => "BOOL".to_string(),
+        Expr::IsDistinctFrom { .. } => "BOOL".to_string(),
+        Expr::Between { .. }
+        | Expr::Like { .. }
+        | Expr::InList { .. }
+        | Expr::InSubquery { .. }
+        | Expr::InUnnest { .. }
+        | Expr::Exists { .. } => "BOOL".to_string(),
+        Expr::Case {
+            when_clauses,
+            else_result,
+            ..
+        } => {
+            if let Some(first_when) = when_clauses.first() {
+                compute_typeof_result(&first_when.result)
+            } else if let Some(else_expr) = else_result {
+                compute_typeof_result(else_expr)
+            } else {
+                "NULL".to_string()
+            }
+        }
+        Expr::Cast { data_type, .. } => data_type_to_bigquery_name(data_type),
+        Expr::ScalarFunction { name, args } => scalar_function_return_type(name, args),
+        Expr::Aggregate { func, args, .. } => aggregate_function_return_type(func, args),
+        Expr::UserDefinedAggregate { .. } => "UNKNOWN".to_string(),
+        Expr::Window { func, args, .. } => window_function_return_type(func, args),
+        Expr::AggregateWindow { func, args, .. } => aggregate_function_return_type(func, args),
+        Expr::ArrayAccess { array, .. } => match array.as_ref() {
+            Expr::Array {
+                elements,
+                element_type,
+            } => {
+                if let Some(dt) = element_type {
+                    data_type_to_bigquery_name(dt)
+                } else if let Some(first_elem) = elements.first() {
+                    compute_typeof_result(first_elem)
+                } else {
+                    "UNKNOWN".to_string()
+                }
+            }
+            Expr::Literal(Literal::Array(elements)) => {
+                if let Some(first_elem) = elements.first() {
+                    match first_elem {
+                        Literal::Null => "NULL".to_string(),
+                        Literal::Bool(_) => "BOOL".to_string(),
+                        Literal::Int64(_) => "INT64".to_string(),
+                        Literal::Float64(_) => "FLOAT64".to_string(),
+                        Literal::Numeric(_) => "NUMERIC".to_string(),
+                        Literal::BigNumeric(_) => "BIGNUMERIC".to_string(),
+                        Literal::String(_) => "STRING".to_string(),
+                        Literal::Bytes(_) => "BYTES".to_string(),
+                        Literal::Date(_) => "DATE".to_string(),
+                        Literal::Time(_) => "TIME".to_string(),
+                        Literal::Timestamp(_) => "TIMESTAMP".to_string(),
+                        Literal::Datetime(_) => "DATETIME".to_string(),
+                        Literal::Interval { .. } => "INTERVAL".to_string(),
+                        Literal::Array(_) => "ARRAY".to_string(),
+                        Literal::Struct(_) => "STRUCT".to_string(),
+                        Literal::Json(_) => "JSON".to_string(),
+                    }
+                } else {
+                    "UNKNOWN".to_string()
+                }
+            }
+            _ => "UNKNOWN".to_string(),
+        },
+        Expr::StructAccess { expr, field } => match expr.as_ref() {
+            Expr::Struct { fields } => {
+                for (name, value) in fields {
+                    if name.as_ref().map(|n| n == field).unwrap_or(false) {
+                        return compute_typeof_result(value);
+                    }
+                }
+                "UNKNOWN".to_string()
+            }
+            Expr::Literal(Literal::Struct(fields)) => {
+                for (name, value) in fields {
+                    if name == field {
+                        return match value {
+                            Literal::Null => "NULL".to_string(),
+                            Literal::Bool(_) => "BOOL".to_string(),
+                            Literal::Int64(_) => "INT64".to_string(),
+                            Literal::Float64(_) => "FLOAT64".to_string(),
+                            Literal::Numeric(_) => "NUMERIC".to_string(),
+                            Literal::BigNumeric(_) => "BIGNUMERIC".to_string(),
+                            Literal::String(_) => "STRING".to_string(),
+                            Literal::Bytes(_) => "BYTES".to_string(),
+                            Literal::Date(_) => "DATE".to_string(),
+                            Literal::Time(_) => "TIME".to_string(),
+                            Literal::Timestamp(_) => "TIMESTAMP".to_string(),
+                            Literal::Datetime(_) => "DATETIME".to_string(),
+                            Literal::Interval { .. } => "INTERVAL".to_string(),
+                            Literal::Array(_) => "ARRAY".to_string(),
+                            Literal::Struct(_) => "STRUCT".to_string(),
+                            Literal::Json(_) => "JSON".to_string(),
+                        };
+                    }
+                }
+                "UNKNOWN".to_string()
+            }
+            _ => "UNKNOWN".to_string(),
+        },
+        Expr::Struct { .. } => "STRUCT".to_string(),
+        Expr::Array { .. } => "ARRAY".to_string(),
+        Expr::Subquery(_) => "UNKNOWN".to_string(),
+        Expr::ScalarSubquery(_) => "UNKNOWN".to_string(),
+        Expr::ArraySubquery(_) => "ARRAY".to_string(),
+        Expr::Placeholder { .. } => "UNKNOWN".to_string(),
+        Expr::Parameter { .. } => "UNKNOWN".to_string(),
+        Expr::Variable { .. } => "UNKNOWN".to_string(),
+        Expr::Lambda { .. } => "UNKNOWN".to_string(),
+        Expr::AtTimeZone { .. } => "TIMESTAMP".to_string(),
+        Expr::JsonAccess { .. } => "JSON".to_string(),
+        Expr::Default => "UNKNOWN".to_string(),
+        Expr::Extract { .. } => "INT64".to_string(),
+        Expr::Substring { .. } => "STRING".to_string(),
+        Expr::Trim { .. } => "STRING".to_string(),
+        Expr::Position { .. } => "INT64".to_string(),
+        Expr::Overlay { .. } => "STRING".to_string(),
+        Expr::TypedString { data_type, .. } => data_type_to_bigquery_name(data_type),
+        Expr::Interval { .. } => "INTERVAL".to_string(),
+        Expr::Alias { expr, .. } => compute_typeof_result(expr),
+        Expr::Wildcard { .. } => "UNKNOWN".to_string(),
+    }
+}
+
+fn data_type_to_bigquery_name(dt: &DataType) -> String {
+    match dt {
+        DataType::Unknown => "NULL".to_string(),
+        DataType::Bool => "BOOL".to_string(),
+        DataType::Int64 => "INT64".to_string(),
+        DataType::Float64 => "FLOAT64".to_string(),
+        DataType::Numeric(_) => "NUMERIC".to_string(),
+        DataType::BigNumeric => "BIGNUMERIC".to_string(),
+        DataType::String => "STRING".to_string(),
+        DataType::Bytes => "BYTES".to_string(),
+        DataType::Date => "DATE".to_string(),
+        DataType::Time => "TIME".to_string(),
+        DataType::Timestamp => "TIMESTAMP".to_string(),
+        DataType::DateTime => "DATETIME".to_string(),
+        DataType::Interval => "INTERVAL".to_string(),
+        DataType::Array(_) => "ARRAY".to_string(),
+        DataType::Struct(_) => "STRUCT".to_string(),
+        DataType::Json => "JSON".to_string(),
+        DataType::Geography => "GEOGRAPHY".to_string(),
+        DataType::Range(_) => "RANGE".to_string(),
+    }
+}
+
+fn scalar_function_return_type(func: &ScalarFunction, args: &[Expr]) -> String {
+    match func {
+        ScalarFunction::Upper
+        | ScalarFunction::Lower
+        | ScalarFunction::Trim
+        | ScalarFunction::LTrim
+        | ScalarFunction::RTrim
+        | ScalarFunction::Substr
+        | ScalarFunction::Replace
+        | ScalarFunction::Repeat
+        | ScalarFunction::Reverse
+        | ScalarFunction::Left
+        | ScalarFunction::Right
+        | ScalarFunction::Lpad
+        | ScalarFunction::Rpad
+        | ScalarFunction::Format
+        | ScalarFunction::Concat
+        | ScalarFunction::Chr
+        | ScalarFunction::Initcap
+        | ScalarFunction::Normalize
+        | ScalarFunction::NormalizeAndCasefold
+        | ScalarFunction::Translate
+        | ScalarFunction::RegexpReplace
+        | ScalarFunction::RegexpExtract
+        | ScalarFunction::ToBase32
+        | ScalarFunction::FromBase32
+        | ScalarFunction::ToBase64
+        | ScalarFunction::FromBase64
+        | ScalarFunction::ToHex
+        | ScalarFunction::FromHex
+        | ScalarFunction::Soundex
+        | ScalarFunction::Unicode
+        | ScalarFunction::SafeConvertBytesToString
+        | ScalarFunction::ToJsonString
+        | ScalarFunction::JsonType
+        | ScalarFunction::NetHost
+        | ScalarFunction::NetPublicSuffix
+        | ScalarFunction::NetRegDomain
+        | ScalarFunction::NetIpFromString
+        | ScalarFunction::NetIpToString
+        | ScalarFunction::TypeOf
+        | ScalarFunction::SessionUser
+        | ScalarFunction::String
+        | ScalarFunction::FormatDate
+        | ScalarFunction::FormatTimestamp
+        | ScalarFunction::FormatDatetime
+        | ScalarFunction::FormatTime
+        | ScalarFunction::ArrayToString
+        | ScalarFunction::RegexpSubstr
+        | ScalarFunction::CodePointsToString
+        | ScalarFunction::GenerateUuid
+        | ScalarFunction::LaxString
+        | ScalarFunction::ConvertBytesToString => "STRING".to_string(),
+
+        ScalarFunction::Length
+        | ScalarFunction::CharLength
+        | ScalarFunction::ByteLength
+        | ScalarFunction::Ascii
+        | ScalarFunction::Instr
+        | ScalarFunction::Strpos
+        | ScalarFunction::Abs
+        | ScalarFunction::Ceil
+        | ScalarFunction::Floor
+        | ScalarFunction::Round
+        | ScalarFunction::Trunc
+        | ScalarFunction::Sign
+        | ScalarFunction::Mod
+        | ScalarFunction::Div
+        | ScalarFunction::BitCount
+        | ScalarFunction::NetIpNetMask
+        | ScalarFunction::NetIpTrunc
+        | ScalarFunction::NetSafeIpFromString
+        | ScalarFunction::DateDiff
+        | ScalarFunction::UnixDate
+        | ScalarFunction::UnixSeconds
+        | ScalarFunction::UnixMillis
+        | ScalarFunction::UnixMicros
+        | ScalarFunction::ArrayLength
+        | ScalarFunction::ArrayOffset
+        | ScalarFunction::ArrayOrdinal
+        | ScalarFunction::SafeOffset
+        | ScalarFunction::SafeOrdinal
+        | ScalarFunction::StartsWith
+        | ScalarFunction::EndsWith
+        | ScalarFunction::Contains
+        | ScalarFunction::ContainsSubstr
+        | ScalarFunction::RegexpContains
+        | ScalarFunction::RegexpInstr
+        | ScalarFunction::Extract
+        | ScalarFunction::ArrayPosition
+        | ScalarFunction::EditDistance
+        | ScalarFunction::JsonArrayLength
+        | ScalarFunction::LaxInt64 => "INT64".to_string(),
+
+        ScalarFunction::Sqrt
+        | ScalarFunction::Power
+        | ScalarFunction::Pow
+        | ScalarFunction::Exp
+        | ScalarFunction::Ln
+        | ScalarFunction::Log
+        | ScalarFunction::Log10
+        | ScalarFunction::Sin
+        | ScalarFunction::Cos
+        | ScalarFunction::Tan
+        | ScalarFunction::Asin
+        | ScalarFunction::Acos
+        | ScalarFunction::Atan
+        | ScalarFunction::Atan2
+        | ScalarFunction::Sinh
+        | ScalarFunction::Cosh
+        | ScalarFunction::Tanh
+        | ScalarFunction::Asinh
+        | ScalarFunction::Acosh
+        | ScalarFunction::Atanh
+        | ScalarFunction::Pi
+        | ScalarFunction::Rand
+        | ScalarFunction::RandCanonical
+        | ScalarFunction::Cbrt
+        | ScalarFunction::Cot
+        | ScalarFunction::Csc
+        | ScalarFunction::Sec
+        | ScalarFunction::Coth
+        | ScalarFunction::Csch
+        | ScalarFunction::Sech
+        | ScalarFunction::IsNan
+        | ScalarFunction::IsInf
+        | ScalarFunction::CosineDistance
+        | ScalarFunction::EuclideanDistance
+        | ScalarFunction::IeeeDivide
+        | ScalarFunction::SafeDivide
+        | ScalarFunction::LaxFloat64 => "FLOAT64".to_string(),
+
+        ScalarFunction::CurrentDate
+        | ScalarFunction::DateAdd
+        | ScalarFunction::DateSub
+        | ScalarFunction::DateFromUnixDate
+        | ScalarFunction::DateTrunc
+        | ScalarFunction::Date
+        | ScalarFunction::LastDay
+        | ScalarFunction::ParseDate
+        | ScalarFunction::DateBucket => "DATE".to_string(),
+
+        ScalarFunction::CurrentTime
+        | ScalarFunction::Time
+        | ScalarFunction::TimeTrunc
+        | ScalarFunction::ParseTime => "TIME".to_string(),
+
+        ScalarFunction::CurrentTimestamp
+        | ScalarFunction::TimestampTrunc
+        | ScalarFunction::Timestamp
+        | ScalarFunction::TimestampSeconds
+        | ScalarFunction::TimestampMillis
+        | ScalarFunction::TimestampMicros
+        | ScalarFunction::ParseTimestamp
+        | ScalarFunction::TimestampBucket => "TIMESTAMP".to_string(),
+
+        ScalarFunction::CurrentDatetime
+        | ScalarFunction::Datetime
+        | ScalarFunction::DatetimeTrunc
+        | ScalarFunction::ParseDatetime
+        | ScalarFunction::DatetimeBucket => "DATETIME".to_string(),
+
+        ScalarFunction::MakeInterval
+        | ScalarFunction::JustifyDays
+        | ScalarFunction::JustifyHours
+        | ScalarFunction::JustifyInterval => "INTERVAL".to_string(),
+
+        ScalarFunction::ParseJson
+        | ScalarFunction::JsonValue
+        | ScalarFunction::JsonExtract
+        | ScalarFunction::JsonQuery
+        | ScalarFunction::JsonExtractScalar
+        | ScalarFunction::ToJson
+        | ScalarFunction::Int64FromJson
+        | ScalarFunction::Float64FromJson
+        | ScalarFunction::BoolFromJson
+        | ScalarFunction::StringFromJson => "JSON".to_string(),
+
+        ScalarFunction::SafeNegate
+        | ScalarFunction::SafeMultiply
+        | ScalarFunction::SafeAdd
+        | ScalarFunction::SafeSubtract => "NUMERIC".to_string(),
+
+        ScalarFunction::Coalesce
+        | ScalarFunction::IfNull
+        | ScalarFunction::Ifnull
+        | ScalarFunction::NullIf
+        | ScalarFunction::If
+        | ScalarFunction::Nvl
+        | ScalarFunction::Nvl2
+        | ScalarFunction::Zeroifnull
+        | ScalarFunction::Greatest
+        | ScalarFunction::Least => {
+            if let Some(first_arg) = args.first() {
+                compute_typeof_result(first_arg)
+            } else {
+                "NULL".to_string()
+            }
+        }
+
+        ScalarFunction::GenerateArray
+        | ScalarFunction::GenerateDateArray
+        | ScalarFunction::GenerateTimestampArray
+        | ScalarFunction::ArrayConcat
+        | ScalarFunction::ArrayReverse
+        | ScalarFunction::JsonExtractArray
+        | ScalarFunction::JsonQueryArray
+        | ScalarFunction::JsonExtractStringArray
+        | ScalarFunction::JsonValueArray
+        | ScalarFunction::Split
+        | ScalarFunction::RegexpExtractAll
+        | ScalarFunction::JsonKeys
+        | ScalarFunction::ToCodePoints
+        | ScalarFunction::CodePointsToBytes
+        | ScalarFunction::ArraySlice
+        | ScalarFunction::ArrayFlatten
+        | ScalarFunction::ArrayDistinct
+        | ScalarFunction::ArrayCompact
+        | ScalarFunction::ArraySort
+        | ScalarFunction::ArrayZip
+        | ScalarFunction::ArrayFilter
+        | ScalarFunction::ArrayTransform
+        | ScalarFunction::ArrayFirstN
+        | ScalarFunction::ArrayLastN
+        | ScalarFunction::MapKeys
+        | ScalarFunction::MapValues => "ARRAY".to_string(),
+
+        ScalarFunction::ArrayFirst
+        | ScalarFunction::ArrayLast
+        | ScalarFunction::ArrayMin
+        | ScalarFunction::ArrayMax
+        | ScalarFunction::ArraySum
+        | ScalarFunction::ArrayAvg => {
+            if let Some(first_arg) = args.first() {
+                let arr_type = compute_typeof_result(first_arg);
+                if arr_type == "ARRAY" {
+                    "UNKNOWN".to_string()
+                } else {
+                    arr_type
+                }
+            } else {
+                "UNKNOWN".to_string()
+            }
+        }
+
+        ScalarFunction::ArrayContains
+        | ScalarFunction::ArrayIncludes
+        | ScalarFunction::ArrayIncludesAny
+        | ScalarFunction::ArrayIncludesAll
+        | ScalarFunction::LaxBool => "BOOL".to_string(),
+
+        ScalarFunction::Struct | ScalarFunction::Map => "STRUCT".to_string(),
+
+        ScalarFunction::Range | ScalarFunction::RangeBucket => "RANGE".to_string(),
+
+        ScalarFunction::Md5
+        | ScalarFunction::Sha1
+        | ScalarFunction::Sha256
+        | ScalarFunction::Sha512
+        | ScalarFunction::FarmFingerprint => "BYTES".to_string(),
+
+        ScalarFunction::Error => "NULL".to_string(),
+
+        ScalarFunction::Unnest
+        | ScalarFunction::Cast
+        | ScalarFunction::SafeCast
+        | ScalarFunction::SafeConvert
+        | ScalarFunction::Custom(_) => "UNKNOWN".to_string(),
+
+        _ => "UNKNOWN".to_string(),
+    }
+}
+
+fn aggregate_function_return_type(func: &AggregateFunction, args: &[Expr]) -> String {
+    match func {
+        AggregateFunction::Count
+        | AggregateFunction::CountIf
+        | AggregateFunction::Grouping
+        | AggregateFunction::GroupingId
+        | AggregateFunction::ApproxCountDistinct => "INT64".to_string(),
+        AggregateFunction::Sum | AggregateFunction::SumIf => {
+            if let Some(first_arg) = args.first() {
+                let arg_type = compute_typeof_result(first_arg);
+                if arg_type == "FLOAT64" {
+                    "FLOAT64".to_string()
+                } else if arg_type == "NUMERIC" {
+                    "NUMERIC".to_string()
+                } else {
+                    "INT64".to_string()
+                }
+            } else {
+                "INT64".to_string()
+            }
+        }
+        AggregateFunction::Avg
+        | AggregateFunction::AvgIf
+        | AggregateFunction::Stddev
+        | AggregateFunction::StddevPop
+        | AggregateFunction::StddevSamp
+        | AggregateFunction::Variance
+        | AggregateFunction::VarPop
+        | AggregateFunction::VarSamp
+        | AggregateFunction::Corr
+        | AggregateFunction::CovarPop
+        | AggregateFunction::CovarSamp => "FLOAT64".to_string(),
+        AggregateFunction::Min
+        | AggregateFunction::MinIf
+        | AggregateFunction::Max
+        | AggregateFunction::MaxIf
+        | AggregateFunction::AnyValue => {
+            if let Some(first_arg) = args.first() {
+                compute_typeof_result(first_arg)
+            } else {
+                "NULL".to_string()
+            }
+        }
+        AggregateFunction::ArrayAgg
+        | AggregateFunction::ApproxQuantiles
+        | AggregateFunction::ApproxTopCount
+        | AggregateFunction::ApproxTopSum => "ARRAY".to_string(),
+        AggregateFunction::StringAgg | AggregateFunction::XmlAgg => "STRING".to_string(),
+        AggregateFunction::LogicalAnd | AggregateFunction::LogicalOr => "BOOL".to_string(),
+        AggregateFunction::BitAnd | AggregateFunction::BitOr | AggregateFunction::BitXor => {
+            "INT64".to_string()
+        }
+    }
+}
+
+fn window_function_return_type(func: &WindowFunction, args: &[Expr]) -> String {
+    match func {
+        WindowFunction::RowNumber
+        | WindowFunction::Rank
+        | WindowFunction::DenseRank
+        | WindowFunction::Ntile => "INT64".to_string(),
+        WindowFunction::CumeDist | WindowFunction::PercentRank => "FLOAT64".to_string(),
+        WindowFunction::Lead
+        | WindowFunction::Lag
+        | WindowFunction::FirstValue
+        | WindowFunction::LastValue
+        | WindowFunction::NthValue => {
+            if let Some(first_arg) = args.first() {
+                compute_typeof_result(first_arg)
+            } else {
+                "NULL".to_string()
+            }
+        }
+    }
 }
