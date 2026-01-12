@@ -21,11 +21,11 @@ pub use pass::{OptimizationPass, PassOverhead, PassTarget};
 pub use planner::{
     PhysicalPlanner, ProjectionPushdown, apply_cross_to_hash_join, apply_distinct_elimination,
     apply_empty_propagation, apply_filter_merging, apply_filter_pushdown_aggregate,
-    apply_filter_pushdown_join, apply_filter_pushdown_project, apply_limit_pushdown,
-    apply_outer_to_inner_join, apply_predicate_inference, apply_predicate_simplification,
-    apply_project_merging, apply_short_circuit_ordering, apply_sort_elimination,
-    apply_sort_pushdown_project, apply_topn_pushdown, apply_trivial_predicate_removal,
-    fold_constants,
+    apply_filter_pushdown_join, apply_filter_pushdown_project, apply_join_elimination,
+    apply_limit_pushdown, apply_outer_to_inner_join, apply_predicate_inference,
+    apply_predicate_simplification, apply_project_merging, apply_short_circuit_ordering,
+    apply_sort_elimination, apply_sort_pushdown_project, apply_topn_pushdown,
+    apply_trivial_predicate_removal, fold_constants,
 };
 use rustc_hash::FxHashMap;
 pub use stats::{ColumnStats, TableStats};
@@ -61,6 +61,7 @@ pub struct RuleFlags {
     pub topn_pushdown: Option<bool>,
     pub predicate_inference: Option<bool>,
     pub short_circuit_ordering: Option<bool>,
+    pub join_elimination: Option<bool>,
 }
 
 impl RuleFlags {
@@ -83,6 +84,7 @@ impl RuleFlags {
             topn_pushdown: Some(true),
             predicate_inference: Some(true),
             short_circuit_ordering: Some(true),
+            join_elimination: Some(true),
         }
     }
 
@@ -105,6 +107,7 @@ impl RuleFlags {
             topn_pushdown: Some(false),
             predicate_inference: Some(false),
             short_circuit_ordering: Some(false),
+            join_elimination: Some(false),
         }
     }
 
@@ -128,6 +131,7 @@ impl RuleFlags {
             "topn_pushdown" => flags.topn_pushdown = Some(true),
             "predicate_inference" => flags.predicate_inference = Some(true),
             "short_circuit_ordering" => flags.short_circuit_ordering = Some(true),
+            "join_elimination" => flags.join_elimination = Some(true),
             _ => {}
         }
         flags
@@ -290,6 +294,9 @@ pub fn optimize_with_settings(
         OptimizationLevel::Standard,
     ) {
         physical_plan = apply_outer_to_inner_join(physical_plan);
+    }
+    if settings.rule_enabled(settings.rules.join_elimination, OptimizationLevel::Standard) {
+        physical_plan = apply_join_elimination(physical_plan);
     }
     if settings.rule_enabled(
         settings.rules.filter_pushdown_join,
