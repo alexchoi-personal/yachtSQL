@@ -23,7 +23,9 @@ pub enum Error {
     UnsupportedExpression(String),
     InvalidLiteral(String),
     InvalidFunction(String),
-    DivisionByZero,
+    DivisionByZero {
+        context: String,
+    },
     Overflow,
     Internal(String),
     IntervalOverflow {
@@ -32,9 +34,6 @@ pub enum Error {
     },
     NumericOverflow {
         operation: String,
-    },
-    DivisionByZeroWithContext {
-        context: String,
     },
     TypeCoercionFailed {
         from: String,
@@ -177,8 +176,14 @@ impl Error {
         }
     }
 
+    pub fn division_by_zero() -> Self {
+        Error::DivisionByZero {
+            context: String::new(),
+        }
+    }
+
     pub fn division_by_zero_ctx(context: impl Into<String>) -> Self {
-        Error::DivisionByZeroWithContext {
+        Error::DivisionByZero {
             context: context.into(),
         }
     }
@@ -307,7 +312,13 @@ impl fmt::Display for Error {
             Error::UnsupportedExpression(msg) => write!(f, "Unsupported expression: {}", msg),
             Error::InvalidLiteral(msg) => write!(f, "Invalid literal: {}", msg),
             Error::InvalidFunction(msg) => write!(f, "Invalid function: {}", msg),
-            Error::DivisionByZero => write!(f, "Division by zero"),
+            Error::DivisionByZero { context } => {
+                if context.is_empty() {
+                    write!(f, "Division by zero")
+                } else {
+                    write!(f, "Division by zero: {}", context)
+                }
+            }
             Error::Overflow => write!(f, "Numeric overflow"),
             Error::Internal(msg) => write!(f, "Internal error: {}", msg),
             Error::IntervalOverflow { operation, value } => {
@@ -315,9 +326,6 @@ impl fmt::Display for Error {
             }
             Error::NumericOverflow { operation } => {
                 write!(f, "Numeric overflow in {}", operation)
-            }
-            Error::DivisionByZeroWithContext { context } => {
-                write!(f, "Division by zero: {}", context)
             }
             Error::TypeCoercionFailed { from, to, value } => {
                 write!(f, "Cannot coerce {} from {} to {}", value, from, to)
@@ -500,7 +508,7 @@ mod tests {
             format!("{}", Error::InvalidFunction("test".to_string())),
             "Invalid function: test"
         );
-        assert_eq!(format!("{}", Error::DivisionByZero), "Division by zero");
+        assert_eq!(format!("{}", Error::division_by_zero()), "Division by zero");
         assert_eq!(format!("{}", Error::Overflow), "Numeric overflow");
         assert_eq!(
             format!("{}", Error::Internal("test".to_string())),

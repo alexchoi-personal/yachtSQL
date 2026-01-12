@@ -21,7 +21,11 @@ use crate::physical_planner::PhysicalPlanner;
 use crate::plan::PhysicalPlanExt;
 use crate::plan_cache::{CacheInvalidation, PlanCache, get_cache_invalidation};
 
-const PLAN_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10000).unwrap();
+const PLAN_CACHE_SIZE: NonZeroUsize = {
+    const VALUE: usize = 10000;
+    const { assert!(VALUE > 0, "PLAN_CACHE_SIZE must be non-zero") };
+    unsafe { NonZeroUsize::new_unchecked(VALUE) }
+};
 
 fn preprocess_range_types(sql: &str) -> String {
     lazy_static! {

@@ -304,14 +304,14 @@ pub fn modulo(a: &Value, b: &Value) -> Result<Value> {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
         (Value::Int64(a), Value::Int64(b)) => {
             if *b == 0 {
-                Err(Error::DivisionByZero)
+                Err(Error::division_by_zero())
             } else {
                 Ok(Value::Int64(a % b))
             }
         }
         (Value::Float64(a), Value::Float64(b)) => {
             if b.0 == 0.0 {
-                Err(Error::DivisionByZero)
+                Err(Error::division_by_zero())
             } else {
                 Ok(Value::Float64(ordered_float::OrderedFloat(a.0 % b.0)))
             }

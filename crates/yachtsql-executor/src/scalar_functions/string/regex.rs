@@ -11,10 +11,15 @@ use yachtsql_common::types::Value;
 
 const MAX_PATTERN_LENGTH: usize = 10_000;
 const REGEX_SIZE_LIMIT: usize = 10 * 1024 * 1024;
+const REGEX_CACHE_SIZE: NonZeroUsize = {
+    const VALUE: usize = 256;
+    const { assert!(VALUE > 0, "REGEX_CACHE_SIZE must be non-zero") };
+    unsafe { NonZeroUsize::new_unchecked(VALUE) }
+};
 
 thread_local! {
     static REGEX_CACHE: RefCell<LruCache<String, Arc<Regex>>> =
-        RefCell::new(LruCache::new(NonZeroUsize::new(256).expect("256 > 0")));
+        RefCell::new(LruCache::new(REGEX_CACHE_SIZE));
 }
 
 fn build_regex(pattern: &str) -> Result<Arc<Regex>> {
