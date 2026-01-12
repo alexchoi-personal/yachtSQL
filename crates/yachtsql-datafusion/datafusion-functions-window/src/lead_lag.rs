@@ -19,8 +19,7 @@
 
 use crate::utils::{get_default_expr, get_scalar_value_from_args, get_signed_integer};
 use datafusion_common::arrow::array::ArrayRef;
-use datafusion_common::arrow::datatypes::{DataType, Field, Schema};
-use datafusion_common::arrow::record_batch::RecordBatch;
+use datafusion_common::arrow::datatypes::{DataType, Field};
 use datafusion_common::{arrow_datafusion_err, DataFusionError, Result, ScalarValue};
 use datafusion_expr::window_doc_sections::DOC_SECTION_ANALYTICAL;
 use datafusion_expr::{
@@ -30,6 +29,7 @@ use datafusion_expr::{
 use datafusion_functions_window_common::expr::ExpressionArgs;
 use datafusion_functions_window_common::field::WindowUDFFieldArgs;
 use datafusion_functions_window_common::partition::PartitionEvaluatorArgs;
+use datafusion_physical_expr::expressions::Literal as PhysicalLiteral;
 use datafusion_physical_expr_common::physical_expr::PhysicalExpr;
 use std::any::Any;
 use std::cmp::min;
@@ -201,9 +201,17 @@ impl WindowUDFImpl for WindowShift {
     ///
     /// For more details see: <https://github.com/apache/datafusion/issues/12717>
     fn expressions(&self, expr_args: ExpressionArgs) -> Vec<Arc<dyn PhysicalExpr>> {
-        parse_expr(expr_args.input_exprs(), expr_args.input_types())
+        let mut result: Vec<Arc<dyn PhysicalExpr>> = parse_expr(expr_args.input_exprs(), expr_args.input_types())
             .into_iter()
-            .collect::<Vec<_>>()
+            .collect();
+
+        if let Some(default_expr) = expr_args.input_exprs().get(2) {
+            if default_expr.as_any().downcast_ref::<PhysicalLiteral>().is_none() {
+                result.push(Arc::clone(default_expr));
+            }
+        }
+
+        result
     }
 
     fn partition_evaluator(
@@ -360,27 +368,10 @@ impl WindowShiftEvaluator {
     }
 
     fn get_default_at_row(&self, values: &[ArrayRef], row_idx: usize) -> Result<ScalarValue> {
-        match &self.default_expr {
-            Some(expr) => {
-                let fields: Vec<Field> = values
-                    .iter()
-                    .enumerate()
-                    .map(|(i, arr)| Field::new(format!("c{}", i), arr.data_type().clone(), true))
-                    .collect();
-                let schema = Schema::new(fields);
-                let batch = RecordBatch::try_new(Arc::new(schema), values.to_vec())
-                    .map_err(|e| arrow_datafusion_err!(e))?;
-                match expr.evaluate(&batch) {
-                    Ok(result) => match result {
-                        datafusion_expr::ColumnarValue::Array(arr) => {
-                            ScalarValue::try_from_array(&arr, row_idx)
-                        }
-                        datafusion_expr::ColumnarValue::Scalar(val) => Ok(val),
-                    },
-                    Err(_) => Ok(self.default_value.clone()),
-                }
-            }
-            None => Ok(self.default_value.clone()),
+        if self.default_expr.is_some() && values.len() > 1 {
+            ScalarValue::try_from_array(&values[1], row_idx)
+        } else {
+            Ok(self.default_value.clone())
         }
     }
 }
@@ -620,10 +611,19 @@ impl PartitionEvaluator for WindowShiftEvaluator {
     fn evaluate_all(
         &mut self,
         values: &[ArrayRef],
-        _num_rows: usize,
+        num_rows: usize,
     ) -> Result<ArrayRef> {
-        // LEAD, LAG window functions take single column, values will have size 1
         let value = &values[0];
+
+        if self.default_expr.is_some() {
+            let mut results = Vec::with_capacity(num_rows);
+            for idx in 0..num_rows {
+                let range = self.get_range(idx, num_rows)?;
+                results.push(self.evaluate(values, &range)?);
+            }
+            return ScalarValue::iter_to_array(results);
+        }
+
         if !self.ignore_nulls {
             shift_with_default_value(value, self.shift_offset, &self.default_value)
         } else {

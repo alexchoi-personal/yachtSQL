@@ -1030,6 +1030,12 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             let arg = args.into_iter().next().unwrap();
             Ok(farm_fingerprint_udf().call(vec![arg]))
         }
+        ScalarFunction::RangeBucket => {
+            let mut iter = args.into_iter();
+            let point = iter.next().unwrap();
+            let buckets = iter.next().unwrap();
+            Ok(range_bucket_udf().call(vec![point, buckets]))
+        }
 
         ScalarFunction::ToBase64 => Ok(datafusion::functions::encoding::expr_fn::encode(
             args.into_iter().next().unwrap(),
@@ -1365,6 +1371,13 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             Ok(datafusion::functions::regex::expr_fn::regexp_match(
                 s, pattern, None,
             ))
+        }
+
+        ScalarFunction::RegexpExtractAll => {
+            let mut iter = args.into_iter();
+            let s = iter.next().unwrap();
+            let pattern = iter.next().unwrap();
+            Ok(regexp_extract_all_udf().call(vec![s, pattern]))
         }
 
         ScalarFunction::RegexpReplace => {
@@ -1950,6 +1963,8 @@ fn convert_aggregate_function(
             let condition = iter.next().unwrap_or(lit(true));
             return min_max::max(expr).filter(condition).build();
         }
+        AggregateFunction::Grouping => grouping::grouping(args.into_iter().next().unwrap()),
+        AggregateFunction::GroupingId => grouping::grouping(args.into_iter().next().unwrap()),
         _ => {
             return Err(datafusion::common::DataFusionError::NotImplemented(
                 format!("Aggregate function not implemented: {:?}", func),
@@ -2001,6 +2016,9 @@ fn get_aggregate_udaf(
         AggregateFunction::CovarPop => Ok(covariance::covar_pop_udaf()),
         AggregateFunction::CovarSamp => Ok(covariance::covar_samp_udaf()),
         AggregateFunction::ApproxCountDistinct => Ok(approx_distinct::approx_distinct_udaf()),
+        AggregateFunction::Grouping | AggregateFunction::GroupingId => {
+            Ok(grouping::grouping_udaf())
+        }
         _ => Err(datafusion::common::DataFusionError::NotImplemented(
             format!("Aggregate UDAF not implemented: {:?}", func),
         )),
@@ -4749,4 +4767,280 @@ fn farm_fingerprint_udf() -> datafusion::logical_expr::ScalarUDF {
     }
 
     ScalarUDF::from(FarmFingerprintUdf::new())
+}
+
+fn range_bucket_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{
+        Array, ArrayRef, Float64Array, Int64Array, Int64Builder, ListArray,
+    };
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+
+    #[derive(Debug)]
+    struct RangeBucketUdf {
+        signature: Signature,
+    }
+
+    impl RangeBucketUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::any(2, Volatility::Immutable),
+            }
+        }
+
+        fn find_bucket_f64(point: f64, buckets: &[f64]) -> i64 {
+            for (i, &b) in buckets.iter().enumerate() {
+                if point < b {
+                    return i as i64;
+                }
+            }
+            buckets.len() as i64
+        }
+
+        fn find_bucket_i64(point: i64, buckets: &[i64]) -> i64 {
+            for (i, &b) in buckets.iter().enumerate() {
+                if point < b {
+                    return i as i64;
+                }
+            }
+            buckets.len() as i64
+        }
+    }
+
+    impl ScalarUDFImpl for RangeBucketUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "range_bucket"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Int64)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let point_arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let buckets_arr = match &args[1] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            if point_arr.data_type() == &ArrowDataType::Null
+                || buckets_arr.data_type() == &ArrowDataType::Null
+            {
+                let mut builder = Int64Builder::new();
+                for _ in 0..point_arr.len().max(num_rows) {
+                    builder.append_null();
+                }
+                return Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef));
+            }
+
+            let list_arr = buckets_arr
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "range_bucket: expected array for buckets".to_string(),
+                    )
+                })?;
+
+            let mut builder = Int64Builder::new();
+
+            if let Some(point_f64) = point_arr.as_any().downcast_ref::<Float64Array>() {
+                for i in 0..point_f64.len() {
+                    if point_f64.is_null(i) || list_arr.is_null(i) {
+                        builder.append_null();
+                        continue;
+                    }
+                    let point = point_f64.value(i);
+                    let inner = list_arr.value(i);
+                    let buckets_f64 =
+                        inner
+                            .as_any()
+                            .downcast_ref::<Float64Array>()
+                            .ok_or_else(|| {
+                                datafusion::common::DataFusionError::Internal(
+                                    "range_bucket: expected Float64Array for buckets".to_string(),
+                                )
+                            })?;
+                    if buckets_f64.null_count() > 0 {
+                        builder.append_null();
+                        continue;
+                    }
+                    let bucket_vals: Vec<f64> = (0..buckets_f64.len())
+                        .map(|j| buckets_f64.value(j))
+                        .collect();
+                    builder.append_value(Self::find_bucket_f64(point, &bucket_vals));
+                }
+            } else if let Some(point_i64) = point_arr.as_any().downcast_ref::<Int64Array>() {
+                for i in 0..point_i64.len() {
+                    if point_i64.is_null(i) || list_arr.is_null(i) {
+                        builder.append_null();
+                        continue;
+                    }
+                    let point = point_i64.value(i);
+                    let inner = list_arr.value(i);
+                    if let Some(buckets_i64) = inner.as_any().downcast_ref::<Int64Array>() {
+                        if buckets_i64.null_count() > 0 {
+                            builder.append_null();
+                            continue;
+                        }
+                        let bucket_vals: Vec<i64> = (0..buckets_i64.len())
+                            .map(|j| buckets_i64.value(j))
+                            .collect();
+                        builder.append_value(Self::find_bucket_i64(point, &bucket_vals));
+                    } else if let Some(buckets_f64) = inner.as_any().downcast_ref::<Float64Array>()
+                    {
+                        if buckets_f64.null_count() > 0 {
+                            builder.append_null();
+                            continue;
+                        }
+                        let bucket_vals: Vec<f64> = (0..buckets_f64.len())
+                            .map(|j| buckets_f64.value(j))
+                            .collect();
+                        builder.append_value(Self::find_bucket_f64(point as f64, &bucket_vals));
+                    } else {
+                        builder.append_null();
+                    }
+                }
+            } else {
+                return Err(datafusion::common::DataFusionError::Internal(
+                    "range_bucket: expected numeric point".to_string(),
+                ));
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(RangeBucketUdf::new())
+}
+
+fn regexp_extract_all_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{
+        Array, ArrayRef, GenericStringBuilder, ListBuilder, StringArray,
+    };
+    use datafusion::arrow::datatypes::Field;
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    };
+    use regex::Regex;
+
+    #[derive(Debug)]
+    struct RegexpExtractAllUdf {
+        signature: Signature,
+    }
+
+    impl RegexpExtractAllUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::any(2, Volatility::Immutable),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for RegexpExtractAllUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "regexp_extract_all"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::List(Arc::new(Field::new(
+                "item",
+                ArrowDataType::Utf8,
+                true,
+            ))))
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let s_arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+            let pattern_arr = match &args[1] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            if s_arr.data_type() == &ArrowDataType::Null {
+                let mut builder: ListBuilder<GenericStringBuilder<i32>> =
+                    ListBuilder::new(GenericStringBuilder::<i32>::new());
+                for _ in 0..num_rows {
+                    builder.append_null();
+                }
+                return Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef));
+            }
+
+            let s_strings = s_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "regexp_extract_all: expected string for first argument".to_string(),
+                    )
+                })?;
+            let pattern_strings = pattern_arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    datafusion::common::DataFusionError::Internal(
+                        "regexp_extract_all: expected string for pattern".to_string(),
+                    )
+                })?;
+
+            let mut builder: ListBuilder<GenericStringBuilder<i32>> =
+                ListBuilder::new(GenericStringBuilder::<i32>::new());
+
+            for i in 0..s_strings.len() {
+                if s_strings.is_null(i) || pattern_strings.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+
+                let s = s_strings.value(i);
+                let pattern = pattern_strings.value(i);
+
+                let re = match Regex::new(pattern) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        builder.append_null();
+                        continue;
+                    }
+                };
+
+                let has_capture_group = re.captures_len() > 1;
+
+                for cap in re.captures_iter(s) {
+                    let idx = if has_capture_group { 1 } else { 0 };
+                    if let Some(m) = cap.get(idx) {
+                        builder.values().append_value(m.as_str());
+                    }
+                }
+
+                builder.append(true);
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(RegexpExtractAllUdf::new())
 }
