@@ -458,17 +458,13 @@ fn try_unnest_in_subquery(
     let result_schema = outer_schema.clone();
 
     let adjusted_inner_expr = adjust_inner_column_indices(&inner_expr, outer_schema.fields.len());
-    let join_condition = Expr::BinaryOp {
-        left: Box::new(outer_expr.clone()),
-        op: BinaryOp::Eq,
-        right: Box::new(adjusted_inner_expr),
-    };
 
-    Some(PhysicalPlan::NestedLoopJoin {
+    Some(PhysicalPlan::HashJoin {
         left: Box::new(outer_input.clone()),
         right: Box::new(inner_physical),
         join_type,
-        condition: Some(join_condition),
+        left_keys: vec![outer_expr.clone()],
+        right_keys: vec![adjusted_inner_expr],
         schema: result_schema,
         parallel: false,
         hints: crate::ExecutionHints::default(),

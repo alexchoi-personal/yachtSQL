@@ -6098,6 +6098,78 @@ mod sql_optimizer_tests {
         }
     }
 
+    mod subquery_unnesting {
+        use super::*;
+
+        #[test]
+        fn in_subquery_becomes_left_semi_join() {
+            let plan = optimize_sql_default(
+                "SELECT id, amount
+                 FROM orders
+                 WHERE customer_id IN (SELECT id FROM customers WHERE country = 'USA')",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (TableScan {
+                            table_name: "orders"
+                        }),
+                        right: (_),
+                        join_type: JoinType::LeftSemi
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn not_in_subquery_becomes_left_anti_join() {
+            let plan = optimize_sql_default(
+                "SELECT id, amount
+                 FROM orders
+                 WHERE customer_id NOT IN (SELECT id FROM customers WHERE country = 'USA')",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (TableScan {
+                            table_name: "orders"
+                        }),
+                        right: (_),
+                        join_type: JoinType::LeftAnti
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn in_subquery_with_additional_predicate() {
+            let plan = optimize_sql_default(
+                "SELECT id, amount
+                 FROM orders
+                 WHERE customer_id IN (SELECT id FROM customers) AND amount > 100",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (Filter {
+                            input: (TableScan {
+                                table_name: "orders"
+                            })
+                        }),
+                        right: (_),
+                        join_type: JoinType::LeftSemi
+                    })
+                }
+            );
+        }
+    }
+
     mod filter_pushdown_aggregate {
         use super::*;
 

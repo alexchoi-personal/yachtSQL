@@ -208,6 +208,10 @@ fn disable_all_rules(executor: &AsyncQueryExecutor, rt: &Runtime) {
             .execute_sql("SET OPTIMIZER_SORT_PUSHDOWN_PROJECT = false")
             .await
             .unwrap();
+        executor
+            .execute_sql("SET OPTIMIZER_SUBQUERY_UNNESTING = false")
+            .await
+            .unwrap();
     });
 }
 
@@ -230,6 +234,16 @@ struct RuleBench {
 }
 
 const RULES: &[RuleBench] = &[
+    RuleBench {
+        name: "subquery_unnesting_in",
+        query: "SELECT id, name FROM users WHERE id IN (SELECT user_id FROM orders WHERE status = 'active')",
+        variants: &[("off", &[]), ("on", &["OPTIMIZER_SUBQUERY_UNNESTING"])],
+    },
+    RuleBench {
+        name: "subquery_unnesting_not_in",
+        query: "SELECT id, name FROM users WHERE id NOT IN (SELECT user_id FROM orders WHERE status = 'inactive')",
+        variants: &[("off", &[]), ("on", &["OPTIMIZER_SUBQUERY_UNNESTING"])],
+    },
     RuleBench {
         name: "trivial_predicate",
         query: "SELECT * FROM users WHERE 1 = 1 AND TRUE",
@@ -470,6 +484,10 @@ fn bench_all_rules_combined(c: &mut Criterion) {
                 .execute_sql("SET OPTIMIZER_SORT_PUSHDOWN_PROJECT = true")
                 .await
                 .unwrap();
+            executor
+                .execute_sql("SET OPTIMIZER_SUBQUERY_UNNESTING = true")
+                .await
+                .unwrap();
         });
 
         group.bench_with_input(BenchmarkId::new("all_on", scale), &scale, |b, _| {
@@ -522,11 +540,52 @@ fn bench_filter_pushdown_join_scale(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_subquery_unnesting_scale(c: &mut Criterion) {
+    let mut group = c.benchmark_group("subquery_unnesting_scale");
+    group.sample_size(10);
+
+    for scale in [5000, 10000, 25000] {
+        let rt = Runtime::new().unwrap();
+        let executor = AsyncQueryExecutor::new();
+        setup_data(&executor, &rt, scale);
+
+        let query_in = "SELECT id, name, country FROM users WHERE id IN (SELECT user_id FROM orders WHERE status = 'active' AND amount > 500)";
+        let query_not_in = "SELECT id, name, country FROM users WHERE id NOT IN (SELECT user_id FROM orders WHERE status = 'inactive')";
+
+        disable_all_rules(&executor, &rt);
+        group.bench_with_input(BenchmarkId::new("in_off", scale), &scale, |b, _| {
+            b.to_async(&rt)
+                .iter(|| async { executor.execute_sql(query_in).await.unwrap() });
+        });
+
+        enable_rules(&executor, &rt, &["OPTIMIZER_SUBQUERY_UNNESTING"]);
+        group.bench_with_input(BenchmarkId::new("in_on", scale), &scale, |b, _| {
+            b.to_async(&rt)
+                .iter(|| async { executor.execute_sql(query_in).await.unwrap() });
+        });
+
+        disable_all_rules(&executor, &rt);
+        group.bench_with_input(BenchmarkId::new("not_in_off", scale), &scale, |b, _| {
+            b.to_async(&rt)
+                .iter(|| async { executor.execute_sql(query_not_in).await.unwrap() });
+        });
+
+        enable_rules(&executor, &rt, &["OPTIMIZER_SUBQUERY_UNNESTING"]);
+        group.bench_with_input(BenchmarkId::new("not_in_on", scale), &scale, |b, _| {
+            b.to_async(&rt)
+                .iter(|| async { executor.execute_sql(query_not_in).await.unwrap() });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_rule_speedup,
     bench_all_rules_combined,
-    bench_filter_pushdown_join_scale
+    bench_filter_pushdown_join_scale,
+    bench_subquery_unnesting_scale
 );
 
 criterion_main!(benches);
