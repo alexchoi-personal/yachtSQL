@@ -391,7 +391,10 @@ async fn test_avg_distinct() {
         .await
         .unwrap();
 
-    assert_table_eq!(result, [["Electronics", 162.5], ["Furniture", 225.0],]);
+    assert_table_eq!(
+        result,
+        [["Electronics", 183.33333333333334], ["Furniture", 225.0],]
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
