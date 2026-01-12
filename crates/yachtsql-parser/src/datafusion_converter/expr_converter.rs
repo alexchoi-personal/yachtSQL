@@ -1400,6 +1400,11 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
             Ok(arg)
         }
 
+        ScalarFunction::NormalizeAndCasefold => {
+            let arg = args.into_iter().next().unwrap();
+            Ok(normalize_and_casefold_udf().call(vec![arg]))
+        }
+
         ScalarFunction::Int64FromJson => {
             let arg = args.into_iter().next().unwrap();
             Ok(int64_from_json_udf().call(vec![arg]))
@@ -5045,4 +5050,73 @@ fn regexp_extract_all_udf() -> datafusion::logical_expr::ScalarUDF {
     }
 
     ScalarUDF::from(RegexpExtractAllUdf::new())
+}
+
+fn normalize_and_casefold_udf() -> datafusion::logical_expr::ScalarUDF {
+    use datafusion::arrow::array::{Array, ArrayRef, StringArray, StringBuilder};
+    use datafusion::logical_expr::{
+        ColumnarValue, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature, Volatility,
+    };
+    use unicode_normalization::UnicodeNormalization;
+
+    #[derive(Debug)]
+    struct NormalizeAndCasefoldUdf {
+        signature: Signature,
+    }
+
+    impl NormalizeAndCasefoldUdf {
+        fn new() -> Self {
+            Self {
+                signature: Signature::new(
+                    TypeSignature::Exact(vec![ArrowDataType::Utf8]),
+                    Volatility::Immutable,
+                ),
+            }
+        }
+    }
+
+    impl ScalarUDFImpl for NormalizeAndCasefoldUdf {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn name(&self) -> &str {
+            "normalize_and_casefold"
+        }
+
+        fn signature(&self) -> &Signature {
+            &self.signature
+        }
+
+        fn return_type(&self, _args: &[ArrowDataType]) -> DFResult<ArrowDataType> {
+            Ok(ArrowDataType::Utf8)
+        }
+
+        fn invoke_batch(&self, args: &[ColumnarValue], num_rows: usize) -> DFResult<ColumnarValue> {
+            let arr = match &args[0] {
+                ColumnarValue::Array(arr) => arr.clone(),
+                ColumnarValue::Scalar(s) => s.to_array_of_size(num_rows)?,
+            };
+
+            let strs = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                datafusion::common::DataFusionError::Internal("Expected string array".to_string())
+            })?;
+
+            let mut builder = StringBuilder::new();
+            for i in 0..strs.len() {
+                if strs.is_null(i) {
+                    builder.append_null();
+                    continue;
+                }
+                let s = strs.value(i);
+                let normalized: String = s.nfkc().collect();
+                let casefolded = normalized.to_lowercase();
+                builder.append_value(casefolded);
+            }
+
+            Ok(ColumnarValue::Array(Arc::new(builder.finish()) as ArrayRef))
+        }
+    }
+
+    ScalarUDF::from(NormalizeAndCasefoldUdf::new())
 }
