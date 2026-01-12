@@ -371,8 +371,8 @@ fn classify_and_remap_predicates(
 
     let (can_push_left, can_push_right) = match join_type {
         JoinType::Inner | JoinType::Cross => (true, true),
-        JoinType::Left => (true, false),
-        JoinType::Right => (false, true),
+        JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti => (true, false),
+        JoinType::Right | JoinType::RightSemi | JoinType::RightAnti => (false, true),
         JoinType::Full => (false, false),
     };
 

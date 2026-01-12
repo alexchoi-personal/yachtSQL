@@ -85,7 +85,13 @@ impl PhysicalPlanner {
                         schema,
                     } if matches!(
                         join_type,
-                        JoinType::Inner | JoinType::Left | JoinType::Right
+                        JoinType::Inner
+                            | JoinType::Left
+                            | JoinType::Right
+                            | JoinType::LeftSemi
+                            | JoinType::RightSemi
+                            | JoinType::LeftAnti
+                            | JoinType::RightAnti
                     ) =>
                     {
                         let left_schema_len = left.schema().fields.len();
@@ -317,15 +323,21 @@ impl PhysicalPlanner {
                             hints: ExecutionHints::default(),
                         })
                     }
-                    JoinType::Inner | JoinType::Left | JoinType::Right | JoinType::Full => self
-                        .plan_equi_or_nested_join(
-                            left,
-                            right,
-                            *join_type,
-                            condition.as_ref(),
-                            schema,
-                            left_schema_len,
-                        ),
+                    JoinType::Inner
+                    | JoinType::Left
+                    | JoinType::Right
+                    | JoinType::Full
+                    | JoinType::LeftSemi
+                    | JoinType::RightSemi
+                    | JoinType::LeftAnti
+                    | JoinType::RightAnti => self.plan_equi_or_nested_join(
+                        left,
+                        right,
+                        *join_type,
+                        condition.as_ref(),
+                        schema,
+                        left_schema_len,
+                    ),
                 }
             }
 

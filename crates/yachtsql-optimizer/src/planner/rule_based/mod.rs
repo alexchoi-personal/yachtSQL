@@ -14,6 +14,7 @@ pub mod predicate_simplification;
 pub mod project_merging;
 pub mod sort_elimination;
 pub mod sort_pushdown_project;
+pub mod subquery_unnesting;
 pub mod topn_pushdown;
 pub mod trivial_predicate;
 
@@ -32,5 +33,6 @@ pub use predicate_simplification::apply_predicate_simplification;
 pub use project_merging::apply_project_merging;
 pub use sort_elimination::apply_sort_elimination;
 pub use sort_pushdown_project::apply_sort_pushdown_project;
+pub use subquery_unnesting::apply_subquery_unnesting;
 pub use topn_pushdown::apply_topn_pushdown;
 pub use trivial_predicate::apply_trivial_predicate_removal;

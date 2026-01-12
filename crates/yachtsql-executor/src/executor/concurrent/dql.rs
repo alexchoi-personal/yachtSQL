@@ -11,8 +11,6 @@ use yachtsql_optimizer::SampleType;
 use yachtsql_storage::{Column, Field, FieldMode, Record, Schema, Table};
 
 use super::{ConcurrentPlanExecutor, compare_values_for_sort};
-
-const PARALLEL_THRESHOLD: usize = 2000;
 use crate::columnar_evaluator::ColumnarEvaluator;
 use crate::executor::plan_schema_to_schema;
 use crate::plan::PhysicalPlan;
@@ -211,7 +209,8 @@ impl ConcurrentPlanExecutor {
                 .collect();
 
             let mut result = Table::empty(result_schema);
-            if self.is_parallel_enabled() && n >= PARALLEL_THRESHOLD {
+            let threshold = self.get_parallel_threshold();
+            if self.is_parallel_enabled() && n >= threshold {
                 let rows: Vec<Vec<Value>> = (0..n)
                     .into_par_iter()
                     .map(|row_idx| {
@@ -299,7 +298,8 @@ impl ConcurrentPlanExecutor {
             .map(|(_, c)| c.as_ref())
             .collect();
 
-        let sort_keys: Vec<Vec<Value>> = if self.is_parallel_enabled() && n >= PARALLEL_THRESHOLD {
+        let threshold = self.get_parallel_threshold();
+        let sort_keys: Vec<Vec<Value>> = if self.is_parallel_enabled() && n >= threshold {
             (0..n)
                 .into_par_iter()
                 .map(|idx| {
@@ -416,7 +416,8 @@ impl ConcurrentPlanExecutor {
             .map(|(_, c)| c.as_ref())
             .collect();
 
-        let sort_keys: Vec<Vec<Value>> = if self.is_parallel_enabled() && n >= PARALLEL_THRESHOLD {
+        let threshold = self.get_parallel_threshold();
+        let sort_keys: Vec<Vec<Value>> = if self.is_parallel_enabled() && n >= threshold {
             (0..n)
                 .into_par_iter()
                 .map(|idx| {

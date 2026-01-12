@@ -132,6 +132,19 @@ impl ConcurrentPlanExecutor {
         true
     }
 
+    pub(crate) fn get_parallel_threshold(&self) -> usize {
+        if let Some(val) = self
+            .variables
+            .read()
+            .ok()
+            .and_then(|v| v.get("PARALLEL_THRESHOLD").cloned())
+            && let Some(n) = val.as_i64()
+        {
+            return n.max(0) as usize;
+        }
+        2000
+    }
+
     pub(crate) fn get_user_functions(
         &self,
     ) -> std::sync::RwLockReadGuard<'_, FxHashMap<String, UserFunctionDef>> {

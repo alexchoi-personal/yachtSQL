@@ -93,23 +93,38 @@ impl AsyncQueryExecutor {
             .get_variable("OPTIMIZER_JOIN_REORDER")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let filter_pushdown = self
-            .session
-            .get_variable("OPTIMIZER_FILTER_PUSHDOWN")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let projection_pushdown = self
-            .session
-            .get_variable("OPTIMIZER_PROJECTION_PUSHDOWN")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
 
-        let level = if !filter_pushdown && !projection_pushdown {
-            OptimizationLevel::None
-        } else if filter_pushdown && projection_pushdown {
-            OptimizationLevel::Standard
+        let level = if let Some(level_str) = self
+            .session
+            .get_variable("OPTIMIZER_LEVEL")
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+        {
+            match level_str.to_uppercase().as_str() {
+                "NONE" => OptimizationLevel::None,
+                "BASIC" => OptimizationLevel::Basic,
+                "STANDARD" => OptimizationLevel::Standard,
+                "AGGRESSIVE" => OptimizationLevel::Aggressive,
+                "FULL" => OptimizationLevel::Full,
+                _ => OptimizationLevel::Standard,
+            }
         } else {
-            OptimizationLevel::Basic
+            let filter_pushdown = self
+                .session
+                .get_variable("OPTIMIZER_FILTER_PUSHDOWN")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let projection_pushdown = self
+                .session
+                .get_variable("OPTIMIZER_PROJECTION_PUSHDOWN")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            if !filter_pushdown && !projection_pushdown {
+                OptimizationLevel::None
+            } else if filter_pushdown && projection_pushdown {
+                OptimizationLevel::Standard
+            } else {
+                OptimizationLevel::Basic
+            }
         };
 
         let get_rule = |name: &str| -> Option<bool> {
@@ -134,6 +149,7 @@ impl AsyncQueryExecutor {
             topn_pushdown: get_rule("OPTIMIZER_TOPN_PUSHDOWN"),
             predicate_inference: get_rule("OPTIMIZER_PREDICATE_INFERENCE"),
             short_circuit_ordering: get_rule("OPTIMIZER_SHORT_CIRCUIT_ORDERING"),
+            subquery_unnesting: get_rule("OPTIMIZER_SUBQUERY_UNNESTING"),
         };
 
         OptimizerSettings {

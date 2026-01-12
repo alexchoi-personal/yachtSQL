@@ -478,10 +478,16 @@ pub fn classify_predicates_for_join(
             (JoinType::Inner, Some(PredicateSide::Right)) => {
                 pushable_right.push(adjust_predicate_indices(pred, left_schema_len));
             }
-            (JoinType::Left, Some(PredicateSide::Left)) => {
+            (
+                JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti,
+                Some(PredicateSide::Left),
+            ) => {
                 pushable_left.push(pred.clone());
             }
-            (JoinType::Right, Some(PredicateSide::Right)) => {
+            (
+                JoinType::Right | JoinType::RightSemi | JoinType::RightAnti,
+                Some(PredicateSide::Right),
+            ) => {
                 pushable_right.push(adjust_predicate_indices(pred, left_schema_len));
             }
             _ => {
