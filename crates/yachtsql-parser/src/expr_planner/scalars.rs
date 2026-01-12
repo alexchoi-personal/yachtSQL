@@ -179,6 +179,7 @@ pub fn try_scalar_function(name: &str) -> Result<ScalarFunction> {
         "SHA512" => Ok(ScalarFunction::Sha512),
         "FARM_FINGERPRINT" => Ok(ScalarFunction::FarmFingerprint),
         "GENERATE_UUID" => Ok(ScalarFunction::GenerateUuid),
+        "SESSION_USER" => Ok(ScalarFunction::SessionUser),
         "ERROR" => Ok(ScalarFunction::Error),
         "RANGE" => Ok(ScalarFunction::Range),
         "RANGE_BUCKET" => Ok(ScalarFunction::RangeBucket),

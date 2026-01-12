@@ -966,6 +966,8 @@ fn convert_scalar_function(name: &ScalarFunction, args: Vec<DFExpr>) -> DFResult
         ScalarFunction::CurrentTimestamp => Ok(datetime::now()),
         ScalarFunction::CurrentTime => Ok(datetime::current_time()),
 
+        ScalarFunction::SessionUser => Ok(lit("user")),
+
         ScalarFunction::Md5 => Ok(datafusion::functions::crypto::md5().call(args)),
         ScalarFunction::Sha1 => {
             let arg = args.into_iter().next().unwrap();
