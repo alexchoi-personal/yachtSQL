@@ -695,7 +695,10 @@ impl<'a> ValueEvaluator<'a> {
             },
             UnaryOp::Minus => match val {
                 Value::Null => Ok(Value::Null),
-                Value::Int64(n) => Ok(Value::Int64(-n)),
+                Value::Int64(n) => n
+                    .checked_neg()
+                    .map(Value::Int64)
+                    .ok_or_else(|| Error::invalid_query("Integer overflow in unary minus")),
                 Value::Float64(f) => Ok(Value::Float64(ordered_float::OrderedFloat(-f.0))),
                 Value::Numeric(d) => Ok(Value::Numeric(-d)),
                 _ => Err(Error::invalid_query("Unary minus requires numeric operand")),

@@ -16,6 +16,20 @@ use super::plan_schema_to_schema;
 use crate::value_evaluator::ValueEvaluator;
 
 const PARALLEL_AGG_THRESHOLD: usize = 10000;
+const MAX_GROUP_COUNT: usize = 10_000_000;
+
+fn check_group_limit(group_count: usize) -> Result<()> {
+    if group_count > MAX_GROUP_COUNT {
+        return Err(Error::aggregate_error(
+            "GROUP BY",
+            format!(
+                "exceeded maximum group count limit of {} groups",
+                MAX_GROUP_COUNT
+            ),
+        ));
+    }
+    Ok(())
+}
 
 pub(crate) fn compute_aggregate(
     input_table: &Table,
@@ -102,6 +116,10 @@ pub(crate) fn compute_aggregate(
                     }
                 }
 
+                let is_new_group = !group_map.contains_key(&group_key_values);
+                if is_new_group {
+                    check_group_limit(group_map.len() + 1)?;
+                }
                 let entry = group_map
                     .entry(group_key_values)
                     .or_insert_with_key(|_key| {
@@ -201,6 +219,10 @@ pub(crate) fn compute_aggregate(
                                     .map(|e| evaluator.evaluate(e, &record))
                                     .collect::<Result<_>>()?;
 
+                                let is_new_group = !local_groups.contains_key(&group_key_values);
+                                if is_new_group {
+                                    check_group_limit(local_groups.len() + 1)?;
+                                }
                                 let accumulators =
                                     local_groups.entry(group_key_values).or_insert_with(|| {
                                         aggregates.iter().map(Accumulator::from_expr).collect()
@@ -245,6 +267,10 @@ pub(crate) fn compute_aggregate(
             for local_result in local_results {
                 let local_groups = local_result?;
                 for (key, local_accs) in local_groups {
+                    let is_new_group = !merged_groups.contains_key(&key);
+                    if is_new_group {
+                        check_group_limit(merged_groups.len() + 1)?;
+                    }
                     merged_groups
                         .entry(key)
                         .and_modify(|existing| {
@@ -272,6 +298,10 @@ pub(crate) fn compute_aggregate(
                     .map(|e| evaluator.evaluate(e, &record))
                     .collect::<Result<_>>()?;
 
+                let is_new_group = !groups.contains_key(&group_key_values);
+                if is_new_group {
+                    check_group_limit(groups.len() + 1)?;
+                }
                 let accumulators = groups
                     .entry(group_key_values)
                     .or_insert_with(|| aggregates.iter().map(Accumulator::from_expr).collect());

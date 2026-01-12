@@ -469,7 +469,7 @@ impl YachtSQLSession {
         let plan = yachtsql_parser::parse_and_plan(sql, &catalog)?;
         match self.execute_plan(&plan).await {
             Ok(result) => Ok(result),
-            Err(e) if e.to_string().contains("RETURN_SIGNAL") => Ok(vec![]),
+            Err(Error::ReturnSignal) => Ok(vec![]),
             Err(e) => Err(e),
         }
     }
@@ -755,7 +755,7 @@ impl YachtSQLSession {
                             break;
                         }
                         ControlFlow::Break(Some(lbl)) => {
-                            return Err(Error::internal(format!("BREAK_SIGNAL:{}", lbl)));
+                            return Err(Error::BreakSignal { label: Some(lbl) });
                         }
                         ControlFlow::Continue(None) => continue,
                         ControlFlow::Continue(Some(ref target))
@@ -764,9 +764,9 @@ impl YachtSQLSession {
                             continue;
                         }
                         ControlFlow::Continue(Some(lbl)) => {
-                            return Err(Error::internal(format!("CONTINUE_SIGNAL:{}", lbl)));
+                            return Err(Error::ContinueSignal { label: Some(lbl) });
                         }
-                        ControlFlow::Return => return Err(Error::internal("RETURN_SIGNAL")),
+                        ControlFlow::Return => return Err(Error::ReturnSignal),
                     }
                 }
                 Ok(vec![])
@@ -788,7 +788,7 @@ impl YachtSQLSession {
                             break;
                         }
                         ControlFlow::Break(Some(lbl)) => {
-                            return Err(Error::internal(format!("BREAK_SIGNAL:{}", lbl)));
+                            return Err(Error::BreakSignal { label: Some(lbl) });
                         }
                         ControlFlow::Continue(None) => continue,
                         ControlFlow::Continue(Some(ref target))
@@ -797,9 +797,9 @@ impl YachtSQLSession {
                             continue;
                         }
                         ControlFlow::Continue(Some(lbl)) => {
-                            return Err(Error::internal(format!("CONTINUE_SIGNAL:{}", lbl)));
+                            return Err(Error::ContinueSignal { label: Some(lbl) });
                         }
-                        ControlFlow::Return => return Err(Error::internal("RETURN_SIGNAL")),
+                        ControlFlow::Return => return Err(Error::ReturnSignal),
                     }
                 }
                 Ok(vec![])
@@ -820,10 +820,10 @@ impl YachtSQLSession {
                         }
                         ControlFlow::Break(None) => break,
                         ControlFlow::Break(Some(lbl)) => {
-                            return Err(Error::internal(format!("BREAK_SIGNAL:{}", lbl)));
+                            return Err(Error::BreakSignal { label: Some(lbl) });
                         }
                         ControlFlow::Continue(_) => {}
-                        ControlFlow::Return => return Err(Error::internal("RETURN_SIGNAL")),
+                        ControlFlow::Return => return Err(Error::ReturnSignal),
                     }
                     let cond_value = self.eval_bool_expr(until_condition);
                     if cond_value {
@@ -864,13 +864,13 @@ impl YachtSQLSession {
                             }
                             ControlFlow::Break(None) => break 'outer,
                             ControlFlow::Break(Some(lbl)) => {
-                                return Err(Error::internal(format!("BREAK_SIGNAL:{}", lbl)));
+                                return Err(Error::BreakSignal { label: Some(lbl) });
                             }
                             ControlFlow::Continue(None) => continue,
                             ControlFlow::Continue(Some(lbl)) => {
-                                return Err(Error::internal(format!("CONTINUE_SIGNAL:{}", lbl)));
+                                return Err(Error::ContinueSignal { label: Some(lbl) });
                             }
-                            ControlFlow::Return => return Err(Error::internal("RETURN_SIGNAL")),
+                            ControlFlow::Return => return Err(Error::ReturnSignal),
                         }
                     }
                 }
@@ -879,21 +879,15 @@ impl YachtSQLSession {
 
             LogicalPlan::Break { label } => {
                 let lbl = label.as_ref().map(|l| l.to_lowercase());
-                Err(Error::internal(format!(
-                    "BREAK_SIGNAL:{}",
-                    lbl.unwrap_or_default()
-                )))
+                Err(Error::BreakSignal { label: lbl })
             }
 
             LogicalPlan::Continue { label } => {
                 let lbl = label.as_ref().map(|l| l.to_lowercase());
-                Err(Error::internal(format!(
-                    "CONTINUE_SIGNAL:{}",
-                    lbl.unwrap_or_default()
-                )))
+                Err(Error::ContinueSignal { label: lbl })
             }
 
-            LogicalPlan::Return { value: _ } => Err(Error::internal("RETURN_SIGNAL")),
+            LogicalPlan::Return { value: _ } => Err(Error::ReturnSignal),
 
             LogicalPlan::Assert { condition, message } => {
                 let cond_value = self.eval_bool_expr(condition);
@@ -1548,35 +1542,16 @@ impl YachtSQLSession {
                         return Ok(ControlFlow::Normal(batches));
                     }
                 }
+                Err(Error::ReturnSignal) => {
+                    return Ok(ControlFlow::Return);
+                }
+                Err(Error::BreakSignal { label }) => {
+                    return Ok(ControlFlow::Break(label));
+                }
+                Err(Error::ContinueSignal { label }) => {
+                    return Ok(ControlFlow::Continue(label));
+                }
                 Err(e) => {
-                    let msg = e.to_string();
-                    if msg.contains("RETURN_SIGNAL") {
-                        return Ok(ControlFlow::Return);
-                    }
-                    if let Some(idx) = msg.find("BREAK_SIGNAL:") {
-                        let after = &msg[idx + "BREAK_SIGNAL:".len()..];
-                        let lbl = if after.is_empty() {
-                            None
-                        } else {
-                            Some(after.to_string())
-                        };
-                        return Ok(ControlFlow::Break(lbl));
-                    }
-                    if msg.contains("BREAK_SIGNAL") {
-                        return Ok(ControlFlow::Break(None));
-                    }
-                    if let Some(idx) = msg.find("CONTINUE_SIGNAL:") {
-                        let after = &msg[idx + "CONTINUE_SIGNAL:".len()..];
-                        let lbl = if after.is_empty() {
-                            None
-                        } else {
-                            Some(after.to_string())
-                        };
-                        return Ok(ControlFlow::Continue(lbl));
-                    }
-                    if msg.contains("CONTINUE_SIGNAL") {
-                        return Ok(ControlFlow::Continue(None));
-                    }
                     return Err(e);
                 }
             }

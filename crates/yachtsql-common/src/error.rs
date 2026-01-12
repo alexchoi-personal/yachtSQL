@@ -92,6 +92,13 @@ pub enum Error {
         pattern: String,
         reason: String,
     },
+    ReturnSignal,
+    BreakSignal {
+        label: Option<String>,
+    },
+    ContinueSignal {
+        label: Option<String>,
+    },
 }
 
 impl Error {
@@ -377,6 +384,17 @@ impl fmt::Display for Error {
             Error::RegexError { pattern, reason } => {
                 write!(f, "Regex error in pattern '{}': {}", pattern, reason)
             }
+            Error::ReturnSignal => {
+                write!(f, "Return signal")
+            }
+            Error::BreakSignal { label } => match label {
+                Some(l) => write!(f, "Break signal: {}", l),
+                None => write!(f, "Break signal"),
+            },
+            Error::ContinueSignal { label } => match label {
+                Some(l) => write!(f, "Continue signal: {}", l),
+                None => write!(f, "Continue signal"),
+            },
         }
     }
 }

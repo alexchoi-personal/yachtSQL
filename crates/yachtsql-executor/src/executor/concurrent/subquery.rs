@@ -713,7 +713,10 @@ impl ConcurrentPlanExecutor {
                 Ok(Value::Bool(!b))
             }
             yachtsql_ir::UnaryOp::Minus => match val {
-                Value::Int64(n) => Ok(Value::Int64(-n)),
+                Value::Int64(n) => n
+                    .checked_neg()
+                    .map(Value::Int64)
+                    .ok_or_else(|| Error::invalid_query("Integer overflow in unary minus")),
                 Value::Float64(f) => Ok(Value::Float64(-f)),
                 _ => Ok(Value::Null),
             },
