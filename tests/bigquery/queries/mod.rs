@@ -18,6 +18,7 @@ mod complex_correctness;
 mod cte;
 mod distinct;
 mod expr_planner_coverage;
+mod expression_dedup_tests;
 mod expressions;
 mod filters;
 mod from_clause;
