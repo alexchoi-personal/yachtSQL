@@ -2,7 +2,6 @@
 
 use std::hash::{Hash, Hasher};
 
-use bloomfilter::Bloom;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::instrument;
@@ -939,21 +938,12 @@ impl ConcurrentPlanExecutor {
                 let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
                     FxHashMap::with_capacity_and_hasher(build_n, Default::default());
 
-                let bloom_items = build_n.max(1000);
-                let bloom_fp_rate = 0.01;
-                let mut bloom_filter: Bloom<u64> =
-                    Bloom::new_for_fp_rate(bloom_items, bloom_fp_rate).map_err(|e| {
-                        Error::internal(format!("failed to create bloom filter: {}", e))
-                    })?;
-
                 if let Some(ref indices) = build_key_indices {
                     for build_idx in 0..build_n {
                         let key_values = extract_key_values_direct(build_cols, build_idx, indices);
                         if key_values.iter().any(|v| matches!(v, Value::Null)) {
                             continue;
                         }
-                        let key_hash = hash_key_values(&key_values);
-                        bloom_filter.set(&key_hash);
                         hash_table.entry(key_values).or_default().push(build_idx);
                     }
                 } else {
@@ -974,8 +964,6 @@ impl ConcurrentPlanExecutor {
                         if key_values.iter().any(|v| matches!(v, Value::Null)) {
                             continue;
                         }
-                        let key_hash = hash_key_values(&key_values);
-                        bloom_filter.set(&key_hash);
                         hash_table.entry(key_values).or_default().push(build_idx);
                     }
                 }
@@ -990,10 +978,6 @@ impl ConcurrentPlanExecutor {
                                 let key_values =
                                     extract_key_values_direct(probe_cols, probe_idx, indices);
                                 if key_values.iter().any(|v| matches!(v, Value::Null)) {
-                                    return Vec::new();
-                                }
-                                let key_hash = hash_key_values(&key_values);
-                                if !bloom_filter.check(&key_hash) {
                                     return Vec::new();
                                 }
                                 let Some(matching_indices) = hash_table.get(&key_values) else {
@@ -1046,10 +1030,6 @@ impl ConcurrentPlanExecutor {
                                 {
                                     return Vec::new();
                                 }
-                                let key_hash = hash_key_values(&key_values);
-                                if !bloom_filter.check(&key_hash) {
-                                    return Vec::new();
-                                }
                                 let Some(matching_indices) = hash_table.get(&key_values) else {
                                     return Vec::new();
                                 };
@@ -1097,10 +1077,6 @@ impl ConcurrentPlanExecutor {
                             if key_values.iter().any(|v| matches!(v, Value::Null)) {
                                 continue;
                             }
-                            let key_hash = hash_key_values(&key_values);
-                            if !bloom_filter.check(&key_hash) {
-                                continue;
-                            }
                             if let Some(matching_indices) = hash_table.get(&key_values) {
                                 for &build_idx in matching_indices {
                                     combined.clear();
@@ -1142,11 +1118,6 @@ impl ConcurrentPlanExecutor {
                             .collect::<Result<Vec<_>>>()?;
 
                         if key_values.iter().any(|v| matches!(v, Value::Null)) {
-                            continue;
-                        }
-
-                        let key_hash = hash_key_values(&key_values);
-                        if !bloom_filter.check(&key_hash) {
                             continue;
                         }
 
