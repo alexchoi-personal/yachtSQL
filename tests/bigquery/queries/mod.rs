@@ -26,6 +26,7 @@ mod grouping;
 // mod information_schema; // TODO: INFORMATION_SCHEMA not implemented yet
 mod ir_plan;
 mod joins;
+mod optimizer_equivalence;
 mod order_by_edge_cases;
 mod order_limit;
 mod params;
