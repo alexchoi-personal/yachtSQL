@@ -20,7 +20,7 @@ pub use optimized_logical_plan::{
 pub use pass::{OptimizationPass, PassOverhead, PassTarget};
 pub use planner::{
     PhysicalPlanner, ProjectionPushdown, apply_aggregate_pushdown, apply_cross_to_hash_join,
-    apply_distinct_elimination, apply_empty_propagation, apply_filter_merging,
+    apply_decorrelation, apply_distinct_elimination, apply_empty_propagation, apply_filter_merging,
     apply_filter_pushdown_aggregate, apply_filter_pushdown_join, apply_filter_pushdown_project,
     apply_join_elimination, apply_limit_pushdown, apply_outer_to_inner_join,
     apply_predicate_inference, apply_predicate_simplification, apply_project_merging,
@@ -64,6 +64,7 @@ pub struct RuleFlags {
     pub subquery_unnesting: Option<bool>,
     pub join_elimination: Option<bool>,
     pub aggregate_pushdown: Option<bool>,
+    pub decorrelation: Option<bool>,
 }
 
 impl RuleFlags {
@@ -89,6 +90,7 @@ impl RuleFlags {
             subquery_unnesting: Some(true),
             join_elimination: Some(true),
             aggregate_pushdown: Some(true),
+            decorrelation: Some(true),
         }
     }
 
@@ -114,6 +116,7 @@ impl RuleFlags {
             subquery_unnesting: Some(false),
             join_elimination: Some(false),
             aggregate_pushdown: Some(false),
+            decorrelation: Some(false),
         }
     }
 
@@ -140,6 +143,7 @@ impl RuleFlags {
             "subquery_unnesting" => flags.subquery_unnesting = Some(true),
             "join_elimination" => flags.join_elimination = Some(true),
             "aggregate_pushdown" => flags.aggregate_pushdown = Some(true),
+            "decorrelation" => flags.decorrelation = Some(true),
             _ => {}
         }
         flags
@@ -263,6 +267,9 @@ pub fn optimize_with_settings(
     }
     if settings.rule_enabled(settings.rules.subquery_unnesting, OptimizationLevel::Basic) {
         physical_plan = apply_subquery_unnesting(physical_plan);
+    }
+    if settings.rule_enabled(settings.rules.decorrelation, OptimizationLevel::Basic) {
+        physical_plan = apply_decorrelation(physical_plan);
     }
     if settings.rule_enabled(settings.rules.project_merging, OptimizationLevel::Basic) {
         physical_plan = apply_project_merging(physical_plan);

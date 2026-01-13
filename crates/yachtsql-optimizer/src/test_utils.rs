@@ -87,8 +87,9 @@ macro_rules! assert_plan {
                 assert_eq!(table_name, $name, "TableScan table_name mismatch");
             }
             other => panic!(
-                "Expected TableScan, got {:?}",
-                std::mem::discriminant(other)
+                "Expected TableScan, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -104,8 +105,9 @@ macro_rules! assert_plan {
                 assert_eq!(projection, &$proj, "TableScan projection mismatch");
             }
             other => panic!(
-                "Expected TableScan, got {:?}",
-                std::mem::discriminant(other)
+                "Expected TableScan, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -115,7 +117,11 @@ macro_rules! assert_plan {
             PhysicalPlan::Filter { input: _input, .. } => {
                 assert_plan!(**_input, $($input)+);
             }
-            other => panic!("Expected Filter, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Filter, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -124,7 +130,11 @@ macro_rules! assert_plan {
             PhysicalPlan::Filter { input: _input, .. } => {
                 assert_plan!(**_input, $($input)+);
             }
-            other => panic!("Expected Filter, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Filter, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -134,7 +144,11 @@ macro_rules! assert_plan {
                 assert!($pred_check(predicate), "Filter predicate check failed: {:?}", predicate);
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected Filter, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Filter, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -143,7 +157,11 @@ macro_rules! assert_plan {
             PhysicalPlan::Project { input: _input, .. } => {
                 assert_plan!(**_input, $($input)+);
             }
-            other => panic!("Expected Project, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Project, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -153,7 +171,11 @@ macro_rules! assert_plan {
                 assert!($expr_check(expressions), "Project expressions check failed: {:?}", expressions);
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected Project, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Project, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -168,7 +190,11 @@ macro_rules! assert_plan {
                 );
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected Project, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Project, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -185,8 +211,9 @@ macro_rules! assert_plan {
                 assert_plan!(**_right, $($right)+);
             }
             other => panic!(
-                "Expected HashJoin, got {:?}",
-                std::mem::discriminant(other)
+                "Expected HashJoin, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -198,8 +225,9 @@ macro_rules! assert_plan {
                 assert_plan!(**_right, $($right)+);
             }
             other => panic!(
-                "Expected HashJoin, got {:?}",
-                std::mem::discriminant(other)
+                "Expected HashJoin, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -231,8 +259,9 @@ macro_rules! assert_plan {
                 assert_plan!(**right, $($right)+);
             }
             other => panic!(
-                "Expected HashJoin, got {:?}",
-                std::mem::discriminant(other)
+                "Expected HashJoin, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -250,8 +279,9 @@ macro_rules! assert_plan {
                 assert_plan!(**right, $($right)+);
             }
             other => panic!(
-                "Expected NestedLoopJoin, got {:?}",
-                std::mem::discriminant(other)
+                "Expected NestedLoopJoin, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -280,8 +310,9 @@ macro_rules! assert_plan {
                 assert_plan!(**right, $($right)+);
             }
             other => panic!(
-                "Expected NestedLoopJoin, got {:?}",
-                std::mem::discriminant(other)
+                "Expected NestedLoopJoin, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -306,8 +337,9 @@ macro_rules! assert_plan {
                 assert_plan!(**right, $($right)+);
             }
             other => panic!(
-                "Expected NestedLoopJoin, got {:?}",
-                std::mem::discriminant(other)
+                "Expected NestedLoopJoin, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -319,8 +351,9 @@ macro_rules! assert_plan {
                 assert_plan!(**right, $($right)+);
             }
             other => panic!(
-                "Expected CrossJoin, got {:?}",
-                std::mem::discriminant(other)
+                "Expected CrossJoin, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -330,7 +363,11 @@ macro_rules! assert_plan {
             PhysicalPlan::Sort { input, .. } => {
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected Sort, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Sort, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -340,7 +377,11 @@ macro_rules! assert_plan {
                 assert!($sort_check(sort_exprs), "Sort sort_exprs check failed: {:?}", sort_exprs);
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected Sort, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Sort, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -349,7 +390,11 @@ macro_rules! assert_plan {
             PhysicalPlan::Limit { input, .. } => {
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected Limit, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Limit, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -359,7 +404,11 @@ macro_rules! assert_plan {
                 assert_eq!(*limit, $lim, "Limit value mismatch");
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected Limit, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Limit, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -370,7 +419,11 @@ macro_rules! assert_plan {
                 assert_eq!(*offset, $off, "Limit offset mismatch");
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected Limit, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected Limit, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -380,7 +433,11 @@ macro_rules! assert_plan {
                 assert_eq!(*limit, $lim, "TopN limit mismatch");
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected TopN, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected TopN, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -389,7 +446,11 @@ macro_rules! assert_plan {
             PhysicalPlan::TopN { input, .. } => {
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected TopN, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected TopN, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -400,7 +461,11 @@ macro_rules! assert_plan {
                 assert!($sort_check(sort_exprs), "TopN sort_exprs check failed: {:?}", sort_exprs);
                 assert_plan!(**input, $($input)+);
             }
-            other => panic!("Expected TopN, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "Expected TopN, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
         }
     };
 
@@ -410,8 +475,9 @@ macro_rules! assert_plan {
                 assert_plan!(**_input, $($input)+);
             }
             other => panic!(
-                "Expected HashAggregate, got {:?}",
-                std::mem::discriminant(other)
+                "Expected HashAggregate, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -428,8 +494,9 @@ macro_rules! assert_plan {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
-                "Expected HashAggregate, got {:?}",
-                std::mem::discriminant(other)
+                "Expected HashAggregate, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -452,8 +519,9 @@ macro_rules! assert_plan {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
-                "Expected HashAggregate, got {:?}",
-                std::mem::discriminant(other)
+                "Expected HashAggregate, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -465,8 +533,9 @@ macro_rules! assert_plan {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
-                "Expected HashAggregate, got {:?}",
-                std::mem::discriminant(other)
+                "Expected HashAggregate, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -479,8 +548,9 @@ macro_rules! assert_plan {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
-                "Expected HashAggregate, got {:?}",
-                std::mem::discriminant(other)
+                "Expected HashAggregate, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -491,8 +561,47 @@ macro_rules! assert_plan {
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
-                "Expected Distinct, got {:?}",
-                std::mem::discriminant(other)
+                "Expected Distinct, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
+        }
+    };
+
+    ($plan:expr, Union { inputs: [$($inp:tt),+ $(,)?] }) => {
+        match &$plan {
+            PhysicalPlan::Union { inputs, .. } => {
+                let expected: Vec<&str> = vec![$($inp),+];
+                assert_eq!(inputs.len(), expected.len(), "Union inputs count mismatch");
+            }
+            other => panic!(
+                "Expected Union, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
+        }
+    };
+
+    ($plan:expr, Window { input: ($($input:tt)+) }) => {
+        match &$plan {
+            PhysicalPlan::Window { input, .. } => {
+                assert_plan!(**input, $($input)+);
+            }
+            other => panic!(
+                "Expected Window, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
+            ),
+        }
+    };
+
+    ($plan:expr, Empty) => {
+        match &$plan {
+            PhysicalPlan::Empty { .. } => {}
+            other => panic!(
+                "Expected Empty, got {}\n\nActual plan:\n{}",
+                $crate::test_utils::plan_node_name(other),
+                $crate::test_utils::format_plan_tree(other, 0)
             ),
         }
     };
@@ -622,4 +731,306 @@ pub(crate) fn aggregates_match(exprs: &[yachtsql_ir::Expr], expected: &[&str]) -
             }
             _ => false,
         })
+}
+
+pub(crate) fn plan_node_name(plan: &crate::PhysicalPlan) -> &'static str {
+    use crate::PhysicalPlan;
+    match plan {
+        PhysicalPlan::TableScan { .. } => "TableScan",
+        PhysicalPlan::Sample { .. } => "Sample",
+        PhysicalPlan::Filter { .. } => "Filter",
+        PhysicalPlan::Project { .. } => "Project",
+        PhysicalPlan::NestedLoopJoin { .. } => "NestedLoopJoin",
+        PhysicalPlan::CrossJoin { .. } => "CrossJoin",
+        PhysicalPlan::HashJoin { .. } => "HashJoin",
+        PhysicalPlan::HashAggregate { .. } => "HashAggregate",
+        PhysicalPlan::Sort { .. } => "Sort",
+        PhysicalPlan::Limit { .. } => "Limit",
+        PhysicalPlan::TopN { .. } => "TopN",
+        PhysicalPlan::Distinct { .. } => "Distinct",
+        PhysicalPlan::Union { .. } => "Union",
+        PhysicalPlan::Intersect { .. } => "Intersect",
+        PhysicalPlan::Except { .. } => "Except",
+        PhysicalPlan::Window { .. } => "Window",
+        PhysicalPlan::Unnest { .. } => "Unnest",
+        PhysicalPlan::Qualify { .. } => "Qualify",
+        PhysicalPlan::WithCte { .. } => "WithCte",
+        PhysicalPlan::Values { .. } => "Values",
+        PhysicalPlan::Empty { .. } => "Empty",
+        PhysicalPlan::Insert { .. } => "Insert",
+        PhysicalPlan::Update { .. } => "Update",
+        PhysicalPlan::Delete { .. } => "Delete",
+        PhysicalPlan::Merge { .. } => "Merge",
+        PhysicalPlan::CreateTable { .. } => "CreateTable",
+        PhysicalPlan::DropTable { .. } => "DropTable",
+        PhysicalPlan::AlterTable { .. } => "AlterTable",
+        PhysicalPlan::Truncate { .. } => "Truncate",
+        PhysicalPlan::CreateView { .. } => "CreateView",
+        PhysicalPlan::DropView { .. } => "DropView",
+        PhysicalPlan::CreateSchema { .. } => "CreateSchema",
+        PhysicalPlan::DropSchema { .. } => "DropSchema",
+        PhysicalPlan::UndropSchema { .. } => "UndropSchema",
+        PhysicalPlan::AlterSchema { .. } => "AlterSchema",
+        PhysicalPlan::CreateFunction { .. } => "CreateFunction",
+        PhysicalPlan::DropFunction { .. } => "DropFunction",
+        PhysicalPlan::CreateProcedure { .. } => "CreateProcedure",
+        PhysicalPlan::DropProcedure { .. } => "DropProcedure",
+        PhysicalPlan::Call { .. } => "Call",
+        PhysicalPlan::ExportData { .. } => "ExportData",
+        PhysicalPlan::LoadData { .. } => "LoadData",
+        PhysicalPlan::Declare { .. } => "Declare",
+        PhysicalPlan::SetVariable { .. } => "SetVariable",
+        PhysicalPlan::SetMultipleVariables { .. } => "SetMultipleVariables",
+        PhysicalPlan::If { .. } => "If",
+        PhysicalPlan::While { .. } => "While",
+        PhysicalPlan::Loop { .. } => "Loop",
+        PhysicalPlan::Block { .. } => "Block",
+        PhysicalPlan::Repeat { .. } => "Repeat",
+        PhysicalPlan::For { .. } => "For",
+        PhysicalPlan::Return { .. } => "Return",
+        PhysicalPlan::Raise { .. } => "Raise",
+        PhysicalPlan::ExecuteImmediate { .. } => "ExecuteImmediate",
+        PhysicalPlan::Break { .. } => "Break",
+        PhysicalPlan::Continue { .. } => "Continue",
+        PhysicalPlan::CreateSnapshot { .. } => "CreateSnapshot",
+        PhysicalPlan::DropSnapshot { .. } => "DropSnapshot",
+        PhysicalPlan::Assert { .. } => "Assert",
+        PhysicalPlan::Grant { .. } => "Grant",
+        PhysicalPlan::Revoke { .. } => "Revoke",
+        PhysicalPlan::BeginTransaction => "BeginTransaction",
+        PhysicalPlan::Commit => "Commit",
+        PhysicalPlan::Rollback => "Rollback",
+        PhysicalPlan::TryCatch { .. } => "TryCatch",
+        PhysicalPlan::GapFill { .. } => "GapFill",
+        PhysicalPlan::Explain { .. } => "Explain",
+    }
+}
+
+pub(crate) fn format_plan_tree(plan: &crate::PhysicalPlan, indent: usize) -> String {
+    use crate::PhysicalPlan;
+    let prefix = "  ".repeat(indent);
+    let mut result = String::new();
+
+    match plan {
+        PhysicalPlan::TableScan { table_name, .. } => {
+            result.push_str(&format!(
+                "{}TableScan {{ table: \"{}\" }}",
+                prefix, table_name
+            ));
+        }
+        PhysicalPlan::Filter { input, predicate } => {
+            result.push_str(&format!(
+                "{}Filter {{ predicate: {} }}\n",
+                prefix,
+                format_expr_short(predicate)
+            ));
+            result.push_str(&format_plan_tree(input, indent + 1));
+        }
+        PhysicalPlan::Project {
+            input, expressions, ..
+        } => {
+            let expr_names: Vec<String> = expressions.iter().map(format_expr_short).collect();
+            result.push_str(&format!(
+                "{}Project {{ cols: [{}] }}\n",
+                prefix,
+                expr_names.join(", ")
+            ));
+            result.push_str(&format_plan_tree(input, indent + 1));
+        }
+        PhysicalPlan::HashJoin {
+            left,
+            right,
+            join_type,
+            left_keys,
+            right_keys,
+            ..
+        } => {
+            let lk: Vec<String> = left_keys.iter().map(format_expr_short).collect();
+            let rk: Vec<String> = right_keys.iter().map(format_expr_short).collect();
+            result.push_str(&format!(
+                "{}HashJoin {{ type: {:?}, on: [{}] = [{}] }}\n",
+                prefix,
+                join_type,
+                lk.join(", "),
+                rk.join(", ")
+            ));
+            result.push_str(&format!("{}├─ left:\n", prefix));
+            result.push_str(&format_plan_tree(left, indent + 2));
+            result.push('\n');
+            result.push_str(&format!("{}└─ right:\n", prefix));
+            result.push_str(&format_plan_tree(right, indent + 2));
+        }
+        PhysicalPlan::NestedLoopJoin {
+            left,
+            right,
+            join_type,
+            condition,
+            ..
+        } => {
+            let cond_str = condition
+                .as_ref()
+                .map(format_expr_short)
+                .unwrap_or_else(|| "none".to_string());
+            result.push_str(&format!(
+                "{}NestedLoopJoin {{ type: {:?}, cond: {} }}\n",
+                prefix, join_type, cond_str
+            ));
+            result.push_str(&format!("{}├─ left:\n", prefix));
+            result.push_str(&format_plan_tree(left, indent + 2));
+            result.push('\n');
+            result.push_str(&format!("{}└─ right:\n", prefix));
+            result.push_str(&format_plan_tree(right, indent + 2));
+        }
+        PhysicalPlan::CrossJoin { left, right, .. } => {
+            result.push_str(&format!("{}CrossJoin\n", prefix));
+            result.push_str(&format!("{}├─ left:\n", prefix));
+            result.push_str(&format_plan_tree(left, indent + 2));
+            result.push('\n');
+            result.push_str(&format!("{}└─ right:\n", prefix));
+            result.push_str(&format_plan_tree(right, indent + 2));
+        }
+        PhysicalPlan::HashAggregate {
+            input,
+            group_by,
+            aggregates,
+            ..
+        } => {
+            let grp: Vec<String> = group_by.iter().map(format_expr_short).collect();
+            let aggs: Vec<String> = aggregates.iter().map(format_expr_short).collect();
+            result.push_str(&format!(
+                "{}HashAggregate {{ group_by: [{}], aggs: [{}] }}\n",
+                prefix,
+                grp.join(", "),
+                aggs.join(", ")
+            ));
+            result.push_str(&format_plan_tree(input, indent + 1));
+        }
+        PhysicalPlan::Sort {
+            input, sort_exprs, ..
+        } => {
+            let sorts: Vec<String> = sort_exprs
+                .iter()
+                .map(|s| format_expr_short(&s.expr))
+                .collect();
+            result.push_str(&format!(
+                "{}Sort {{ by: [{}] }}\n",
+                prefix,
+                sorts.join(", ")
+            ));
+            result.push_str(&format_plan_tree(input, indent + 1));
+        }
+        PhysicalPlan::TopN { input, limit, .. } => {
+            result.push_str(&format!("{}TopN {{ limit: {} }}\n", prefix, limit));
+            result.push_str(&format_plan_tree(input, indent + 1));
+        }
+        PhysicalPlan::Limit {
+            input,
+            limit,
+            offset,
+        } => {
+            result.push_str(&format!(
+                "{}Limit {{ limit: {:?}, offset: {:?} }}\n",
+                prefix, limit, offset
+            ));
+            result.push_str(&format_plan_tree(input, indent + 1));
+        }
+        PhysicalPlan::Distinct { input } => {
+            result.push_str(&format!("{}Distinct\n", prefix));
+            result.push_str(&format_plan_tree(input, indent + 1));
+        }
+        PhysicalPlan::Union { inputs, all, .. } => {
+            result.push_str(&format!("{}Union {{ all: {} }}\n", prefix, all));
+            for (i, inp) in inputs.iter().enumerate() {
+                result.push_str(&format!("{}[{}]:\n", prefix, i));
+                result.push_str(&format_plan_tree(inp, indent + 1));
+                if i < inputs.len() - 1 {
+                    result.push('\n');
+                }
+            }
+        }
+        PhysicalPlan::Window { input, .. } => {
+            result.push_str(&format!("{}Window\n", prefix));
+            result.push_str(&format_plan_tree(input, indent + 1));
+        }
+        PhysicalPlan::WithCte { body, ctes, .. } => {
+            result.push_str(&format!("{}WithCte {{ {} CTEs }}\n", prefix, ctes.len()));
+            result.push_str(&format_plan_tree(body, indent + 1));
+        }
+        other => {
+            result.push_str(&format!("{}{}", prefix, plan_node_name(other)));
+        }
+    }
+
+    result
+}
+
+fn format_binary_op(op: &yachtsql_ir::BinaryOp) -> &'static str {
+    use yachtsql_ir::BinaryOp;
+    match op {
+        BinaryOp::Eq => "=",
+        BinaryOp::NotEq => "!=",
+        BinaryOp::Lt => "<",
+        BinaryOp::LtEq => "<=",
+        BinaryOp::Gt => ">",
+        BinaryOp::GtEq => ">=",
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Mul => "*",
+        BinaryOp::Div => "/",
+        BinaryOp::Mod => "%",
+        BinaryOp::And => "AND",
+        BinaryOp::Or => "OR",
+        BinaryOp::BitwiseAnd => "&",
+        BinaryOp::BitwiseOr => "|",
+        BinaryOp::BitwiseXor => "^",
+        BinaryOp::ShiftLeft => "<<",
+        BinaryOp::ShiftRight => ">>",
+        BinaryOp::Concat => "||",
+    }
+}
+
+fn format_expr_short(expr: &yachtsql_ir::Expr) -> String {
+    use yachtsql_ir::Expr;
+    match expr {
+        Expr::Column { table, name, .. } => {
+            if let Some(t) = table {
+                format!("{}.{}", t, name)
+            } else {
+                name.clone()
+            }
+        }
+        Expr::Literal(lit) => format!("{:?}", lit),
+        Expr::Alias { name, expr: inner } => {
+            format!("{} AS {}", format_expr_short(inner), name)
+        }
+        Expr::Aggregate { func, args, .. } => {
+            let arg_strs: Vec<String> = args.iter().map(format_expr_short).collect();
+            format!("{:?}({})", func, arg_strs.join(", "))
+        }
+        Expr::BinaryOp { left, op, right } => {
+            format!(
+                "{} {} {}",
+                format_expr_short(left),
+                format_binary_op(op),
+                format_expr_short(right)
+            )
+        }
+        Expr::ScalarSubquery(_) => "<ScalarSubquery>".to_string(),
+        Expr::Exists { negated, .. } => if *negated {
+            "NOT EXISTS(...)"
+        } else {
+            "EXISTS(...)"
+        }
+        .to_string(),
+        Expr::InSubquery { negated, .. } => {
+            if *negated { "NOT IN(...)" } else { "IN(...)" }.to_string()
+        }
+        _ => format!(
+            "<{}>",
+            std::any::type_name::<Expr>()
+                .split("::")
+                .last()
+                .unwrap_or("Expr")
+        ),
+    }
 }
