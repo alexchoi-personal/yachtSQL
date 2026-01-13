@@ -468,13 +468,22 @@ fn try_decorrelate_project(
                     index: Some(new_outer_len - 1),
                 };
 
-                let aliased_expr = if let Expr::Alias { name, .. } = &expr {
-                    Expr::Alias {
-                        expr: Box::new(agg_col_ref),
-                        name: name.clone(),
+                let result_expr = if agg_expr.func == AggregateFunction::Count {
+                    Expr::ScalarFunction {
+                        name: yachtsql_ir::ScalarFunction::Coalesce,
+                        args: vec![agg_col_ref, Expr::Literal(yachtsql_ir::Literal::Int64(0))],
                     }
                 } else {
                     agg_col_ref
+                };
+
+                let aliased_expr = if let Expr::Alias { name, .. } = &expr {
+                    Expr::Alias {
+                        expr: Box::new(result_expr),
+                        name: name.clone(),
+                    }
+                } else {
+                    result_expr
                 };
 
                 new_expressions.push(aliased_expr);
