@@ -520,9 +520,11 @@ fn try_decorrelate_scalar_subquery(
     subquery_idx: usize,
 ) -> Option<DecorrelationResult> {
     let (subquery_plan, alias_name) = match expr {
-        Expr::ScalarSubquery(plan) => (plan.as_ref(), None),
+        Expr::ScalarSubquery(plan) | Expr::Subquery(plan) => (plan.as_ref(), None),
         Expr::Alias { expr: inner, name } => match inner.as_ref() {
-            Expr::ScalarSubquery(plan) => (plan.as_ref(), Some(name.clone())),
+            Expr::ScalarSubquery(plan) | Expr::Subquery(plan) => {
+                (plan.as_ref(), Some(name.clone()))
+            }
             _ => return None,
         },
         _ => return None,
@@ -556,7 +558,25 @@ fn extract_projection(plan: &LogicalPlan) -> Option<(Vec<Expr>, LogicalPlan)> {
     match plan {
         LogicalPlan::Project {
             expressions, input, ..
-        } => Some((expressions.clone(), *input.clone())),
+        } => {
+            if let LogicalPlan::Aggregate {
+                aggregates,
+                group_by,
+                input: agg_input,
+                ..
+            } = input.as_ref()
+            {
+                let is_single_aggregate_reference = group_by.is_empty()
+                    && aggregates.len() == 1
+                    && expressions.len() == 1
+                    && matches!(&expressions[0], Expr::Column { index: Some(0), .. });
+
+                if is_single_aggregate_reference {
+                    return Some((aggregates.clone(), *agg_input.clone()));
+                }
+            }
+            Some((expressions.clone(), *input.clone()))
+        }
         LogicalPlan::Aggregate {
             aggregates,
             group_by,
