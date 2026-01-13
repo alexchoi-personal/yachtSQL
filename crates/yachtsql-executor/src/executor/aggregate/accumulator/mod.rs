@@ -49,6 +49,7 @@ pub(crate) enum Accumulator {
         items: Vec<(Value, Vec<(Value, bool)>)>,
         ignore_nulls: bool,
         limit: Option<usize>,
+        distinct: bool,
     },
     StringAgg {
         values: Vec<String>,
@@ -131,6 +132,7 @@ impl Accumulator {
                     items: Vec::new(),
                     ignore_nulls: has_ignore_nulls(expr),
                     limit: extract_agg_limit(expr),
+                    distinct,
                 },
                 AggregateFunction::StringAgg => Accumulator::StringAgg {
                     values: Vec::new(),
@@ -556,7 +558,12 @@ impl Accumulator {
             }
             Accumulator::Min(min) => min.clone().unwrap_or(Value::Null),
             Accumulator::Max(max) => max.clone().unwrap_or(Value::Null),
-            Accumulator::ArrayAgg { items, limit, .. } => {
+            Accumulator::ArrayAgg {
+                items,
+                limit,
+                distinct,
+                ..
+            } => {
                 let mut sorted_items = items.clone();
                 if !sorted_items.is_empty() && !sorted_items[0].1.is_empty() {
                     sorted_items.sort_by(|a, b| {
@@ -572,14 +579,19 @@ impl Accumulator {
                         std::cmp::Ordering::Equal
                     });
                 }
-                let result_items: Vec<Value> = if let Some(lim) = limit {
-                    sorted_items
-                        .into_iter()
-                        .take(*lim)
-                        .map(|(v, _)| v)
-                        .collect()
+                let values_iter = sorted_items.into_iter().map(|(v, _)| v);
+                let result_items: Vec<Value> = if *distinct {
+                    let mut seen = FxHashSet::default();
+                    let deduped = values_iter.filter(|v| seen.insert(v.clone()));
+                    if let Some(lim) = limit {
+                        deduped.take(*lim).collect()
+                    } else {
+                        deduped.collect()
+                    }
+                } else if let Some(lim) = limit {
+                    values_iter.take(*lim).collect()
                 } else {
-                    sorted_items.into_iter().map(|(v, _)| v).collect()
+                    values_iter.collect()
                 };
                 Value::Array(result_items)
             }

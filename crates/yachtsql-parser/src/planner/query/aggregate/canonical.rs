@@ -59,6 +59,9 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                 func,
                 args,
                 distinct,
+                order_by,
+                limit,
+                ignore_nulls,
                 ..
             } => {
                 let func_name = Self::agg_func_to_sql_name(func);
@@ -67,11 +70,25 @@ impl<'a, C: CatalogProvider> Planner<'a, C> {
                     .map(|a| Self::canonical_planned_expr_name(a))
                     .collect::<Vec<_>>()
                     .join(",");
-                if *distinct {
+                let mut name = if *distinct {
                     format!("{}(DISTINCT{})", func_name, args_str)
                 } else {
                     format!("{}({})", func_name, args_str)
+                };
+                if *ignore_nulls {
+                    name.push_str(" IGNORENULLS");
                 }
+                if !order_by.is_empty() {
+                    name.push_str(" ORDERBY");
+                    for sort_expr in order_by {
+                        name.push_str(&Self::canonical_planned_expr_name(&sort_expr.expr));
+                        name.push_str(if sort_expr.asc { "ASC" } else { "DESC" });
+                    }
+                }
+                if let Some(lim) = limit {
+                    name.push_str(&format!(" LIMIT{}", lim));
+                }
+                name
             }
             _ => format!("{:?}", expr),
         }
