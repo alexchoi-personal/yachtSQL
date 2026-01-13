@@ -14,6 +14,7 @@ mod columnar_substring;
 mod columnar_trim;
 mod columnar_unary_ops;
 mod columnar_variable;
+mod complex_correctness;
 mod cte;
 mod distinct;
 mod expr_planner_coverage;
