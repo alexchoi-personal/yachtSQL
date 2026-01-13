@@ -28,7 +28,12 @@ fn get_nullable_column_indices(
                 nullable.insert(i);
             }
         }
-        JoinType::Inner | JoinType::Cross => {}
+        JoinType::Inner
+        | JoinType::Cross
+        | JoinType::LeftSemi
+        | JoinType::RightSemi
+        | JoinType::LeftAnti
+        | JoinType::RightAnti => {}
     }
     nullable
 }
@@ -266,7 +271,12 @@ fn try_convert_join(
                 (false, false) => None,
             }
         }
-        JoinType::Inner | JoinType::Cross => None,
+        JoinType::Inner
+        | JoinType::Cross
+        | JoinType::LeftSemi
+        | JoinType::RightSemi
+        | JoinType::LeftAnti
+        | JoinType::RightAnti => None,
     }
 }
 

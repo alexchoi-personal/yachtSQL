@@ -160,14 +160,14 @@ macro_rules! assert_plan {
     ($plan:expr, HashJoin { left: ($($left:tt)+), right: ($($right:tt)+), join_type: $jt:expr }) => {
         match &$plan {
             PhysicalPlan::HashJoin {
-                left,
-                right,
+                left: _left,
+                right: _right,
                 join_type,
                 ..
             } => {
                 assert_eq!(*join_type, $jt, "HashJoin join_type mismatch");
-                assert_plan!(**left, $($left)+);
-                assert_plan!(**right, $($right)+);
+                assert_plan!(**_left, $($left)+);
+                assert_plan!(**_right, $($right)+);
             }
             other => panic!(
                 "Expected HashJoin, got {:?}",
@@ -178,9 +178,9 @@ macro_rules! assert_plan {
 
     ($plan:expr, HashJoin { left: ($($left:tt)+), right: ($($right:tt)+) }) => {
         match &$plan {
-            PhysicalPlan::HashJoin { left, right, .. } => {
-                assert_plan!(**left, $($left)+);
-                assert_plan!(**right, $($right)+);
+            PhysicalPlan::HashJoin { left: _left, right: _right, .. } => {
+                assert_plan!(**_left, $($left)+);
+                assert_plan!(**_right, $($right)+);
             }
             other => panic!(
                 "Expected HashJoin, got {:?}",

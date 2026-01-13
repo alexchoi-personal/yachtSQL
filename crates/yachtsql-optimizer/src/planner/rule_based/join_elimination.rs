@@ -65,7 +65,13 @@ fn try_eliminate_join(
                 EliminationResult::NoElimination
             }
         }
-        JoinType::Inner | JoinType::Full | JoinType::Cross => EliminationResult::NoElimination,
+        JoinType::Inner
+        | JoinType::Full
+        | JoinType::Cross
+        | JoinType::LeftSemi
+        | JoinType::RightSemi
+        | JoinType::LeftAnti
+        | JoinType::RightAnti => EliminationResult::NoElimination,
     }
 }
 

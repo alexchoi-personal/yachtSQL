@@ -12,8 +12,6 @@ use super::{ConcurrentPlanExecutor, coerce_value};
 use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
-const PARALLEL_THRESHOLD: usize = 2000;
-
 impl ConcurrentPlanExecutor {
     #[instrument(skip(self, columns, source), fields(table = %table_name))]
     pub(crate) fn execute_insert(
@@ -160,8 +158,8 @@ impl ConcurrentPlanExecutor {
             .map(|(_, c)| c.as_ref())
             .collect();
 
-        let rows_to_insert: Vec<Vec<Value>> = if self.is_parallel_enabled()
-            && source_n >= PARALLEL_THRESHOLD
+        let threshold = self.get_parallel_threshold();
+        let rows_to_insert: Vec<Vec<Value>> = if self.is_parallel_enabled() && source_n >= threshold
         {
             (0..source_n)
                 .into_par_iter()
@@ -490,7 +488,8 @@ impl ConcurrentPlanExecutor {
                         .with_variables(&vars)
                         .with_user_functions(&udf);
 
-                    if self.is_parallel_enabled() && table_n >= PARALLEL_THRESHOLD {
+                    let threshold = self.get_parallel_threshold();
+                    if self.is_parallel_enabled() && table_n >= threshold {
                         let processed_rows: Vec<Vec<Value>> = (0..table_n)
                             .into_par_iter()
                             .map(|row_idx| {
@@ -691,7 +690,8 @@ impl ConcurrentPlanExecutor {
                 .with_system_variables(&sys_vars)
                 .with_user_functions(&udf);
 
-            if self.is_parallel_enabled() && table_n >= PARALLEL_THRESHOLD {
+            let threshold = self.get_parallel_threshold();
+            if self.is_parallel_enabled() && table_n >= threshold {
                 let keep_flags: Vec<bool> = (0..table_n)
                     .into_par_iter()
                     .map(|row_idx| {

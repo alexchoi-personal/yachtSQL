@@ -24,8 +24,8 @@ pub use planner::{
     apply_filter_pushdown_join, apply_filter_pushdown_project, apply_join_elimination,
     apply_limit_pushdown, apply_outer_to_inner_join, apply_predicate_inference,
     apply_predicate_simplification, apply_project_merging, apply_short_circuit_ordering,
-    apply_sort_elimination, apply_sort_pushdown_project, apply_topn_pushdown,
-    apply_trivial_predicate_removal, fold_constants,
+    apply_sort_elimination, apply_sort_pushdown_project, apply_subquery_unnesting,
+    apply_topn_pushdown, apply_trivial_predicate_removal, fold_constants,
 };
 use rustc_hash::FxHashMap;
 pub use stats::{ColumnStats, TableStats};
@@ -61,6 +61,7 @@ pub struct RuleFlags {
     pub topn_pushdown: Option<bool>,
     pub predicate_inference: Option<bool>,
     pub short_circuit_ordering: Option<bool>,
+    pub subquery_unnesting: Option<bool>,
     pub join_elimination: Option<bool>,
 }
 
@@ -84,6 +85,7 @@ impl RuleFlags {
             topn_pushdown: Some(true),
             predicate_inference: Some(true),
             short_circuit_ordering: Some(true),
+            subquery_unnesting: Some(true),
             join_elimination: Some(true),
         }
     }
@@ -107,6 +109,7 @@ impl RuleFlags {
             topn_pushdown: Some(false),
             predicate_inference: Some(false),
             short_circuit_ordering: Some(false),
+            subquery_unnesting: Some(false),
             join_elimination: Some(false),
         }
     }
@@ -131,6 +134,7 @@ impl RuleFlags {
             "topn_pushdown" => flags.topn_pushdown = Some(true),
             "predicate_inference" => flags.predicate_inference = Some(true),
             "short_circuit_ordering" => flags.short_circuit_ordering = Some(true),
+            "subquery_unnesting" => flags.subquery_unnesting = Some(true),
             "join_elimination" => flags.join_elimination = Some(true),
             _ => {}
         }
@@ -163,7 +167,7 @@ impl OptimizerSettings {
     }
 
     pub fn all_enabled() -> Self {
-        Self::with_level(OptimizationLevel::Standard)
+        Self::with_level(OptimizationLevel::Full)
     }
 
     pub fn all_disabled() -> Self {
@@ -252,6 +256,9 @@ pub fn optimize_with_settings(
     }
     if settings.rule_enabled(settings.rules.empty_propagation, OptimizationLevel::Basic) {
         physical_plan = apply_empty_propagation(physical_plan);
+    }
+    if settings.rule_enabled(settings.rules.subquery_unnesting, OptimizationLevel::Basic) {
+        physical_plan = apply_subquery_unnesting(physical_plan);
     }
     if settings.rule_enabled(settings.rules.project_merging, OptimizationLevel::Basic) {
         physical_plan = apply_project_merging(physical_plan);

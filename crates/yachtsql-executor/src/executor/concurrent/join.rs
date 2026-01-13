@@ -15,8 +15,6 @@ use super::{ConcurrentPlanExecutor, plan_schema_to_schema};
 use crate::plan::PhysicalPlan;
 use crate::value_evaluator::ValueEvaluator;
 
-const PARALLEL_THRESHOLD: usize = 2000;
-
 fn extract_column_indices(keys: &[Expr], schema: &Schema) -> Option<Vec<usize>> {
     keys.iter()
         .map(|expr| match expr {
@@ -185,8 +183,9 @@ impl ConcurrentPlanExecutor {
         let left_width = left_schema.field_count();
         let right_width = right_schema.field_count();
 
+        let threshold = self.get_parallel_threshold();
         let total_work = left_n.saturating_mul(right_n);
-        let use_parallel = parallel && total_work >= PARALLEL_THRESHOLD;
+        let use_parallel = parallel && total_work >= threshold;
 
         match join_type {
             JoinType::Inner => {
@@ -529,6 +528,316 @@ impl ConcurrentPlanExecutor {
                     }
                 }
             }
+            JoinType::LeftSemi => {
+                if use_parallel {
+                    let row_batches: Vec<Option<Vec<Value>>> = (0..left_n)
+                        .into_par_iter()
+                        .map(|left_idx| {
+                            for right_idx in 0..right_n {
+                                let mut combined_values: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                combined_values
+                                    .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                                combined_values
+                                    .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                                let is_match = match condition {
+                                    Some(c) => {
+                                        let eval_record = Record::from_slice(&combined_values);
+                                        evaluator
+                                            .evaluate(c, &eval_record)
+                                            .ok()
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false)
+                                    }
+                                    None => true,
+                                };
+
+                                if is_match {
+                                    let left_row: Vec<Value> = left_columns
+                                        .iter()
+                                        .map(|c| c.get_value(left_idx))
+                                        .collect();
+                                    return Some(left_row);
+                                }
+                            }
+                            None
+                        })
+                        .collect();
+
+                    for row in row_batches.into_iter().flatten() {
+                        result.push_row(row)?;
+                    }
+                } else {
+                    let mut combined_values: Vec<Value> =
+                        Vec::with_capacity(left_width + right_width);
+                    let mut eval_record = Record::with_capacity(left_width + right_width);
+                    for left_idx in 0..left_n {
+                        let mut found_match = false;
+                        for right_idx in 0..right_n {
+                            combined_values.clear();
+                            combined_values
+                                .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                            combined_values
+                                .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                            let matches = match condition {
+                                Some(c) => {
+                                    eval_record.set_from_slice(&combined_values);
+                                    evaluator
+                                        .evaluate(c, &eval_record)?
+                                        .as_bool()
+                                        .unwrap_or(false)
+                                }
+                                None => true,
+                            };
+
+                            if matches {
+                                found_match = true;
+                                break;
+                            }
+                        }
+                        if found_match {
+                            let left_row: Vec<Value> =
+                                left_columns.iter().map(|c| c.get_value(left_idx)).collect();
+                            result.push_row(left_row)?;
+                        }
+                    }
+                }
+            }
+            JoinType::LeftAnti => {
+                if use_parallel {
+                    let row_batches: Vec<Option<Vec<Value>>> = (0..left_n)
+                        .into_par_iter()
+                        .map(|left_idx| {
+                            for right_idx in 0..right_n {
+                                let mut combined_values: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                combined_values
+                                    .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                                combined_values
+                                    .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                                let is_match = match condition {
+                                    Some(c) => {
+                                        let eval_record = Record::from_slice(&combined_values);
+                                        evaluator
+                                            .evaluate(c, &eval_record)
+                                            .ok()
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false)
+                                    }
+                                    None => true,
+                                };
+
+                                if is_match {
+                                    return None;
+                                }
+                            }
+                            let left_row: Vec<Value> =
+                                left_columns.iter().map(|c| c.get_value(left_idx)).collect();
+                            Some(left_row)
+                        })
+                        .collect();
+
+                    for row in row_batches.into_iter().flatten() {
+                        result.push_row(row)?;
+                    }
+                } else {
+                    let mut combined_values: Vec<Value> =
+                        Vec::with_capacity(left_width + right_width);
+                    let mut eval_record = Record::with_capacity(left_width + right_width);
+                    for left_idx in 0..left_n {
+                        let mut found_match = false;
+                        for right_idx in 0..right_n {
+                            combined_values.clear();
+                            combined_values
+                                .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                            combined_values
+                                .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                            let matches = match condition {
+                                Some(c) => {
+                                    eval_record.set_from_slice(&combined_values);
+                                    evaluator
+                                        .evaluate(c, &eval_record)?
+                                        .as_bool()
+                                        .unwrap_or(false)
+                                }
+                                None => true,
+                            };
+
+                            if matches {
+                                found_match = true;
+                                break;
+                            }
+                        }
+                        if !found_match {
+                            let left_row: Vec<Value> =
+                                left_columns.iter().map(|c| c.get_value(left_idx)).collect();
+                            result.push_row(left_row)?;
+                        }
+                    }
+                }
+            }
+            JoinType::RightSemi => {
+                if use_parallel {
+                    let row_batches: Vec<Option<Vec<Value>>> = (0..right_n)
+                        .into_par_iter()
+                        .map(|right_idx| {
+                            for left_idx in 0..left_n {
+                                let mut combined_values: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                combined_values
+                                    .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                                combined_values
+                                    .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                                let is_match = match condition {
+                                    Some(c) => {
+                                        let eval_record = Record::from_slice(&combined_values);
+                                        evaluator
+                                            .evaluate(c, &eval_record)
+                                            .ok()
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false)
+                                    }
+                                    None => true,
+                                };
+
+                                if is_match {
+                                    let right_row: Vec<Value> = right_columns
+                                        .iter()
+                                        .map(|c| c.get_value(right_idx))
+                                        .collect();
+                                    return Some(right_row);
+                                }
+                            }
+                            None
+                        })
+                        .collect();
+
+                    for row in row_batches.into_iter().flatten() {
+                        result.push_row(row)?;
+                    }
+                } else {
+                    let mut combined_values: Vec<Value> =
+                        Vec::with_capacity(left_width + right_width);
+                    let mut eval_record = Record::with_capacity(left_width + right_width);
+                    for right_idx in 0..right_n {
+                        let mut found_match = false;
+                        for left_idx in 0..left_n {
+                            combined_values.clear();
+                            combined_values
+                                .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                            combined_values
+                                .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                            let matches = match condition {
+                                Some(c) => {
+                                    eval_record.set_from_slice(&combined_values);
+                                    evaluator
+                                        .evaluate(c, &eval_record)?
+                                        .as_bool()
+                                        .unwrap_or(false)
+                                }
+                                None => true,
+                            };
+
+                            if matches {
+                                found_match = true;
+                                break;
+                            }
+                        }
+                        if found_match {
+                            let right_row: Vec<Value> = right_columns
+                                .iter()
+                                .map(|c| c.get_value(right_idx))
+                                .collect();
+                            result.push_row(right_row)?;
+                        }
+                    }
+                }
+            }
+            JoinType::RightAnti => {
+                if use_parallel {
+                    let row_batches: Vec<Option<Vec<Value>>> = (0..right_n)
+                        .into_par_iter()
+                        .map(|right_idx| {
+                            for left_idx in 0..left_n {
+                                let mut combined_values: Vec<Value> =
+                                    Vec::with_capacity(left_width + right_width);
+                                combined_values
+                                    .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                                combined_values
+                                    .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                                let is_match = match condition {
+                                    Some(c) => {
+                                        let eval_record = Record::from_slice(&combined_values);
+                                        evaluator
+                                            .evaluate(c, &eval_record)
+                                            .ok()
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false)
+                                    }
+                                    None => true,
+                                };
+
+                                if is_match {
+                                    return None;
+                                }
+                            }
+                            let right_row: Vec<Value> = right_columns
+                                .iter()
+                                .map(|c| c.get_value(right_idx))
+                                .collect();
+                            Some(right_row)
+                        })
+                        .collect();
+
+                    for row in row_batches.into_iter().flatten() {
+                        result.push_row(row)?;
+                    }
+                } else {
+                    let mut combined_values: Vec<Value> =
+                        Vec::with_capacity(left_width + right_width);
+                    let mut eval_record = Record::with_capacity(left_width + right_width);
+                    for right_idx in 0..right_n {
+                        let mut found_match = false;
+                        for left_idx in 0..left_n {
+                            combined_values.clear();
+                            combined_values
+                                .extend(left_columns.iter().map(|c| c.get_value(left_idx)));
+                            combined_values
+                                .extend(right_columns.iter().map(|c| c.get_value(right_idx)));
+
+                            let matches = match condition {
+                                Some(c) => {
+                                    eval_record.set_from_slice(&combined_values);
+                                    evaluator
+                                        .evaluate(c, &eval_record)?
+                                        .as_bool()
+                                        .unwrap_or(false)
+                                }
+                                None => true,
+                            };
+
+                            if matches {
+                                found_match = true;
+                                break;
+                            }
+                        }
+                        if !found_match {
+                            let right_row: Vec<Value> = right_columns
+                                .iter()
+                                .map(|c| c.get_value(right_idx))
+                                .collect();
+                            result.push_row(right_row)?;
+                        }
+                    }
+                }
+            }
         }
 
         Ok(result)
@@ -585,6 +894,7 @@ impl ConcurrentPlanExecutor {
         let vars = self.get_variables();
         let sys_vars = self.get_system_variables();
         let udf = self.get_user_functions();
+        let threshold = self.get_parallel_threshold();
 
         match join_type {
             JoinType::Inner => {
@@ -670,7 +980,7 @@ impl ConcurrentPlanExecutor {
                     }
                 }
 
-                if parallel && probe_n >= PARALLEL_THRESHOLD {
+                if parallel && probe_n >= threshold {
                     let row_batches: Vec<Vec<Vec<Value>>> = if let Some(ref indices) =
                         probe_key_indices
                     {
@@ -1091,6 +1401,230 @@ impl ConcurrentPlanExecutor {
             JoinType::Cross => Err(Error::internal(
                 "Cross join should not be handled by HashJoin",
             )),
+            JoinType::LeftSemi => {
+                let right_evaluator = ValueEvaluator::new(&right_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
+                    FxHashMap::with_capacity_and_hasher(right_n, Default::default());
+                let mut right_record = Record::with_capacity(right_cols.len());
+                let mut right_values: Vec<Value> = Vec::with_capacity(right_cols.len());
+                for right_idx in 0..right_n {
+                    right_values.clear();
+                    right_values.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                    right_record.set_from_slice(&right_values);
+                    let key_values: Vec<Value> = right_keys
+                        .iter()
+                        .map(|expr| right_evaluator.evaluate(expr, &right_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                        continue;
+                    }
+
+                    hash_table.entry(key_values).or_default().push(right_idx);
+                }
+
+                let left_evaluator = ValueEvaluator::new(&left_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut result = Table::empty(result_schema);
+                let mut left_record = Record::with_capacity(left_cols.len());
+                let mut left_values: Vec<Value> = Vec::with_capacity(left_cols.len());
+
+                for left_idx in 0..left_n {
+                    left_values.clear();
+                    left_values.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                    left_record.set_from_slice(&left_values);
+                    let key_values: Vec<Value> = left_keys
+                        .iter()
+                        .map(|expr| left_evaluator.evaluate(expr, &left_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let has_null_key = key_values.iter().any(|v| matches!(v, Value::Null));
+                    if has_null_key {
+                        continue;
+                    }
+
+                    if hash_table.contains_key(&key_values) {
+                        let left_row: Vec<Value> =
+                            left_cols.iter().map(|c| c.get_value(left_idx)).collect();
+                        result.push_row(left_row)?;
+                    }
+                }
+                Ok(result)
+            }
+            JoinType::LeftAnti => {
+                let right_evaluator = ValueEvaluator::new(&right_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
+                    FxHashMap::with_capacity_and_hasher(right_n, Default::default());
+                let mut right_record = Record::with_capacity(right_cols.len());
+                let mut right_values: Vec<Value> = Vec::with_capacity(right_cols.len());
+                for right_idx in 0..right_n {
+                    right_values.clear();
+                    right_values.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                    right_record.set_from_slice(&right_values);
+                    let key_values: Vec<Value> = right_keys
+                        .iter()
+                        .map(|expr| right_evaluator.evaluate(expr, &right_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                        continue;
+                    }
+
+                    hash_table.entry(key_values).or_default().push(right_idx);
+                }
+
+                let left_evaluator = ValueEvaluator::new(&left_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut result = Table::empty(result_schema);
+                let mut left_record = Record::with_capacity(left_cols.len());
+                let mut left_values: Vec<Value> = Vec::with_capacity(left_cols.len());
+
+                for left_idx in 0..left_n {
+                    left_values.clear();
+                    left_values.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                    left_record.set_from_slice(&left_values);
+                    let key_values: Vec<Value> = left_keys
+                        .iter()
+                        .map(|expr| left_evaluator.evaluate(expr, &left_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let has_null_key = key_values.iter().any(|v| matches!(v, Value::Null));
+                    let has_match = !has_null_key && hash_table.contains_key(&key_values);
+
+                    if !has_match {
+                        let left_row: Vec<Value> =
+                            left_cols.iter().map(|c| c.get_value(left_idx)).collect();
+                        result.push_row(left_row)?;
+                    }
+                }
+                Ok(result)
+            }
+            JoinType::RightSemi => {
+                let left_evaluator = ValueEvaluator::new(&left_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
+                    FxHashMap::with_capacity_and_hasher(left_n, Default::default());
+                let mut left_record = Record::with_capacity(left_cols.len());
+                let mut left_values: Vec<Value> = Vec::with_capacity(left_cols.len());
+                for left_idx in 0..left_n {
+                    left_values.clear();
+                    left_values.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                    left_record.set_from_slice(&left_values);
+                    let key_values: Vec<Value> = left_keys
+                        .iter()
+                        .map(|expr| left_evaluator.evaluate(expr, &left_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                        continue;
+                    }
+
+                    hash_table.entry(key_values).or_default().push(left_idx);
+                }
+
+                let right_evaluator = ValueEvaluator::new(&right_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut result = Table::empty(result_schema);
+                let mut right_record = Record::with_capacity(right_cols.len());
+                let mut right_values: Vec<Value> = Vec::with_capacity(right_cols.len());
+
+                for right_idx in 0..right_n {
+                    right_values.clear();
+                    right_values.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                    right_record.set_from_slice(&right_values);
+                    let key_values: Vec<Value> = right_keys
+                        .iter()
+                        .map(|expr| right_evaluator.evaluate(expr, &right_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let has_null_key = key_values.iter().any(|v| matches!(v, Value::Null));
+                    if has_null_key {
+                        continue;
+                    }
+
+                    if hash_table.contains_key(&key_values) {
+                        let right_row: Vec<Value> =
+                            right_cols.iter().map(|c| c.get_value(right_idx)).collect();
+                        result.push_row(right_row)?;
+                    }
+                }
+                Ok(result)
+            }
+            JoinType::RightAnti => {
+                let left_evaluator = ValueEvaluator::new(&left_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
+                    FxHashMap::with_capacity_and_hasher(left_n, Default::default());
+                let mut left_record = Record::with_capacity(left_cols.len());
+                let mut left_values: Vec<Value> = Vec::with_capacity(left_cols.len());
+                for left_idx in 0..left_n {
+                    left_values.clear();
+                    left_values.extend(left_cols.iter().map(|c| c.get_value(left_idx)));
+                    left_record.set_from_slice(&left_values);
+                    let key_values: Vec<Value> = left_keys
+                        .iter()
+                        .map(|expr| left_evaluator.evaluate(expr, &left_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    if key_values.iter().any(|v| matches!(v, Value::Null)) {
+                        continue;
+                    }
+
+                    hash_table.entry(key_values).or_default().push(left_idx);
+                }
+
+                let right_evaluator = ValueEvaluator::new(&right_schema)
+                    .with_variables(&vars)
+                    .with_system_variables(&sys_vars)
+                    .with_user_functions(&udf);
+
+                let mut result = Table::empty(result_schema);
+                let mut right_record = Record::with_capacity(right_cols.len());
+                let mut right_values: Vec<Value> = Vec::with_capacity(right_cols.len());
+
+                for right_idx in 0..right_n {
+                    right_values.clear();
+                    right_values.extend(right_cols.iter().map(|c| c.get_value(right_idx)));
+                    right_record.set_from_slice(&right_values);
+                    let key_values: Vec<Value> = right_keys
+                        .iter()
+                        .map(|expr| right_evaluator.evaluate(expr, &right_record))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let has_null_key = key_values.iter().any(|v| matches!(v, Value::Null));
+                    let has_match = !has_null_key && hash_table.contains_key(&key_values);
+
+                    if !has_match {
+                        let right_row: Vec<Value> =
+                            right_cols.iter().map(|c| c.get_value(right_idx)).collect();
+                        result.push_row(right_row)?;
+                    }
+                }
+                Ok(result)
+            }
         }
     }
 }

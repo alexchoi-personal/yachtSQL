@@ -9,4 +9,8 @@ pub enum JoinType {
     Right,
     Full,
     Cross,
+    LeftSemi,
+    RightSemi,
+    LeftAnti,
+    RightAnti,
 }

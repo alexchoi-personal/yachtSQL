@@ -36,12 +36,27 @@ impl<'a> PhysicalPlanner<'a> {
         }
     }
 
-    fn compute_hints(&self, plan: &mut PhysicalPlan) {
-        let parallel_enabled = self.is_parallel_enabled();
-        self.compute_hints_recursive(plan, parallel_enabled);
+    fn get_parallel_row_threshold(&self) -> u64 {
+        if let Some(val) = self.session.get_variable("PARALLEL_ROW_THRESHOLD")
+            && let Some(n) = val.as_i64()
+        {
+            return n.max(0) as u64;
+        }
+        PARALLEL_ROW_THRESHOLD
     }
 
-    fn compute_hints_recursive(&self, plan: &mut PhysicalPlan, parallel_enabled: bool) {
+    fn compute_hints(&self, plan: &mut PhysicalPlan) {
+        let parallel_enabled = self.is_parallel_enabled();
+        let row_threshold = self.get_parallel_row_threshold();
+        self.compute_hints_recursive(plan, parallel_enabled, row_threshold);
+    }
+
+    fn compute_hints_recursive(
+        &self,
+        plan: &mut PhysicalPlan,
+        parallel_enabled: bool,
+        row_threshold: u64,
+    ) {
         match plan {
             PhysicalPlan::NestedLoopJoin {
                 left, right, hints, ..
@@ -49,19 +64,19 @@ impl<'a> PhysicalPlanner<'a> {
             | PhysicalPlan::HashJoin {
                 left, right, hints, ..
             } => {
-                self.compute_hints_recursive(left, parallel_enabled);
-                self.compute_hints_recursive(right, parallel_enabled);
-                *hints = self.binary_join_hints(left, right, parallel_enabled);
+                self.compute_hints_recursive(left, parallel_enabled, row_threshold);
+                self.compute_hints_recursive(right, parallel_enabled, row_threshold);
+                *hints = self.binary_join_hints(left, right, parallel_enabled, row_threshold);
             }
 
             PhysicalPlan::CrossJoin {
                 left, right, hints, ..
             } => {
-                self.compute_hints_recursive(left, parallel_enabled);
-                self.compute_hints_recursive(right, parallel_enabled);
+                self.compute_hints_recursive(left, parallel_enabled, row_threshold);
+                self.compute_hints_recursive(right, parallel_enabled, row_threshold);
                 let bound = Self::binary_bound_type(left, right);
-                let should_parallelize = left.estimate_rows() >= PARALLEL_ROW_THRESHOLD
-                    && right.estimate_rows() >= PARALLEL_ROW_THRESHOLD;
+                let should_parallelize =
+                    left.estimate_rows() >= row_threshold && right.estimate_rows() >= row_threshold;
                 *hints = ExecutionHints {
                     parallel: parallel_enabled && should_parallelize && bound == BoundType::Compute,
                     bound_type: bound,
@@ -72,11 +87,11 @@ impl<'a> PhysicalPlanner<'a> {
             PhysicalPlan::Intersect {
                 left, right, hints, ..
             } => {
-                self.compute_hints_recursive(left, parallel_enabled);
-                self.compute_hints_recursive(right, parallel_enabled);
+                self.compute_hints_recursive(left, parallel_enabled, row_threshold);
+                self.compute_hints_recursive(right, parallel_enabled, row_threshold);
                 let bound = Self::binary_bound_type(left, right);
-                let should_parallelize = left.estimate_rows() >= PARALLEL_ROW_THRESHOLD
-                    && right.estimate_rows() >= PARALLEL_ROW_THRESHOLD;
+                let should_parallelize =
+                    left.estimate_rows() >= row_threshold && right.estimate_rows() >= row_threshold;
                 *hints = ExecutionHints {
                     parallel: parallel_enabled && should_parallelize && bound == BoundType::Compute,
                     bound_type: bound,
@@ -87,11 +102,11 @@ impl<'a> PhysicalPlanner<'a> {
             PhysicalPlan::Except {
                 left, right, hints, ..
             } => {
-                self.compute_hints_recursive(left, parallel_enabled);
-                self.compute_hints_recursive(right, parallel_enabled);
+                self.compute_hints_recursive(left, parallel_enabled, row_threshold);
+                self.compute_hints_recursive(right, parallel_enabled, row_threshold);
                 let bound = Self::binary_bound_type(left, right);
-                let should_parallelize = left.estimate_rows() >= PARALLEL_ROW_THRESHOLD
-                    && right.estimate_rows() >= PARALLEL_ROW_THRESHOLD;
+                let should_parallelize =
+                    left.estimate_rows() >= row_threshold && right.estimate_rows() >= row_threshold;
                 *hints = ExecutionHints {
                     parallel: parallel_enabled && should_parallelize && bound == BoundType::Compute,
                     bound_type: bound,
@@ -101,13 +116,13 @@ impl<'a> PhysicalPlanner<'a> {
 
             PhysicalPlan::Union { inputs, hints, .. } => {
                 for input in inputs.iter_mut() {
-                    self.compute_hints_recursive(input, parallel_enabled);
+                    self.compute_hints_recursive(input, parallel_enabled, row_threshold);
                 }
                 let bound = Self::union_bound_type(inputs);
                 let should_parallelize = inputs.len() >= 2
                     && inputs
                         .iter()
-                        .filter(|p| p.estimate_rows() >= PARALLEL_ROW_THRESHOLD)
+                        .filter(|p| p.estimate_rows() >= row_threshold)
                         .count()
                         >= 2;
                 *hints = ExecutionHints {
@@ -120,7 +135,7 @@ impl<'a> PhysicalPlanner<'a> {
             PhysicalPlan::HashAggregate { input, hints, .. }
             | PhysicalPlan::Window { input, hints, .. }
             | PhysicalPlan::Sort { input, hints, .. } => {
-                self.compute_hints_recursive(input, parallel_enabled);
+                self.compute_hints_recursive(input, parallel_enabled, row_threshold);
                 *hints = ExecutionHints {
                     parallel: false,
                     bound_type: BoundType::Compute,
@@ -134,7 +149,7 @@ impl<'a> PhysicalPlanner<'a> {
                 parallel_ctes,
                 hints,
             } => {
-                self.compute_hints_recursive(body, parallel_enabled);
+                self.compute_hints_recursive(body, parallel_enabled, row_threshold);
                 *parallel_ctes = self.compute_cte_parallelism(ctes, parallel_enabled);
                 *hints = ExecutionHints {
                     parallel: !parallel_ctes.is_empty(),
@@ -151,21 +166,21 @@ impl<'a> PhysicalPlanner<'a> {
             | PhysicalPlan::Distinct { input, .. }
             | PhysicalPlan::Qualify { input, .. }
             | PhysicalPlan::Unnest { input, .. } => {
-                self.compute_hints_recursive(input, parallel_enabled);
+                self.compute_hints_recursive(input, parallel_enabled, row_threshold);
             }
 
             PhysicalPlan::Insert { source, .. } => {
-                self.compute_hints_recursive(source, parallel_enabled);
+                self.compute_hints_recursive(source, parallel_enabled, row_threshold);
             }
 
             PhysicalPlan::Update {
                 from: Some(from), ..
             } => {
-                self.compute_hints_recursive(from, parallel_enabled);
+                self.compute_hints_recursive(from, parallel_enabled, row_threshold);
             }
 
             PhysicalPlan::Merge { source, .. } => {
-                self.compute_hints_recursive(source, parallel_enabled);
+                self.compute_hints_recursive(source, parallel_enabled, row_threshold);
             }
 
             _ => {}
@@ -177,10 +192,11 @@ impl<'a> PhysicalPlanner<'a> {
         left: &PhysicalPlan,
         right: &PhysicalPlan,
         parallel_enabled: bool,
+        row_threshold: u64,
     ) -> ExecutionHints {
         let bound = Self::binary_bound_type(left, right);
-        let should_parallelize = left.estimate_rows() >= PARALLEL_ROW_THRESHOLD
-            && right.estimate_rows() >= PARALLEL_ROW_THRESHOLD;
+        let should_parallelize =
+            left.estimate_rows() >= row_threshold && right.estimate_rows() >= row_threshold;
         ExecutionHints {
             parallel: parallel_enabled && should_parallelize && bound == BoundType::Compute,
             bound_type: bound,
@@ -193,6 +209,7 @@ impl<'a> PhysicalPlanner<'a> {
         ctes: &[yachtsql_ir::CteDefinition],
         parallel_enabled: bool,
     ) -> Vec<usize> {
+        let row_threshold = self.get_parallel_row_threshold();
         if !parallel_enabled {
             return vec![];
         }
@@ -202,8 +219,7 @@ impl<'a> PhysicalPlanner<'a> {
             .filter(|(_, cte)| {
                 if let Ok(mut plan) = yachtsql_optimizer::optimize(&cte.query) {
                     plan.populate_row_counts(self.catalog);
-                    plan.bound_type() == BoundType::Compute
-                        && plan.estimate_rows() >= PARALLEL_ROW_THRESHOLD
+                    plan.bound_type() == BoundType::Compute && plan.estimate_rows() >= row_threshold
                 } else {
                     false
                 }

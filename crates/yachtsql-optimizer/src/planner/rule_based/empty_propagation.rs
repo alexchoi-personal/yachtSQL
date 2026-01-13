@@ -83,12 +83,12 @@ pub fn apply_empty_propagation(plan: PhysicalPlan) -> PhysicalPlan {
                         return PhysicalPlan::Empty { schema };
                     }
                 }
-                JoinType::Left => {
+                JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti => {
                     if is_empty(&optimized_left) {
                         return PhysicalPlan::Empty { schema };
                     }
                 }
-                JoinType::Right => {
+                JoinType::Right | JoinType::RightSemi | JoinType::RightAnti => {
                     if is_empty(&optimized_right) {
                         return PhysicalPlan::Empty { schema };
                     }
@@ -126,12 +126,12 @@ pub fn apply_empty_propagation(plan: PhysicalPlan) -> PhysicalPlan {
                         return PhysicalPlan::Empty { schema };
                     }
                 }
-                JoinType::Left => {
+                JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti => {
                     if is_empty(&optimized_left) {
                         return PhysicalPlan::Empty { schema };
                     }
                 }
-                JoinType::Right => {
+                JoinType::Right | JoinType::RightSemi | JoinType::RightAnti => {
                     if is_empty(&optimized_right) {
                         return PhysicalPlan::Empty { schema };
                     }
