@@ -6828,4 +6828,70 @@ mod sql_optimizer_tests {
             );
         }
     }
+
+    mod decorrelation {
+        use super::*;
+
+        #[test]
+        fn correlated_scalar_subquery_with_sum_becomes_join() {
+            let plan = optimize_sql_default(
+                "SELECT c.name,
+                        (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id) as total
+                 FROM customers c",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashJoin {
+                        left: (TableScan {
+                            table_name: "customers"
+                        }),
+                        right: (HashAggregate {
+                            input: (TableScan {
+                                table_name: "orders"
+                            })
+                        }),
+                        join_type: yachtsql_ir::JoinType::Left
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn correlated_scalar_subquery_not_decorrelated_without_aggregate() {
+            let plan = optimize_sql_default(
+                "SELECT c.name,
+                        (SELECT o.amount FROM orders o WHERE o.customer_id = c.id LIMIT 1)
+                 FROM customers c",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (TableScan {
+                        table_name: "customers"
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn uncorrelated_scalar_subquery_unchanged() {
+            let plan = optimize_sql_default(
+                "SELECT c.name,
+                        (SELECT MAX(amount) FROM orders)
+                 FROM customers c",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (TableScan {
+                        table_name: "customers"
+                    })
+                }
+            );
+        }
+    }
 }

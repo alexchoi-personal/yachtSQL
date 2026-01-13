@@ -152,6 +152,7 @@ impl AsyncQueryExecutor {
             subquery_unnesting: get_rule("OPTIMIZER_SUBQUERY_UNNESTING"),
             join_elimination: get_rule("OPTIMIZER_JOIN_ELIMINATION"),
             aggregate_pushdown: get_rule("OPTIMIZER_AGGREGATE_PUSHDOWN"),
+            decorrelation: get_rule("OPTIMIZER_DECORRELATION"),
         };
 
         OptimizerSettings {

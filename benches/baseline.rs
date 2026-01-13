@@ -1038,6 +1038,127 @@ fn bench_aggregate_pushdown(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_decorrelation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decorrelation");
+    group.sample_size(20);
+
+    for (customers, orders_per_customer) in [(100, 10), (500, 20)] {
+        let rt = Runtime::new().unwrap();
+        let session_off = create_session();
+        setup_aggregate_pushdown_tables(&session_off, &rt, customers, orders_per_customer);
+        rt.block_on(async {
+            session_off
+                .execute_sql("SET OPTIMIZER_DECORRELATION = FALSE")
+                .await
+                .unwrap();
+        });
+
+        let rt2 = Runtime::new().unwrap();
+        let session_on = create_session();
+        setup_aggregate_pushdown_tables(&session_on, &rt2, customers, orders_per_customer);
+        rt2.block_on(async {
+            session_on
+                .execute_sql("SET OPTIMIZER_DECORRELATION = TRUE")
+                .await
+                .unwrap();
+        });
+
+        let label = format!("{}c_{}o", customers, orders_per_customer);
+
+        group.bench_function(BenchmarkId::new("correlated_sum_off", &label), |b| {
+            b.to_async(&rt).iter(|| async {
+                black_box(
+                    session_off
+                        .execute_sql(
+                            "SELECT c.id, c.name,
+                                    (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id) as total
+                             FROM customers c",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("correlated_sum_on", &label), |b| {
+            b.to_async(&rt2).iter(|| async {
+                black_box(
+                    session_on
+                        .execute_sql(
+                            "SELECT c.id, c.name,
+                                    (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id) as total
+                             FROM customers c",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("correlated_count_off", &label), |b| {
+            b.to_async(&rt).iter(|| async {
+                black_box(
+                    session_off
+                        .execute_sql(
+                            "SELECT c.id, c.name,
+                                    (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) as order_count
+                             FROM customers c",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("correlated_count_on", &label), |b| {
+            b.to_async(&rt2).iter(|| async {
+                black_box(
+                    session_on
+                        .execute_sql(
+                            "SELECT c.id, c.name,
+                                    (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) as order_count
+                             FROM customers c",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("correlated_avg_off", &label), |b| {
+            b.to_async(&rt).iter(|| async {
+                black_box(
+                    session_off
+                        .execute_sql(
+                            "SELECT c.id, c.name,
+                                    (SELECT AVG(o.amount) FROM orders o WHERE o.customer_id = c.id) as avg_amount
+                             FROM customers c",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("correlated_avg_on", &label), |b| {
+            b.to_async(&rt2).iter(|| async {
+                black_box(
+                    session_on
+                        .execute_sql(
+                            "SELECT c.id, c.name,
+                                    (SELECT AVG(o.amount) FROM orders o WHERE o.customer_id = c.id) as avg_amount
+                             FROM customers c",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_concurrent_reads,
@@ -1052,5 +1173,6 @@ criterion_group!(
     bench_window_functions,
     bench_subquery_performance,
     bench_aggregate_pushdown,
+    bench_decorrelation,
 );
 criterion_main!(benches);
