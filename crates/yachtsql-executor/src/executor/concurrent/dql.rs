@@ -533,6 +533,7 @@ impl ConcurrentPlanExecutor {
         let input_table = self.execute_plan(input)?;
         let vars = self.get_variables();
         let udf = self.get_user_functions();
+        let threshold = self.get_parallel_threshold();
         crate::executor::aggregate::compute_aggregate(
             &input_table,
             group_by,
@@ -542,6 +543,7 @@ impl ConcurrentPlanExecutor {
             &vars,
             &udf,
             parallel,
+            threshold,
         )
     }
 

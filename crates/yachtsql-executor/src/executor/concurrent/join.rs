@@ -129,6 +129,23 @@ fn hash_key_values(key_values: &[Value]) -> u64 {
     hasher.finish()
 }
 
+fn build_hash_table_direct(
+    cols: &[&Column],
+    n: usize,
+    col_indices: &[usize],
+) -> FxHashMap<Vec<Value>, Vec<usize>> {
+    let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
+        FxHashMap::with_capacity_and_hasher(n, Default::default());
+    for idx in 0..n {
+        let key_values = extract_key_values_direct(cols, idx, col_indices);
+        if key_values.iter().any(|v| matches!(v, Value::Null)) {
+            continue;
+        }
+        hash_table.entry(key_values).or_default().push(idx);
+    }
+    hash_table
+}
+
 impl ConcurrentPlanExecutor {
     #[instrument(skip(self, left, right, condition), fields(join_type = ?join_type))]
     pub(crate) fn execute_nested_loop_join(
@@ -935,18 +952,11 @@ impl ConcurrentPlanExecutor {
                 let build_key_indices = extract_column_indices(build_keys, build_schema);
                 let probe_key_indices = extract_column_indices(probe_keys, probe_schema);
 
-                let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
-                    FxHashMap::with_capacity_and_hasher(build_n, Default::default());
-
-                if let Some(ref indices) = build_key_indices {
-                    for build_idx in 0..build_n {
-                        let key_values = extract_key_values_direct(build_cols, build_idx, indices);
-                        if key_values.iter().any(|v| matches!(v, Value::Null)) {
-                            continue;
-                        }
-                        hash_table.entry(key_values).or_default().push(build_idx);
-                    }
+                let hash_table = if let Some(ref indices) = build_key_indices {
+                    build_hash_table_direct(build_cols, build_n, indices)
                 } else {
+                    let mut hash_table: FxHashMap<Vec<Value>, Vec<usize>> =
+                        FxHashMap::with_capacity_and_hasher(build_n, Default::default());
                     let build_evaluator = ValueEvaluator::new(build_schema)
                         .with_variables(&vars)
                         .with_system_variables(&sys_vars)
@@ -966,7 +976,8 @@ impl ConcurrentPlanExecutor {
                         }
                         hash_table.entry(key_values).or_default().push(build_idx);
                     }
-                }
+                    hash_table
+                };
 
                 if parallel && probe_n >= threshold {
                     let row_batches: Vec<Vec<Vec<Value>>> = if let Some(ref indices) =

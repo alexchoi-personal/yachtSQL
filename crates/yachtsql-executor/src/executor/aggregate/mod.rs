@@ -15,8 +15,6 @@ use yachtsql_storage::{Column, Record, Table};
 use super::plan_schema_to_schema;
 use crate::value_evaluator::ValueEvaluator;
 
-const PARALLEL_AGG_THRESHOLD: usize = 10000;
-
 pub(crate) fn compute_aggregate(
     input_table: &Table,
     group_by: &[Expr],
@@ -26,6 +24,7 @@ pub(crate) fn compute_aggregate(
     variables: &FxHashMap<String, Value>,
     user_function_defs: &FxHashMap<String, crate::value_evaluator::UserFunctionDef>,
     parallel: bool,
+    threshold: usize,
 ) -> Result<Table> {
     if can_use_columnar_aggregate(aggregates, group_by, grouping_sets) {
         return execute_columnar_aggregate(input_table, aggregates, schema);
@@ -175,7 +174,7 @@ pub(crate) fn compute_aggregate(
         let sample_accs: Vec<Accumulator> = aggregates.iter().map(Accumulator::from_expr).collect();
         let can_merge = sample_accs.iter().all(|a| a.is_mergeable());
 
-        if parallel && n >= PARALLEL_AGG_THRESHOLD && can_merge {
+        if parallel && n >= threshold && can_merge {
             let num_threads = std::thread::available_parallelism().map_or(4, |n| n.get());
             let chunk_size = n.div_ceil(num_threads);
 
