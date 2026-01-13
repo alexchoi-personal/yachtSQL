@@ -1,3 +1,4 @@
+pub mod aggregate_pushdown;
 pub mod constant_folding;
 pub mod cross_to_hash_join;
 pub(crate) mod cte_optimization;
@@ -19,6 +20,7 @@ pub mod subquery_unnesting;
 pub mod topn_pushdown;
 pub mod trivial_predicate;
 
+pub use aggregate_pushdown::apply_aggregate_pushdown;
 pub use constant_folding::fold_constants;
 pub use cross_to_hash_join::apply_cross_to_hash_join;
 pub use distinct_elimination::apply_distinct_elimination;

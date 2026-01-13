@@ -6707,4 +6707,125 @@ mod sql_optimizer_tests {
             );
         }
     }
+
+    mod aggregate_pushdown {
+        use super::*;
+
+        #[test]
+        fn aggregate_over_join_not_pushed_for_left_join() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, SUM(o.amount) as total
+                 FROM customers c
+                 LEFT JOIN orders o ON c.id = o.customer_id
+                 GROUP BY c.id",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashAggregate {
+                        input: (HashJoin {
+                            left: (TableScan {
+                                table_name: "customers"
+                            }),
+                            right: (TableScan {
+                                table_name: "orders"
+                            }),
+                            join_type: JoinType::Left
+                        })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn aggregate_over_join_not_pushed_for_right_join() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, SUM(o.amount) as total
+                 FROM customers c
+                 RIGHT JOIN orders o ON c.id = o.customer_id
+                 GROUP BY c.id",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashAggregate {
+                        input: (HashJoin {
+                            left: (TableScan {
+                                table_name: "customers"
+                            }),
+                            right: (TableScan {
+                                table_name: "orders"
+                            }),
+                            join_type: JoinType::Right
+                        })
+                    })
+                }
+            );
+        }
+
+        #[test]
+        fn aggregate_over_join_structure_preserved() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, COUNT(*) as cnt
+                 FROM customers c
+                 JOIN orders o ON c.id = o.customer_id
+                 GROUP BY c.id",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashAggregate {
+                        input: (HashJoin {
+                            left: (TableScan {
+                                table_name: "customers"
+                            }),
+                            right: (TableScan {
+                                table_name: "orders"
+                            }),
+                            join_type: JoinType::Inner
+                        }),
+                        group_by: ["id"]
+                    }),
+                    projections: ["id", "COUNT(*)"]
+                }
+            );
+        }
+
+        #[test]
+        fn aggregate_with_multiple_group_by_columns() {
+            let plan = optimize_sql_default(
+                "SELECT c.id, c.name, SUM(o.amount) as total
+                 FROM customers c
+                 JOIN orders o ON c.id = o.customer_id
+                 GROUP BY c.id, c.name",
+            );
+
+            assert_plan!(
+                plan,
+                Project {
+                    input: (HashAggregate {
+                        input: (HashJoin {
+                            left: (TableScan {
+                                table_name: "customers"
+                            }),
+                            right: (HashAggregate {
+                                input: (TableScan {
+                                    table_name: "orders"
+                                }),
+                                group_by: ["customer_id"],
+                                aggregates: ["SUM"]
+                            }),
+                            join_type: JoinType::Inner
+                        }),
+                        group_by: ["id", "name"],
+                        aggregates: ["SUM"]
+                    }),
+                    projections: ["id", "name", "SUM(O.AMOUNT)"]
+                }
+            );
+        }
+    }
 }

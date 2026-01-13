@@ -861,6 +861,183 @@ fn bench_subquery_performance(c: &mut Criterion) {
     group.finish();
 }
 
+fn setup_aggregate_pushdown_tables(
+    session: &YachtSQLSession,
+    rt: &Runtime,
+    customers: usize,
+    orders_per_customer: usize,
+) {
+    rt.block_on(async {
+        session
+            .execute_sql("CREATE TABLE customers (id INT64, name STRING, region STRING)")
+            .await
+            .unwrap();
+        session
+            .execute_sql(
+                "CREATE TABLE orders (id INT64, customer_id INT64, amount FLOAT64, status STRING)",
+            )
+            .await
+            .unwrap();
+
+        let batch_size = 500;
+        for batch_start in (1..=customers).step_by(batch_size) {
+            let batch_end = std::cmp::min(batch_start + batch_size - 1, customers);
+            let values: Vec<String> = (batch_start..=batch_end)
+                .map(|i| format!("({}, 'Customer{}', 'Region{}')", i, i, i % 10))
+                .collect();
+            session
+                .execute_sql(&format!(
+                    "INSERT INTO customers VALUES {}",
+                    values.join(", ")
+                ))
+                .await
+                .unwrap();
+        }
+
+        let total_orders = customers * orders_per_customer;
+        for batch_start in (1..=total_orders).step_by(batch_size) {
+            let batch_end = std::cmp::min(batch_start + batch_size - 1, total_orders);
+            let values: Vec<String> = (batch_start..=batch_end)
+                .map(|i| {
+                    let customer_id = (i - 1) / orders_per_customer + 1;
+                    format!("({}, {}, {}.50, 'status{}')", i, customer_id, i * 10, i % 5)
+                })
+                .collect();
+            session
+                .execute_sql(&format!("INSERT INTO orders VALUES {}", values.join(", ")))
+                .await
+                .unwrap();
+        }
+    });
+}
+
+fn bench_aggregate_pushdown(c: &mut Criterion) {
+    let mut group = c.benchmark_group("aggregate_pushdown");
+    group.sample_size(20);
+
+    for (customers, orders_per_customer) in [(1000, 10), (5000, 20)] {
+        let rt = Runtime::new().unwrap();
+        let session_off = create_session();
+        setup_aggregate_pushdown_tables(&session_off, &rt, customers, orders_per_customer);
+        rt.block_on(async {
+            session_off
+                .execute_sql("SET OPTIMIZER_AGGREGATE_PUSHDOWN = FALSE")
+                .await
+                .unwrap();
+        });
+
+        let rt2 = Runtime::new().unwrap();
+        let session_on = create_session();
+        setup_aggregate_pushdown_tables(&session_on, &rt2, customers, orders_per_customer);
+        rt2.block_on(async {
+            session_on
+                .execute_sql("SET OPTIMIZER_AGGREGATE_PUSHDOWN = TRUE")
+                .await
+                .unwrap();
+        });
+
+        let label = format!("{}c_{}o", customers, orders_per_customer);
+
+        group.bench_function(BenchmarkId::new("sum_off", &label), |b| {
+            b.to_async(&rt).iter(|| async {
+                black_box(
+                    session_off
+                        .execute_sql(
+                            "SELECT c.id, SUM(o.amount) as total
+                             FROM customers c
+                             JOIN orders o ON c.id = o.customer_id
+                             GROUP BY c.id",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("sum_on", &label), |b| {
+            b.to_async(&rt2).iter(|| async {
+                black_box(
+                    session_on
+                        .execute_sql(
+                            "SELECT c.id, SUM(o.amount) as total
+                             FROM customers c
+                             JOIN orders o ON c.id = o.customer_id
+                             GROUP BY c.id",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("count_off", &label), |b| {
+            b.to_async(&rt).iter(|| async {
+                black_box(
+                    session_off
+                        .execute_sql(
+                            "SELECT c.id, COUNT(*) as cnt
+                             FROM customers c
+                             JOIN orders o ON c.id = o.customer_id
+                             GROUP BY c.id",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("count_on", &label), |b| {
+            b.to_async(&rt2).iter(|| async {
+                black_box(
+                    session_on
+                        .execute_sql(
+                            "SELECT c.id, COUNT(*) as cnt
+                             FROM customers c
+                             JOIN orders o ON c.id = o.customer_id
+                             GROUP BY c.id",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("min_max_off", &label), |b| {
+            b.to_async(&rt).iter(|| async {
+                black_box(
+                    session_off
+                        .execute_sql(
+                            "SELECT c.id, MIN(o.amount) as min_amt, MAX(o.amount) as max_amt
+                             FROM customers c
+                             JOIN orders o ON c.id = o.customer_id
+                             GROUP BY c.id",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+
+        group.bench_function(BenchmarkId::new("min_max_on", &label), |b| {
+            b.to_async(&rt2).iter(|| async {
+                black_box(
+                    session_on
+                        .execute_sql(
+                            "SELECT c.id, MIN(o.amount) as min_amt, MAX(o.amount) as max_amt
+                             FROM customers c
+                             JOIN orders o ON c.id = o.customer_id
+                             GROUP BY c.id",
+                        )
+                        .await
+                        .unwrap(),
+                )
+            })
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_concurrent_reads,
@@ -874,5 +1051,6 @@ criterion_group!(
     bench_aggregation_performance,
     bench_window_functions,
     bench_subquery_performance,
+    bench_aggregate_pushdown,
 );
 criterion_main!(benches);

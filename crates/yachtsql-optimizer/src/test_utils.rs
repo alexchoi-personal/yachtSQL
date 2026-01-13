@@ -157,6 +157,21 @@ macro_rules! assert_plan {
         }
     };
 
+    ($plan:expr, Project { input: ($($input:tt)+), projections: [$($col:expr),+ $(,)?] }) => {
+        match &$plan {
+            PhysicalPlan::Project { input, expressions, .. } => {
+                let expected_cols: Vec<&str> = vec![$($col),+];
+                assert!(
+                    $crate::test_utils::expressions_match_columns(expressions, &expected_cols),
+                    "Project projections mismatch: expected {:?}, got {:?}",
+                    expected_cols, expressions
+                );
+                assert_plan!(**input, $($input)+);
+            }
+            other => panic!("Expected Project, got {:?}", std::mem::discriminant(other)),
+        }
+    };
+
     ($plan:expr, HashJoin { left: ($($left:tt)+), right: ($($right:tt)+), join_type: $jt:expr }) => {
         match &$plan {
             PhysicalPlan::HashJoin {
@@ -401,10 +416,52 @@ macro_rules! assert_plan {
         }
     };
 
+    ($plan:expr, HashAggregate { input: ($($input:tt)+), group_by: [$($col:expr),+ $(,)?] }) => {
+        match &$plan {
+            PhysicalPlan::HashAggregate { input, group_by, .. } => {
+                let expected_cols: Vec<&str> = vec![$($col),+];
+                assert!(
+                    $crate::test_utils::expressions_match_columns(group_by, &expected_cols),
+                    "HashAggregate group_by mismatch: expected {:?}, got {:?}",
+                    expected_cols, group_by
+                );
+                assert_plan!(**input, $($input)+);
+            }
+            other => panic!(
+                "Expected HashAggregate, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
+
+    ($plan:expr, HashAggregate { input: ($($input:tt)+), group_by: [$($col:expr),+ $(,)?], aggregates: [$($agg:expr),+ $(,)?] }) => {
+        match &$plan {
+            PhysicalPlan::HashAggregate { input, group_by, aggregates, .. } => {
+                let expected_cols: Vec<&str> = vec![$($col),+];
+                assert!(
+                    $crate::test_utils::expressions_match_columns(group_by, &expected_cols),
+                    "HashAggregate group_by mismatch: expected {:?}, got {:?}",
+                    expected_cols, group_by
+                );
+                let expected_aggs: Vec<&str> = vec![$($agg),+];
+                assert!(
+                    $crate::test_utils::aggregates_match(aggregates, &expected_aggs),
+                    "HashAggregate aggregates mismatch: expected {:?}, got {:?}",
+                    expected_aggs, aggregates
+                );
+                assert_plan!(**input, $($input)+);
+            }
+            other => panic!(
+                "Expected HashAggregate, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    };
+
     ($plan:expr, HashAggregate { input: ($($input:tt)+), group_exprs: $grp_check:expr }) => {
         match &$plan {
-            PhysicalPlan::HashAggregate { input, group_exprs, .. } => {
-                assert!($grp_check(group_exprs), "HashAggregate group_exprs check failed: {:?}", group_exprs);
+            PhysicalPlan::HashAggregate { input, group_by, .. } => {
+                assert!($grp_check(group_by), "HashAggregate group_exprs check failed: {:?}", group_by);
                 assert_plan!(**input, $($input)+);
             }
             other => panic!(
@@ -416,8 +473,8 @@ macro_rules! assert_plan {
 
     ($plan:expr, HashAggregate { input: ($($input:tt)+), group_exprs: $grp_check:expr, aggregates: $agg_check:expr }) => {
         match &$plan {
-            PhysicalPlan::HashAggregate { input, group_exprs, aggregates, .. } => {
-                assert!($grp_check(group_exprs), "HashAggregate group_exprs check failed: {:?}", group_exprs);
+            PhysicalPlan::HashAggregate { input, group_by, aggregates, .. } => {
+                assert!($grp_check(group_by), "HashAggregate group_exprs check failed: {:?}", group_by);
                 assert!($agg_check(aggregates), "HashAggregate aggregates check failed: {:?}", aggregates);
                 assert_plan!(**input, $($input)+);
             }
@@ -520,4 +577,49 @@ pub(crate) fn is_binary_op_columns(
         }
         _ => false,
     }
+}
+
+pub(crate) fn get_expression_name(expr: &yachtsql_ir::Expr) -> Option<String> {
+    use yachtsql_ir::Expr;
+    match expr {
+        Expr::Column { name, .. } => Some(name.clone()),
+        Expr::Alias { name, .. } => Some(name.clone()),
+        Expr::Aggregate { func, .. } => Some(format!("{:?}", func).to_uppercase()),
+        _ => None,
+    }
+}
+
+pub(crate) fn expressions_match_columns(exprs: &[yachtsql_ir::Expr], expected: &[&str]) -> bool {
+    if exprs.len() != expected.len() {
+        return false;
+    }
+    exprs
+        .iter()
+        .zip(expected.iter())
+        .all(|(expr, expected_name)| {
+            get_expression_name(expr)
+                .map(|name| name.eq_ignore_ascii_case(expected_name))
+                .unwrap_or(false)
+        })
+}
+
+pub(crate) fn aggregates_match(exprs: &[yachtsql_ir::Expr], expected: &[&str]) -> bool {
+    use yachtsql_ir::Expr;
+    if exprs.len() != expected.len() {
+        return false;
+    }
+    exprs
+        .iter()
+        .zip(expected.iter())
+        .all(|(expr, expected_name)| match expr {
+            Expr::Aggregate { func, .. } => {
+                format!("{:?}", func).eq_ignore_ascii_case(expected_name)
+            }
+            Expr::Alias { expr: inner, name } => {
+                name.eq_ignore_ascii_case(expected_name)
+                    || matches!(inner.as_ref(), Expr::Aggregate { func, .. }
+                        if format!("{:?}", func).eq_ignore_ascii_case(expected_name))
+            }
+            _ => false,
+        })
 }
