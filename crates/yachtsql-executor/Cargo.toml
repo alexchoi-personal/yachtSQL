@@ -61,9 +61,6 @@ unicode-normalization = "0.1"
 # SIMD alignment
 aligned-vec = "0.6"
 
-# Bloom filter
-bloomfilter = "3.0"
-
 # Fast non-cryptographic hash for probabilistic data structures
 ahash = "0.8"
 
