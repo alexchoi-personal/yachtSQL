@@ -19,13 +19,13 @@ pub use optimized_logical_plan::{
 };
 pub use pass::{OptimizationPass, PassOverhead, PassTarget};
 pub use planner::{
-    PhysicalPlanner, ProjectionPushdown, apply_cross_to_hash_join, apply_distinct_elimination,
-    apply_empty_propagation, apply_filter_merging, apply_filter_pushdown_aggregate,
-    apply_filter_pushdown_join, apply_filter_pushdown_project, apply_join_elimination,
-    apply_limit_pushdown, apply_outer_to_inner_join, apply_predicate_inference,
-    apply_predicate_simplification, apply_project_merging, apply_short_circuit_ordering,
-    apply_sort_elimination, apply_sort_pushdown_project, apply_subquery_unnesting,
-    apply_topn_pushdown, apply_trivial_predicate_removal, fold_constants,
+    PhysicalPlanner, ProjectionPushdown, apply_aggregate_pushdown, apply_cross_to_hash_join,
+    apply_distinct_elimination, apply_empty_propagation, apply_filter_merging,
+    apply_filter_pushdown_aggregate, apply_filter_pushdown_join, apply_filter_pushdown_project,
+    apply_join_elimination, apply_limit_pushdown, apply_outer_to_inner_join,
+    apply_predicate_inference, apply_predicate_simplification, apply_project_merging,
+    apply_short_circuit_ordering, apply_sort_elimination, apply_sort_pushdown_project,
+    apply_subquery_unnesting, apply_topn_pushdown, apply_trivial_predicate_removal, fold_constants,
 };
 use rustc_hash::FxHashMap;
 pub use stats::{ColumnStats, TableStats};
@@ -63,6 +63,7 @@ pub struct RuleFlags {
     pub short_circuit_ordering: Option<bool>,
     pub subquery_unnesting: Option<bool>,
     pub join_elimination: Option<bool>,
+    pub aggregate_pushdown: Option<bool>,
 }
 
 impl RuleFlags {
@@ -87,6 +88,7 @@ impl RuleFlags {
             short_circuit_ordering: Some(true),
             subquery_unnesting: Some(true),
             join_elimination: Some(true),
+            aggregate_pushdown: Some(true),
         }
     }
 
@@ -111,6 +113,7 @@ impl RuleFlags {
             short_circuit_ordering: Some(false),
             subquery_unnesting: Some(false),
             join_elimination: Some(false),
+            aggregate_pushdown: Some(false),
         }
     }
 
@@ -136,6 +139,7 @@ impl RuleFlags {
             "short_circuit_ordering" => flags.short_circuit_ordering = Some(true),
             "subquery_unnesting" => flags.subquery_unnesting = Some(true),
             "join_elimination" => flags.join_elimination = Some(true),
+            "aggregate_pushdown" => flags.aggregate_pushdown = Some(true),
             _ => {}
         }
         flags
@@ -343,6 +347,12 @@ pub fn optimize_with_settings(
         OptimizationLevel::Aggressive,
     ) {
         physical_plan = apply_filter_pushdown_aggregate(physical_plan);
+    }
+    if settings.rule_enabled(
+        settings.rules.aggregate_pushdown,
+        OptimizationLevel::Aggressive,
+    ) {
+        physical_plan = apply_aggregate_pushdown(physical_plan);
     }
 
     if settings.projection_pushdown_enabled() {
