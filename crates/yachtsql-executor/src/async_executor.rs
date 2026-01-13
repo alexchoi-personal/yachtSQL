@@ -150,6 +150,7 @@ impl AsyncQueryExecutor {
             predicate_inference: get_rule("OPTIMIZER_PREDICATE_INFERENCE"),
             short_circuit_ordering: get_rule("OPTIMIZER_SHORT_CIRCUIT_ORDERING"),
             subquery_unnesting: get_rule("OPTIMIZER_SUBQUERY_UNNESTING"),
+            join_elimination: get_rule("OPTIMIZER_JOIN_ELIMINATION"),
         };
 
         OptimizerSettings {

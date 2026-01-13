@@ -6170,6 +6170,84 @@ mod sql_optimizer_tests {
         }
     }
 
+    mod join_elimination {
+        use super::*;
+
+        #[test]
+        fn left_join_eliminated_when_right_unused() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, o.amount
+                 FROM orders o
+                 LEFT JOIN customers c ON o.customer_id = c.id",
+            );
+
+            fn find_join(plan: &PhysicalPlan) -> bool {
+                match plan {
+                    PhysicalPlan::HashJoin { .. } => true,
+                    PhysicalPlan::NestedLoopJoin { .. } => true,
+                    PhysicalPlan::Project { input, .. } => find_join(input),
+                    PhysicalPlan::Filter { input, .. } => find_join(input),
+                    _ => false,
+                }
+            }
+
+            assert!(
+                !find_join(&plan),
+                "LEFT JOIN should be eliminated when right side is unused, got {:?}",
+                plan
+            );
+        }
+
+        #[test]
+        fn left_join_preserved_when_right_used() {
+            let plan = optimize_sql_default(
+                "SELECT o.id, c.name
+                 FROM orders o
+                 LEFT JOIN customers c ON o.customer_id = c.id",
+            );
+
+            fn find_join(plan: &PhysicalPlan) -> bool {
+                match plan {
+                    PhysicalPlan::HashJoin { .. } => true,
+                    PhysicalPlan::NestedLoopJoin { .. } => true,
+                    PhysicalPlan::Project { input, .. } => find_join(input),
+                    PhysicalPlan::Filter { input, .. } => find_join(input),
+                    _ => false,
+                }
+            }
+
+            assert!(
+                find_join(&plan),
+                "LEFT JOIN should be preserved when right side is used, got {:?}",
+                plan
+            );
+        }
+
+        #[test]
+        fn cross_join_preserved_even_when_side_unused() {
+            let plan = optimize_sql_default(
+                "SELECT o.id
+                 FROM orders o
+                 CROSS JOIN customers c",
+            );
+
+            fn find_cross_join(plan: &PhysicalPlan) -> bool {
+                match plan {
+                    PhysicalPlan::CrossJoin { .. } => true,
+                    PhysicalPlan::Project { input, .. } => find_cross_join(input),
+                    PhysicalPlan::Filter { input, .. } => find_cross_join(input),
+                    _ => false,
+                }
+            }
+
+            assert!(
+                find_cross_join(&plan),
+                "CROSS JOIN should be preserved (cardinality change), got {:?}",
+                plan
+            );
+        }
+    }
+
     mod filter_pushdown_aggregate {
         use super::*;
 
