@@ -6808,8 +6808,16 @@ mod sql_optimizer_tests {
                 Project {
                     input: (HashAggregate {
                         input: (HashJoin {
-                            left: (_),
-                            right: (_),
+                            left: (TableScan {
+                                table_name: "customers"
+                            }),
+                            right: (HashAggregate {
+                                input: (TableScan {
+                                    table_name: "orders"
+                                }),
+                                group_by: ["customer_id"],
+                                aggregates: ["SUM"]
+                            }),
                             join_type: JoinType::Inner
                         }),
                         group_by: ["id", "name"],
